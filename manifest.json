@@ -1,0 +1,11 @@
+{
+    "id": "continuous-calendar",
+    "name": "Continuous Calendar",
+    "version": "0.1.0",
+    "minAppVersion": "1.0.0",
+    "description": "Displays an interactive continuous calendar in the sidebar.",
+    "author": "LoopBraker",
+    "authorUrl": "https://github.com/LoopBraker",
+    "fundingUrl": "https://www.paypal.com/donate/?hosted_button_id=R24VP67KCPC88",
+    "isDesktopOnly": false
+}

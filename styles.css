@@ -1,0 +1,20 @@
+/* src/styles.css */
+.my-calendar-table {
+    width: 100%;
+    border-collapse: collapse;
+    table-layout: fixed;
+  }
+  
+  .my-calendar-table th,
+  .my-calendar-table td {
+    border: 1px solid var(--background-modifier-border);
+    text-align: center;
+    padding: 4px;
+    font-size: var(--font-adaptive-small);
+    vertical-align: top;
+    height: 60px;
+  }
+  
+  .my-calendar-table th {
+    background-color: var(--background-secondary);
+  }
