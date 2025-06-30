@@ -20,12 +20,17 @@
       "color": "var(--color-red-tint)"
     }
   ],
-  "tagAppearance": {},
+  "tagAppearance": {
+    "#todo/next-action": {
+      "color": "var(--color-orange-tint)",
+      "symbol": "●"
+    }
+  },
   "focusedMonths": [
-    1
+    6
   ],
   "opaqueMonths": [
-    1
+    6
   ],
   "collapseDuplicateTagSymbols": true
 }

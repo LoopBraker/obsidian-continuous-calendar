@@ -38,6 +38,13 @@ const BORDER_COLOR_MAP: Record<string, string> = {
 };
 const DEFAULT_BORDER_COLOR = "var(--color-red-text)";
 
+// Define a type for our indexed calendar data for clarity
+type IndexedCalendarData = {
+  notesByDate: Map<string, any[]>;
+  birthdaysByDate: Map<string, any[]>;
+  allRanges: any[];
+};
+
 export class CalendarView extends ItemView {
   plugin: MyCalendarPlugin;
   calendarContentEl: HTMLElement;
@@ -126,6 +133,119 @@ export class CalendarView extends ItemView {
     }
   }
 
+  /**
+   * Scans the vault once and indexes all relevant notes by date for fast lookups.
+   * This is the primary performance optimization.
+   */
+  private async collectAndIndexCalendarData(): Promise<IndexedCalendarData> {
+    const notesByDate = new Map<string, any[]>();
+    const birthdaysByDate = new Map<string, any[]>();
+    const allRanges: any[] = [];
+
+    const allFiles = this.app.vault.getMarkdownFiles();
+    const birthdayFolder =
+      this.plugin.settings.birthdayFolder.toLowerCase() + "/";
+    const hasBirthdayFolderSetting =
+      this.plugin.settings.birthdayFolder.trim() !== "";
+    const tagAppearanceSettings: Record<string, TagAppearance> =
+      this.plugin.settings.tagAppearance;
+
+    for (const file of allFiles) {
+      const cache = this.app.metadataCache.getFileCache(file);
+      const fm = cache?.frontmatter;
+      if (!fm) continue;
+
+      // --- Collect Base Information ---
+      const explicitColor = fm.color ? fm.color.toString() : undefined;
+      const explicitSymbol = fm.symbol ? fm.symbol.toString() : undefined;
+      let defaultColorFromTag: string | undefined = undefined;
+      let defaultSymbolFromTag: string | undefined = undefined;
+      let noteTags: string[] = [];
+
+      // --- Process Tags to find defaults (if no explicit color/symbol) ---
+      if ((!explicitColor || !explicitSymbol) && fm.tags) {
+        let rawTags: any[] = [];
+        if (typeof fm.tags === "string") {
+          rawTags = fm.tags
+            .split(",")
+            .map((t) => t.trim())
+            .filter((t) => t);
+        } else if (Array.isArray(fm.tags)) {
+          rawTags = fm.tags.map((t) => String(t).trim()).filter((t) => t);
+        }
+        noteTags = rawTags.map((tag) =>
+          tag.startsWith("#") ? tag : `#${tag}`
+        );
+
+        for (const tag of noteTags) {
+          const appearance = tagAppearanceSettings[tag];
+          if (appearance) {
+            if (!defaultColorFromTag) defaultColorFromTag = appearance.color;
+            if (!defaultSymbolFromTag && appearance.symbol)
+              defaultSymbolFromTag = appearance.symbol;
+            if (defaultColorFromTag && defaultSymbolFromTag) break; // Optimization: stop if both found
+          }
+        }
+      }
+
+      const baseNoteData = {
+        file: file,
+        name: file.basename,
+        path: file.path,
+        color: explicitColor,
+        symbol: explicitSymbol,
+        defaultColorFromTag: defaultColorFromTag,
+        defaultSymbolFromTag: defaultSymbolFromTag,
+        tags: noteTags,
+      };
+
+      // --- Index Single-Date Notes ---
+      if (fm.date) {
+        const mDate = moment(fm.date.toString(), "YYYY-MM-DD", true);
+        if (mDate.isValid()) {
+          const dateStr = mDate.format("YYYY-MM-DD");
+          if (!notesByDate.has(dateStr)) {
+            notesByDate.set(dateStr, []);
+          }
+          notesByDate.get(dateStr)?.push({ ...baseNoteData, date: dateStr });
+        }
+      }
+
+      // --- Index Date-Range Notes ---
+      if (fm.dateStart && fm.dateEnd) {
+        const mStart = moment(fm.dateStart.toString(), "YYYY-MM-DD", true);
+        const mEnd = moment(fm.dateEnd.toString(), "YYYY-MM-DD", true);
+        if (mStart.isValid() && mEnd.isValid()) {
+          allRanges.push({
+            ...baseNoteData,
+            dateStart: mStart.format("YYYY-MM-DD"),
+            dateEnd: mEnd.format("YYYY-MM-DD"),
+          });
+        }
+      }
+
+      // --- Index Birthdays ---
+      if (
+        fm.birthday &&
+        (!hasBirthdayFolderSetting ||
+          file.path.toLowerCase().startsWith(birthdayFolder))
+      ) {
+        const mBday = moment(fm.birthday.toString(), "YYYY-MM-DD", true);
+        if (mBday.isValid()) {
+          const monthDayStr = mBday.format("MM-DD");
+          if (!birthdaysByDate.has(monthDayStr)) {
+            birthdaysByDate.set(monthDayStr, []);
+          }
+          birthdaysByDate
+            .get(monthDayStr)
+            ?.push({ ...baseNoteData, birthday: mBday.format("YYYY-MM-DD") });
+        }
+      }
+    }
+
+    return { notesByDate, birthdaysByDate, allRanges };
+  }
+
   async renderCalendar() {
     if (!this.plugin.holidayService) {
       console.error("Holiday service not available in CalendarView.");
@@ -146,134 +266,19 @@ export class CalendarView extends ItemView {
     const DEFAULT_DOT_COLOR = this.plugin.settings.defaultDotColor;
     const DEFAULT_BAR_COLOR = this.plugin.settings.defaultBarColor;
     const DEFAULT_BIRTHDAY_COLOR = this.plugin.settings.defaultBirthdayColor;
-
     const DEFAULT_DAILY_NOTE_SYMBOL =
-      this.plugin.settings.defaultDailyNoteSymbol || ""; // Add fallback
-    const tagAppearanceSettings: Record<string, TagAppearance> =
-      this.plugin.settings.tagAppearance; // <-- Use tagAppearance
+      this.plugin.settings.defaultDailyNoteSymbol || "";
+
+    // --- Perform the expensive data collection and indexing ONCE ---
+    const { notesByDate, birthdaysByDate, allRanges } =
+      await this.collectAndIndexCalendarData();
 
     console.log("Fetching aggregated holidays for year:", year);
     this.currentYearHolidays =
       await this.plugin.holidayService.getAggregatedHolidays(year);
     console.log("Fetched holidays map:", this.currentYearHolidays);
 
-    const allDNs = getAllDailyNotes(); // Get all daily notes once for efficiency
-
-    const allFiles = this.app.vault.getMarkdownFiles();
-    let pagesData: any[] = [];
-    let birthdayData: any[] = [];
-
-    const birthdayFolder =
-      this.plugin.settings.birthdayFolder.toLowerCase() + "/";
-    const hasBirthdayFolderSetting =
-      this.plugin.settings.birthdayFolder.trim() !== "";
-
-    for (const file of allFiles) {
-      const cache = this.app.metadataCache.getFileCache(file);
-      const fm = cache?.frontmatter;
-      if (!fm) continue;
-
-      let hasDate = false;
-      let validDate: string | null = null;
-      let validDateStart: string | null = null;
-      let validDateEnd: string | null = null;
-      let validBirthday: string | null = null;
-      let explicitColor: string | undefined = undefined;
-      let explicitSymbol: string | undefined = undefined; // <<< NEW: For frontmatter symbol
-      let defaultColorFromTag: string | undefined = undefined;
-      let defaultSymbolFromTag: string | undefined = undefined;
-      let noteTags: string[] = [];
-
-      // --- Get Explicit Color & Symbol ---
-      if (fm.color) {
-        explicitColor = fm.color.toString();
-      }
-      if (fm.symbol) {
-        // <<< NEW: Check for symbol in frontmatter
-        explicitSymbol = fm.symbol.toString();
-      }
-
-      if (fm.date) {
-        const mDate = moment(fm.date.toString(), "YYYY-MM-DD", true);
-        if (mDate.isValid()) {
-          validDate = mDate.format("YYYY-MM-DD");
-          hasDate = true;
-        }
-      }
-      if (fm.dateStart && fm.dateEnd) {
-        const mStart = moment(fm.dateStart.toString(), "YYYY-MM-DD", true);
-        const mEnd = moment(fm.dateEnd.toString(), "YYYY-MM-DD", true);
-        if (mStart.isValid() && mEnd.isValid()) {
-          validDateStart = mStart.format("YYYY-MM-DD");
-          validDateEnd = mEnd.format("YYYY-MM-DD");
-          hasDate = true;
-        }
-      }
-      if (
-        fm.birthday &&
-        (!hasBirthdayFolderSetting ||
-          file.path.toLowerCase().startsWith(birthdayFolder))
-      ) {
-        const mBday = moment(fm.birthday.toString(), "YYYY-MM-DD", true);
-        if (mBday.isValid()) {
-          validBirthday = mBday.format("YYYY-MM-DD");
-          birthdayData.push({
-            file: file,
-            birthday: validBirthday,
-            name: file.basename,
-            path: file.path,
-            color: explicitColor,
-            tags: fm.tags, // Pass tags for potential birthday color logic later
-          });
-        }
-      }
-
-      // --- Determine Default Color from Tags (if no explicit color) ---
-      if (!explicitColor && fm.tags) {
-        let rawTags: any[] = [];
-        if (typeof fm.tags === "string") {
-          rawTags = fm.tags
-            .split(",")
-            .map((t) => t.trim())
-            .filter((t) => t);
-        } else if (Array.isArray(fm.tags)) {
-          rawTags = fm.tags.map((t) => String(t).trim()).filter((t) => t);
-        }
-
-        noteTags = rawTags.map((tag) =>
-          tag.startsWith("#") ? tag : `#${tag}`
-        );
-
-        // Find the first matching tag in the settings
-        for (const tag of noteTags) {
-          const appearance = tagAppearanceSettings[tag]; // <-- Check tagAppearance
-          if (appearance) {
-            defaultColorFromTag = appearance.color; // <-- Get color
-            if (appearance.symbol) {
-              // <-- Check for symbol
-              defaultSymbolFromTag = appearance.symbol; // <-- Get symbol
-            }
-            break; // Use the first match
-          }
-        }
-      }
-
-      if (hasDate) {
-        pagesData.push({
-          file: file,
-          date: validDate,
-          dateStart: validDateStart,
-          dateEnd: validDateEnd,
-          color: explicitColor,
-          symbol: explicitSymbol, // <<< NEW: Store the explicit symbol
-          defaultColorFromTag: defaultColorFromTag, // Store derived color
-          defaultSymbolFromTag: defaultSymbolFromTag, // Store derived symbol
-          name: file.basename,
-          path: file.path,
-          tags: noteTags, // Store normalized tags
-        });
-      }
-    }
+    const allDNs = getAllDailyNotes();
 
     const table = scrollContainer.createEl("table", {
       cls: "my-calendar-table",
@@ -320,28 +325,8 @@ export class CalendarView extends ItemView {
       );
       const hasBoundary = boundaryIndex !== -1;
 
-      const weeklyRanges = new Map<string, any>();
-      const weeklySlotAssignments = new Map<string, number>();
-
-      for (let d = 0; d < 7; d++) {
-        const dayMoment = currentWeek.clone().add(d, "days");
-        const dayStr = dayMoment.format("YYYY-MM-DD");
-
-        pagesData.forEach((p) => {
-          if (p.dateStart && p.dateEnd && !weeklyRanges.has(p.path)) {
-            const mStart = moment(p.dateStart);
-            const mEnd = moment(p.dateEnd);
-            if (
-              mStart.isSameOrBefore(dayMoment) &&
-              mEnd.isSameOrAfter(dayMoment)
-            ) {
-              weeklyRanges.set(p.path, p);
-            }
-          }
-        });
-      }
       /***********************************************************************
-       *  BUILD DAILY SLOT ASSIGNMENTS
+       *  BUILD DAILY SLOT ASSIGNMENTS for RANGES
        ***********************************************************************/
       interface RangeInfo {
         path: string;
@@ -349,33 +334,24 @@ export class CalendarView extends ItemView {
         end: moment.Moment;
       }
 
-      const allRanges: RangeInfo[] = pagesData
-        .filter((p) => p.dateStart && p.dateEnd)
-        .map((p) => ({
-          path: p.path,
-          start: moment(p.dateStart, "YYYY-MM-DD"),
-          end: moment(p.dateEnd, "YYYY-MM-DD"),
-        }));
+      const mappedRanges: RangeInfo[] = allRanges.map((p) => ({
+        path: p.path,
+        start: moment(p.dateStart, "YYYY-MM-DD"),
+        end: moment(p.dateEnd, "YYYY-MM-DD"),
+      }));
 
-      // quick index: which ranges *start* on a given date?
       const rangesStartingByDate = new Map<string, RangeInfo[]>();
-      for (const r of allRanges) {
+      for (const r of mappedRanges) {
         const key = r.start.format("YYYY-MM-DD");
-        (
-          rangesStartingByDate.get(key) ??
-          rangesStartingByDate.set(key, []).get(key)!
-        ).push(r);
+        if (!rangesStartingByDate.has(key)) {
+          rangesStartingByDate.set(key, []);
+        }
+        rangesStartingByDate.get(key)?.push(r);
       }
 
-      /**
-       * rangeSlotsByDate[dateStr]  →  Map<path, slotNumber>
-       * (Only dates inside the displayed year are stored.)
-       */
       const rangeSlotsByDate: Record<string, Map<string, number>> = {};
-
-      // state that moves forward day‑by‑day
-      const activeByPath = new Map<string, number>(); // path → slot
-      const occupied = new Set<number>(); // which slots 0–3 are in use?
+      const activeByPath = new Map<string, number>();
+      const occupied = new Set<number>();
 
       function nextFreeSlot(): number | undefined {
         for (let i = 0; i < MAX_VISIBLE_RANGE_SLOTS; i++) {
@@ -389,36 +365,24 @@ export class CalendarView extends ItemView {
       while (cursor.isSameOrBefore(last, "day")) {
         const todayStr = cursor.format("YYYY-MM-DD");
 
-        /* 1 Drop ranges that ended *yesterday* */
         for (const [path, slot] of [...activeByPath.entries()]) {
-          const r = allRanges.find((x) => x.path === path)!;
+          const r = mappedRanges.find((x) => x.path === path)!;
           if (r.end.isBefore(cursor, "day")) {
-            // ended before today
             activeByPath.delete(path);
             occupied.delete(slot);
           }
         }
 
-        /* 2 Add ranges that start today */
         const starting = rangesStartingByDate.get(todayStr) ?? [];
         for (const r of starting) {
           const slot = nextFreeSlot();
-          if (slot === undefined) continue; // more than 4 overlaps → hide
+          if (slot === undefined) continue;
           activeByPath.set(r.path, slot);
           occupied.add(slot);
         }
 
-        /* 3 Record the snapshot for this date */
         rangeSlotsByDate[todayStr] = new Map(activeByPath);
-
         cursor.add(1, "day");
-      }
-
-      let slotIndex = 0;
-      for (const [path, range] of weeklyRanges.entries()) {
-        if (slotIndex < MAX_VISIBLE_RANGE_SLOTS) {
-          weeklySlotAssignments.set(path, slotIndex++);
-        }
       }
 
       for (let i = 0; i < 7; i++) {
@@ -459,18 +423,12 @@ export class CalendarView extends ItemView {
         const isForcedOpaque = this.forceOpaqueMonths.has(monthIndex);
         const isForcedFocus = this.forceFocusMonths.has(monthIndex);
 
-        const matchingNotes = pagesData.filter((p) => p.date === dateStr);
-        const matchingBirthdays = birthdayData.filter((b) => {
-          const bdayMoment = moment(b.birthday, "YYYY-MM-DD");
-          return (
-            bdayMoment.month() === day.month() &&
-            bdayMoment.date() === day.date()
-          );
-        });
-        const matchingRanges = pagesData.filter(
+        // --- Perform FAST lookups instead of slow filters ---
+        const matchingNotes = notesByDate.get(dateStr) || [];
+        const matchingBirthdays =
+          birthdaysByDate.get(day.format("MM-DD")) || [];
+        const matchingRanges = allRanges.filter(
           (p) =>
-            p.dateStart &&
-            p.dateEnd &&
             moment(p.dateStart).isSameOrBefore(day, "day") &&
             moment(p.dateEnd).isSameOrAfter(day, "day")
         );
@@ -478,9 +436,9 @@ export class CalendarView extends ItemView {
         const cell = weekRow.createEl("td");
         cell.dataset.date = dateStr;
         cell.dataset.monthIndex = monthIndex.toString();
-        //
+
         const cellClasses = ["calendar-cell"];
-        const isOddMonth = monthIndex % 2 === 1; // Feb, Apr, …
+        const isOddMonth = monthIndex % 2 === 1;
         cellClasses.push(isOddMonth ? "odd-month" : "even-month");
 
         if (isHoliday) {
@@ -510,14 +468,10 @@ export class CalendarView extends ItemView {
         }
 
         const cellContentWrapper = cell.createDiv({ cls: "cell-content" });
-
         const topContentDiv = cellContentWrapper.createDiv({
           cls: "top-content",
         });
         const dotAreaDiv = cellContentWrapper.createDiv({ cls: "dot-area" });
-        const rangeBarAreaDiv = cellContentWrapper.createDiv({
-          cls: "range-bar-area",
-        });
 
         const dayNumContainerSpan = topContentDiv.createSpan({
           cls: `day-number ${isTodayDate ? "today" : ""}`,
@@ -534,47 +488,39 @@ export class CalendarView extends ItemView {
           dayNumTextSpan.addClass("has-daily-note-linkable");
         }
 
-        // Add the pencil indicator AFTER the day number/link
         const pencilIndicatorSpan = dayNumContainerSpan.createSpan({
           text: "✎",
         });
         pencilIndicatorSpan.addClass("pencil-indicator");
-        // if (hasDailyNote) {
-        // 	pencilIndicatorSpan.addClass('always-visible');
-        // }
-        const dailyNoteRegex = /^\d{4}-\d{2}-\d{2}$/;
 
+        const dailyNoteRegex = /^\d{4}-\d{2}-\d{2}$/;
         const dailyNoteDots: HTMLElement[] = [];
         const birthdayDots: HTMLElement[] = [];
         const otherNoteDots: HTMLElement[] = [];
 
         const doc = this.containerEl.doc;
-
         const emittedSymbols = new Set<string>();
 
         matchingNotes.forEach((p) => {
           const isDailyNote = dailyNoteRegex.test(p.name);
-
           const dot = doc.createElement("span");
           dot.addClass("dot", "note-dot");
           if (isDailyNote) dot.addClass("daily-note-indicator");
 
-          // <<< MODIFIED: Decide which glyph this note gets, with priority for frontmatter `symbol`
           let dotSymbol = isDailyNote
             ? DEFAULT_DAILY_NOTE_SYMBOL
             : p.symbol || p.defaultSymbolFromTag || "●";
 
-          const cameFromTag = !!p.defaultSymbolFromTag; // ← true only when
-          //    the symbol was
-          //    assigned by a tag
+          const cameFromTag = !!p.defaultSymbolFromTag;
 
           if (
             this.plugin.settings.collapseDuplicateTagSymbols &&
             !isDailyNote &&
-            cameFromTag && // ← added line
+            cameFromTag &&
             emittedSymbols.has(dotSymbol)
-          )
+          ) {
             return; // skip duplicate
+          }
           emittedSymbols.add(dotSymbol);
 
           dot.textContent = dotSymbol;
@@ -582,7 +528,6 @@ export class CalendarView extends ItemView {
           dot.style.color =
             p.color || p.defaultColorFromTag || DEFAULT_DOT_COLOR;
 
-          /* bucket it */
           (isDailyNote ? dailyNoteDots : otherNoteDots).push(dot);
         });
 
@@ -596,11 +541,10 @@ export class CalendarView extends ItemView {
           dot.style.color =
             matchingBirthdays[0].color ||
             matchingBirthdays[0].defaultColorFromTag ||
-            DEFAULT_BIRTHDAY_COLOR; // Priority: Explicit > Tag > Global
+            DEFAULT_BIRTHDAY_COLOR;
           birthdayDots.push(dot);
         }
 
-        // dailyNoteDots.forEach(dot => dotAreaDiv.appendChild(dot));
         birthdayDots.forEach((dot) => dotAreaDiv.appendChild(dot));
         otherNoteDots.forEach((dot) => dotAreaDiv.appendChild(dot));
 
@@ -608,11 +552,9 @@ export class CalendarView extends ItemView {
           const rangeBarArea = cellContentWrapper.createDiv({
             cls: "range-bar-area",
           });
-
           for (let slot = 0; slot < MAX_VISIBLE_RANGE_SLOTS; slot++) {
             rangeBarArea.createDiv({ cls: `range-slot slot-${slot}` });
           }
-
           matchingRanges.forEach((p) => {
             const dateSlots = rangeSlotsByDate[dateStr];
             const slotIndex = dateSlots?.get(p.path);
@@ -621,20 +563,13 @@ export class CalendarView extends ItemView {
             const slot = rangeBarArea.querySelector(`.slot-${slotIndex}`);
             if (!slot) return;
 
-            // ----‑ create the bar
             const bar = slot.createDiv({ cls: "range-bar", title: p.name });
-
-            // background colour
             const bgVar = p.color || p.defaultColorFromTag || DEFAULT_BAR_COLOR;
             bar.style.backgroundColor = bgVar;
-
-            // text‑variant for borders
             const borderVar = BORDER_COLOR_MAP[bgVar] || DEFAULT_BORDER_COLOR;
-
             const isStart = moment(p.dateStart).isSame(day, "day");
             const isEnd = moment(p.dateEnd).isSame(day, "day");
 
-            // Tag & style per‑bar, not per‑cell
             if (isStart) {
               bar.addClass("range-start");
               bar.style.borderLeft = `2px solid ${borderVar}`;
@@ -646,80 +581,53 @@ export class CalendarView extends ItemView {
           });
         }
 
+        // Expanded Content HTML generation (no change in logic)
         let expandedHTML = `<div class="expanded-content">`;
         expandedHTML += `<button class="close-button" aria-label="Close">×</button>`;
-
         const normalizedNow = now.startOf("day");
         const normalizedDay = day.startOf("day");
-
         const daysFromToday = normalizedDay.diff(normalizedNow, "days");
-
         let dayFromTodayText = `${daysFromToday} days from today`;
-        if (daysFromToday === 0) {
-          dayFromTodayText = "Today";
-        } else if (daysFromToday === 1) {
-          dayFromTodayText = "Tomorrow";
-        } else if (daysFromToday === -1) {
-          dayFromTodayText = "Yesterday";
-        }
-
+        if (daysFromToday === 0) dayFromTodayText = "Today";
+        else if (daysFromToday === 1) dayFromTodayText = "Tomorrow";
+        else if (daysFromToday === -1) dayFromTodayText = "Yesterday";
         const dayLabel = day.format("dddd, MMMM DD, YYYY");
-
-        expandedHTML += `<strong>${dayLabel}</strong><br>`;
-        expandedHTML += `<em>${dayFromTodayText}</em>`;
-        expandedHTML += `<br>`;
-        expandedHTML += `<br>`;
-
+        expandedHTML += `<strong>${dayLabel}</strong><br><em>${dayFromTodayText}</em><br><br>`;
         if (isHoliday) {
-          expandedHTML += `<strong>Holidays:</strong><ul class="expanded-holidays">`;
-          expandedHTML += holidaysInfo
-            .map((h) => `<li>${h.name}</li>`)
-            .join("");
-          expandedHTML += `</ul>`;
+          expandedHTML += `<strong>Holidays:</strong><ul class="expanded-holidays">${holidaysInfo.map((h) => `<li>${h.name}</li>`).join("")}</ul>`;
         }
-
         if (matchingBirthdays.length > 0) {
-          expandedHTML += `<strong>Birthdays:</strong><ul class="expanded-birthdays">`;
-          expandedHTML += matchingBirthdays
+          expandedHTML += `<strong>Birthdays:</strong><ul class="expanded-birthdays">${matchingBirthdays
             .map((b) => {
-              // --- APPLY COLOR LOGIC ---
               const birthdayColor =
                 b.color || b.defaultColorFromTag || DEFAULT_BIRTHDAY_COLOR;
               const linkStyleColor =
-                birthdayColor === "currentColor" ? "inherit" : birthdayColor; // Handle currentColor case if needed
+                birthdayColor === "currentColor" ? "inherit" : birthdayColor;
               return `<li><a class="internal-link birthday-link" data-href="${b.path}" href="${b.path}" style="color: ${linkStyleColor};">${b.name}</a></li>`;
             })
-            .join("");
-          expandedHTML += `</ul>`;
+            .join("")}</ul>`;
         }
-        // Events/Notes List
         if (matchingNotes.length > 0) {
-          expandedHTML += `<strong>Events/Notes:</strong><ul class="expanded-notes">`;
-          expandedHTML += matchingNotes
+          expandedHTML += `<strong>Events/Notes:</strong><ul class="expanded-notes">${matchingNotes
             .map((p) => {
-              // --- Determine Link Color (Priority: Explicit > Tag > Global Default) ---
               const noteColor =
-                p.color || p.defaultColorFromTag || DEFAULT_DOT_COLOR; // Use derived tag color
+                p.color || p.defaultColorFromTag || DEFAULT_DOT_COLOR;
               const linkStyleColor =
                 noteColor === "currentColor" ? "inherit" : noteColor;
               return `<li><a class="internal-link" data-href="${p.path}" href="${p.path}" style="color: ${linkStyleColor};">${p.name}</a></li>`;
             })
-            .join("");
-          expandedHTML += `</ul>`;
+            .join("")}</ul>`;
         }
         if (matchingRanges.length > 0) {
-          expandedHTML += `<strong>Ongoing Events:</strong><ul class="expanded-events">`;
-          expandedHTML += matchingRanges
+          expandedHTML += `<strong>Ongoing Events:</strong><ul class="expanded-events">${matchingRanges
             .map((p) => {
-              // --- APPLY COLOR LOGIC ---
               const barColor =
                 p.color || p.defaultColorFromTag || DEFAULT_BAR_COLOR;
               const linkStyleColor =
-                barColor === "currentColor" ? "inherit" : barColor; // Handle currentColor case if needed
+                barColor === "currentColor" ? "inherit" : barColor;
               return `<li><a class="internal-link" data-href="${p.path}" href="${p.path}" style="color: ${linkStyleColor};">${p.name}</a></li>`;
             })
-            .join("");
-          expandedHTML += `</ul>`;
+            .join("")}</ul>`;
         }
         if (
           !isHoliday &&
@@ -749,7 +657,6 @@ export class CalendarView extends ItemView {
           monthMoment.isSame(now, "month") && monthMoment.isSame(now, "year");
 
         const wrapper = monthCell.createDiv({ cls: "month-cell-wrapper" });
-
         const labelSpan = wrapper.createSpan({
           cls: `month-label-text ${isCurrentDisplayMonth ? "current-month-label" : "other-month-label"}`,
           text: monthName,
