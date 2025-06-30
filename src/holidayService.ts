@@ -25,28 +25,46 @@ interface AggregatedHolidayInfo {
 export class HolidayService {
   app: App;
   plugin: MyCalendarPlugin;
-  private hd: any = null;
+  // Use a cache to hold date-holidays instances keyed by country code
+  private hdCache = new Map<string, any>();
 
   constructor(app: App, plugin: MyCalendarPlugin) {
     this.app = app;
     this.plugin = plugin;
-    this.initialize();
   }
 
-  private async initialize() {
+  private async getDateHolidaysInstance(
+    countryCode?: string
+  ): Promise<any | null> {
+    // Use a specific cache key if countryCode is provided; otherwise use a generic key for listing all countries.
+    const cacheKey = countryCode ? countryCode.toUpperCase() : "__generic__";
+
+    if (this.hdCache.has(cacheKey)) {
+      return this.hdCache.get(cacheKey);
+    }
+
     try {
-      this.hd = require("date-holidays");
+      const Holidays = require("date-holidays");
+      // Pass the country code to the constructor if provided
+      const instance = countryCode ? new Holidays(countryCode) : new Holidays();
+      this.hdCache.set(cacheKey, instance);
+      return instance;
     } catch (err) {
-      console.error("Failed to load 'date-holidays' library.", err);
-      this.hd = null;
+      console.error(
+        `Failed to load/init 'date-holidays' library for ${cacheKey}.`,
+        err
+      );
+      new Notice("Failed to load holiday library. Country features disabled.");
+      return null;
     }
   }
 
   async getAvailableCountries(): Promise<{ code: string; name: string }[]> {
-    if (!this.hd) return [];
+    // Get the generic instance (no country code) for listing available countries.
+    const hd = await this.getDateHolidaysInstance();
+    if (!hd) return [];
     try {
-      const holidaysInstance = new this.hd();
-      const countries = holidaysInstance.getCountries();
+      const countries = hd.getCountries();
       return Object.entries(countries).map(([code, name]) => ({
         code,
         name: name as string,
@@ -80,10 +98,12 @@ export class HolidayService {
     countryCode: string,
     year: number
   ): Promise<Holiday[]> {
-    if (!this.hd) return [];
+    // Get the instance specifically initialized for this country
+    const hd = await this.getDateHolidaysInstance(countryCode);
+    if (!hd) return [];
+
     try {
-      const holidaysInstance = new this.hd(countryCode);
-      const rawHolidays = holidaysInstance.getHolidays(year);
+      const rawHolidays = hd.getHolidays(year);
       if (!rawHolidays || !Array.isArray(rawHolidays)) return [];
       return rawHolidays
         .map((h: any): Holiday | null => {
@@ -111,10 +131,8 @@ export class HolidayService {
       if (!(await this.app.vault.adapter.exists(normalizePath(folder)))) {
         await this.app.vault.createFolder(folder);
       }
-
-      let initialFrontMatter: HolidayFileFrontMatter;
-      let fileContent = "";
-
+      let initialFrontMatter: HolidayFileFrontMatter,
+        fileContent = "";
       if (source.type === "country") {
         initialFrontMatter = {
           holidaySourceType: "country",
@@ -123,18 +141,16 @@ export class HolidayService {
           holidays: [],
           lastFetched: undefined,
         };
-        fileContent = `# ${year} Holidays for ${source.countryCode.toUpperCase()}\n\nThis file is automatically managed. Fetched data is stored in the frontmatter.`;
+        fileContent = `# ${year} Holidays for ${source.countryCode.toUpperCase()}`;
       } else {
-        // Custom type logic
         initialFrontMatter = {
           holidaySourceType: "custom",
           customName: source.name,
           year: year,
           holidays: [],
         };
-        fileContent = `# ${year} Custom Holidays: ${source.name}\n\nAdd your custom holidays to the 'holidays' list in the frontmatter below.\n\nExample:\n\`\`\`yaml\nholidays:\n  - date: ${year}-10-31\n    name: My Special Day\n\`\`\`\n`;
+        fileContent = `# ${year} Custom Holidays: ${source.name}\n\nAdd holidays in frontmatter.`;
       }
-
       const fmString = `---\n${stringifyYaml(initialFrontMatter)}---`;
       const fullContent = `${fmString}\n\n${fileContent}`;
       file = await this.app.vault.create(filePath, fullContent);
@@ -163,9 +179,6 @@ export class HolidayService {
         fm.holidays = fetchedHolidays;
         fm.lastFetched = new Date().toISOString();
       });
-      console.log(
-        `Updated holiday file: ${file.path} with ${fetchedHolidays.length} holidays.`
-      );
       return true;
     } catch (err) {
       console.error(`Error updating frontmatter for ${file.path}:`, err);
@@ -179,18 +192,15 @@ export class HolidayService {
       (s) => s.type === "country"
     ) as CountryHolidaySource[];
     if (countrySources.length === 0) {
-      new Notice("No country holiday sources configured.");
+      new Notice("No country sources configured.");
       return;
     }
-
-    new Notice(
-      `Starting update for ${countrySources.length} country source(s)...`
-    );
+    new Notice(`Starting update for ${countrySources.length} sources...`);
     for (const source of countrySources) {
       const success = await this.updateCountryHolidayFile(year, source);
       if (success) updatedCount++;
     }
-    new Notice(`Holiday update complete. Processed ${updatedCount} source(s).`);
+    new Notice(`Update complete. Processed ${updatedCount} sources.`);
     this.plugin.refreshCalendarView();
   }
 
@@ -210,21 +220,22 @@ export class HolidayService {
           Array.isArray(cache.frontmatter.holidays) &&
           cache.frontmatter.year === year
         ) {
-          const holidaysFromFile = cache.frontmatter.holidays as Holiday[];
-          holidaysFromFile.forEach((holiday: Holiday) => {
-            const dateStr = holiday.date;
-            if (!aggregatedHolidays.has(dateStr))
-              aggregatedHolidays.set(dateStr, []);
-            if (
-              !aggregatedHolidays
-                .get(dateStr)
-                ?.some((h) => h.name === holiday.name)
-            ) {
-              aggregatedHolidays
-                .get(dateStr)
-                ?.push({ name: holiday.name, color: sourceColor });
+          (cache.frontmatter.holidays as Holiday[]).forEach(
+            (holiday: Holiday) => {
+              const dateStr = holiday.date;
+              if (!aggregatedHolidays.has(dateStr))
+                aggregatedHolidays.set(dateStr, []);
+              if (
+                !aggregatedHolidays
+                  .get(dateStr)
+                  ?.some((h) => h.name === holiday.name)
+              ) {
+                aggregatedHolidays
+                  .get(dateStr)
+                  ?.push({ name: holiday.name, color: sourceColor });
+              }
             }
-          });
+          );
         }
       } catch (err) {
         console.error(`Error reading frontmatter from ${filePath}:`, err);
