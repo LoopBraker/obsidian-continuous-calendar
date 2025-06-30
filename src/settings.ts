@@ -28,9 +28,7 @@ export class CalendarSettingTab extends PluginSettingTab {
 						if (!isNaN(year)) {
 							this.plugin.settings.year = year;
 							await this.plugin.saveSettings();
-							// This won't work yet, but we're adding it in anticipation
-							// of the next step where we implement the refresh logic.
-							// For now, it will require a manual reopen of the view.
+							this.plugin.refreshCalendarView(); // This now works!
 						}
 					}));
 	}

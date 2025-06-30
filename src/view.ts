@@ -5,9 +5,9 @@ import MyCalendarPlugin from './main'; // Import the plugin class
 export const CALENDAR_VIEW_TYPE = 'yearly-calendar-view';
 
 export class CalendarView extends ItemView {
-    plugin: MyCalendarPlugin; // Store a reference to the plugin
+    plugin: MyCalendarPlugin;
 
-    constructor(leaf: WorkspaceLeaf, plugin: MyCalendarPlugin) { // Accept plugin instance
+    constructor(leaf: WorkspaceLeaf, plugin: MyCalendarPlugin) {
         super(leaf);
         this.plugin = plugin;
     }
@@ -17,7 +17,6 @@ export class CalendarView extends ItemView {
     }
 
     getDisplayText(): string {
-        // Use the year from settings
         return `Year Calendar - ${this.plugin.settings.year}`; 
     }
 
@@ -35,10 +34,21 @@ export class CalendarView extends ItemView {
     async onClose() {
         // No cleanup needed yet
     }
+
+    // New method to handle refreshing the view
+    async refresh() {
+        // Update the view's title
+        this.leaf.updateHeader(); 
+        
+        // Re-render the calendar content
+        const container = this.containerEl.children[1];
+        container.empty();
+        this.renderCalendar(container);
+    }
     
     renderCalendar(container: Element) {
         const year = this.plugin.settings.year;
-        const today = moment().format("YYYY-MM-DD"); // Get today's date once for comparison
+        const today = moment().format("YYYY-MM-DD");
 
         const table = container.createEl('table', { cls: 'my-calendar-table' });
         const thead = table.createEl('thead');
@@ -63,7 +73,7 @@ export class CalendarView extends ItemView {
                 const cell = weekRow.createEl('td');
                 
                 const cellClasses = ['calendar-cell'];
-                const isOddMonth = dayMoment.month() % 2 === 1; // 0-indexed month
+                const isOddMonth = dayMoment.month() % 2 === 1;
                 
                 cellClasses.push(isOddMonth ? 'odd-month' : 'even-month');
 

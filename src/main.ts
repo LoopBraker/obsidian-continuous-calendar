@@ -10,6 +10,7 @@ const DEFAULT_SETTINGS: MyCalendarPluginSettings = {
 
 export default class MyCalendarPlugin extends Plugin {
     settings: MyCalendarPluginSettings;
+    calendarView: CalendarView | null = null;
     
     async onload() {
         console.log('Loading Continuous Calendar Plugin');
@@ -19,7 +20,10 @@ export default class MyCalendarPlugin extends Plugin {
         // Register the View
         this.registerView(
             CALENDAR_VIEW_TYPE,
-            (leaf) => new CalendarView(leaf, this) // Pass plugin instance so the view can access settings
+            (leaf) => {
+                 this.calendarView = new CalendarView(leaf, this);
+                 return this.calendarView;
+            }
         );
 
         // Add Ribbon Icon to Open View
@@ -33,6 +37,7 @@ export default class MyCalendarPlugin extends Plugin {
 
     onunload() {
         console.log('Unloading Continuous Calendar Plugin');
+        this.calendarView = null; // Clear reference
     }
 
     async loadSettings() {
@@ -58,7 +63,15 @@ export default class MyCalendarPlugin extends Plugin {
 
         // Reveal the view
         this.app.workspace.revealLeaf(
-            this.app.workspace.getLeavesOfType(CALENDAR_VIEW_TYPE)[0]
+            this.app.workspace.getLeavesOfType(CAL-VIEW_TYPE)[0]
         );
+    }
+
+    // Helper function to refresh the calendar view if it's open
+    refreshCalendarView() {
+        if (this.calendarView) {
+            this.calendarView.refresh();
+             console.log("Calendar view refreshed.");
+        }
     }
 }
