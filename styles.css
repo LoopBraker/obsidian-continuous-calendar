@@ -76,18 +76,23 @@
   gap: 1px;
   padding: 0 1px;
 }
+.range-slot {
+  height: 4px;
+  width: 100%;
+}
 .range-bar {
-  height: 6px;
+  height: 100%;
   width: 100%;
   display: block;
+  border-radius: 0;
 }
 .range-bar.range-start {
-  border-top-left-radius: 3px;
-  border-bottom-left-radius: 3px;
+  border-top-left-radius: 2px;
+  border-bottom-left-radius: 2px;
 }
 .range-bar.range-end {
-  border-top-right-radius: 3px;
-  border-bottom-right-radius: 3px;
+  border-top-right-radius: 2px;
+  border-bottom-right-radius: 2px;
 }
 .day-number {
   cursor: pointer;
@@ -131,7 +136,6 @@
     transparent 80%
   );
 }
-
 .calendar-cell.expanded {
   border: 2px solid var(--interactive-accent) !important;
 }
@@ -157,7 +161,7 @@
   position: absolute;
   top: -5px;
   right: -5px;
-  background: none;
+  background: 0 0;
   border: none;
   font-size: 1.2em;
   cursor: pointer;
@@ -165,10 +169,4 @@
 }
 .close-button:hover {
   color: var(--text-normal);
-}
-
-/* --- New Styles for V20 --- */
-.range-slot {
-  height: 4px;
-  width: 100%;
 }
