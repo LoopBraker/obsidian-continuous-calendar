@@ -5,7 +5,7 @@
 >Why a continuous calendar?
 >Monthly views chop weeks in half and hide adjacent days on separate pages. A **continuous calendar** lines the whole year up—week by week—so you can spot gaps, overlaps, and long-range deadlines at a glance. Think of it as the Kanban board for time itself.
 
-![screenshot-full](https://github.com/LoopBraker/continuous-calendar/blob/ae614dac31ef33f5eaed361a652bb06c259bbc64/images/Screenshot-full.png)
+![screenshot-full](https://github.com/LoopBraker/obsidian-continuous-calendar/blob/7cbb9e771ca686211038e7fe1624c42dcc050beb/images/Screenshot-full.png)
 
 ## Main features
 
@@ -20,7 +20,7 @@
 | **Click-to-expand** | Click any day to pop open a list of events/birthdays/notes with live links. | No more hunting dots with tooltips. |
 | **Focus & opacity toggles** | Fade or highlight whole months to declutter past/future noise. | Great for quarter planning. |
 
-![some features](https://github.com/LoopBraker/continuous-calendar/blob/ae614dac31ef33f5eaed361a652bb06c259bbc64/images/some-features.png)
+![some features](https://github.com/LoopBraker/obsidian-continuous-calendar/blob/7cbb9e771ca686211038e7fe1624c42dcc050beb/images/some-features.png)
 
 ## Quick start
 
