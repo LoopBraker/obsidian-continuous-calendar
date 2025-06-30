@@ -1,3 +1,10 @@
 {
-  "year": 2025
+  "year": 2025,
+  "defaultDotColor": "currentColor",
+  "defaultBarColor": "var(--interactive-accent)",
+  "shouldConfirmBeforeCreate": true,
+  "birthdayFolder": "",
+  "defaultBirthdaySymbol": "🎂",
+  "defaultBirthdayColor": "var(--color-red-tint)",
+  "holidayCountry": "CO"
 }

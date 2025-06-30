@@ -1,27 +1,33 @@
 // src/main.ts
-import { Plugin, WorkspaceLeaf } from 'obsidian';
+import { Plugin, WorkspaceLeaf, Notice } from 'obsidian';
 import { CalendarView, CALENDAR_VIEW_TYPE } from './view';
 import { CalendarSettingTab } from './settings';
 import { MyCalendarPluginSettings } from './types';
+import { HolidayService } from './holidayService'; 
 
 const DEFAULT_SETTINGS: MyCalendarPluginSettings = {
     year: new Date().getFullYear(),
     defaultDotColor: 'currentColor',
     defaultBarColor: 'var(--interactive-accent)',
     shouldConfirmBeforeCreate: true,
-    birthdayFolder: '', // Default to scanning all notes
+    birthdayFolder: '',
     defaultBirthdaySymbol: '🎂',
     defaultBirthdayColor: 'var(--color-red-tint)',
+    holidayCountry: '', // Default to none
 };
 
 export default class MyCalendarPlugin extends Plugin {
     settings: MyCalendarPluginSettings;
     calendarView: CalendarView | null = null;
+    holidayService: HolidayService;
     
     async onload() {
         console.log('Loading Continuous Calendar Plugin');
 
         await this.loadSettings();
+        
+        // Instantiate the HolidayService
+        this.holidayService = new HolidayService();
 
         this.registerView(
             CALENDAR_VIEW_TYPE,

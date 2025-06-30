@@ -8,6 +8,7 @@ import {
 
 import MyCalendarPlugin from './main';
 import { createConfirmationDialog } from './modal';
+import { Holiday } from './types';
 
 export const CALENDAR_VIEW_TYPE = 'yearly-calendar-view';
 
@@ -62,6 +63,18 @@ export class CalendarView extends ItemView {
         const allFiles = this.app.vault.getMarkdownFiles();
         let pagesData: any[] = [];
         let birthdayData: any[] = [];
+        // Fetch Holidays
+        const currentYearHolidays = await this.plugin.holidayService.fetchHolidaysForCountry(
+            this.plugin.settings.holidayCountry,
+            year
+        );
+        const holidaysByDate = new Map<string, Holiday[]>();
+        currentYearHolidays.forEach(h => {
+            if (!holidaysByDate.has(h.date)) {
+                holidaysByDate.set(h.date, []);
+            }
+            holidaysByDate.get(h.date)?.push(h);
+        });
 
         const birthdayFolder = this.plugin.settings.birthdayFolder.toLowerCase();
         const hasBirthdayFolderSetting = this.plugin.settings.birthdayFolder.trim() !== '';
@@ -70,52 +83,30 @@ export class CalendarView extends ItemView {
             const cache = this.app.metadataCache.getFileCache(file);
             const fm = cache?.frontmatter;
             if (!fm) continue;
-
-            // Handle regular events
-            let hasDate = false;
-            let validDate: string | null = null;
-            let validDateStart: string | null = null;
-            let validDateEnd: string | null = null;
+            let hasDate = false, validDate: string|null = null, validDateStart: string|null = null, validDateEnd: string|null = null;
             if (fm.date) {
-                const mDate = moment(fm.date.toString(), "YYYY-MM-DD", true);
-                if (mDate.isValid()) {
-                    validDate = mDate.format("YYYY-MM-DD");
-                    hasDate = true;
-                }
+                const mDate = moment(fm.date.toString(), "YYYY-MM-DD", true); if (mDate.isValid()) { validDate = mDate.format("YYYY-MM-DD"); hasDate = true; }
             }
             if (fm.dateStart && fm.dateEnd) {
-                const mStart = moment(fm.dateStart.toString(), "YYYY-MM-DD", true);
-                const mEnd = moment(fm.dateEnd.toString(), "YYYY-MM-DD", true);
-                if (mStart.isValid() && mEnd.isValid()) {
-                    validDateStart = mStart.format("YYYY-MM-DD");
-                    validDateEnd = mEnd.format("YYYY-MM-DD");
-                    hasDate = true;
-                }
+                const mStart = moment(fm.dateStart.toString(), "YYYY-MM-DD", true); const mEnd = moment(fm.dateEnd.toString(), "YYYY-MM-DD", true);
+                if (mStart.isValid() && mEnd.isValid()) { validDateStart = mStart.format("YYYY-MM-DD"); validDateEnd = mEnd.format("YYYY-MM-DD"); hasDate = true; }
             }
             if (hasDate) {
                 pagesData.push({ date: validDate, dateStart: validDateStart, dateEnd: validDateEnd, name: file.basename, color: fm.color });
             }
-
-            // Handle birthdays
             if (fm.birthday && (!hasBirthdayFolderSetting || file.path.toLowerCase().startsWith(birthdayFolder))) {
 				const mBday = moment(fm.birthday.toString(), "YYYY-MM-DD", true);
-				if (mBday.isValid()) {
-					birthdayData.push({
-						birthday: mBday.format("YYYY-MM-DD"),
-						name: file.basename,
-                        color: fm.color // A birthday note can also have a custom color
-					});
-				}
+				if (mBday.isValid()) { birthdayData.push({ birthday: mBday.format("YYYY-MM-DD"), name: file.basename, color: fm.color }); }
 			}
         }
         // --- End Data Fetching ---
 
         const table = this.calendarContentEl.createEl('table', { cls: 'my-calendar-table' });
+        // ... (table head rendering is the same) ...
         const thead = table.createEl('thead');
         const headerRow = thead.createEl('tr');
         headerRow.createEl('th', { text: 'W' });
         "Mon Tue Wed Thu Fri Sat Sun".split(" ").forEach(day => headerRow.createEl('th', { text: day }));
-
         const tbody = table.createEl('tbody');
         const startDate = moment(`${year}-01-01`).startOf('isoWeek');
         const endDate = moment(`${year}-12-31`).endOf('isoWeek');
@@ -132,50 +123,45 @@ export class CalendarView extends ItemView {
                 const cell = weekRow.createEl('td');
                 cell.dataset.date = dateStr;
                 
+                const holidaysOnDay = holidaysByDate.get(dateStr) || [];
+                const isHoliday = holidaysOnDay.length > 0;
+
                 const cellClasses = ['calendar-cell'];
                 const isOddMonth = dayMoment.month() % 2 === 1;
                 cellClasses.push(isOddMonth ? 'odd-month' : 'even-month');
                 if (dayMoment.year() !== year) cellClasses.push('other-year');
                 if (dateStr === today) cellClasses.push('today');
+                if (isHoliday) cellClasses.push('holiday');
                 cell.addClass(...cellClasses);
+                if (isHoliday) {
+                    cell.title = holidaysOnDay.map(h => h.name).join('\n');
+                }
 
+                // ... (cell content rendering is the same as before) ...
                 const cellContentWrapper = cell.createDiv({ cls: 'cell-content' });
                 const topContentDiv = cellContentWrapper.createDiv({ cls: 'top-content' });
                 const dotAreaDiv = cellContentWrapper.createDiv({ cls: 'dot-area' });
                 const rangeBarAreaDiv = cellContentWrapper.createDiv({ cls: 'range-bar-area' });
-
                 const dayNumSpan = topContentDiv.createSpan({ cls: 'day-number' });
 
                 if (dayMoment.year() === year) {
                     dayNumSpan.setText(dayMoment.date().toString());
-                    const dailyNoteFile = getDailyNote(dayMoment, allDNs);
-                    if (dailyNoteFile) {
-                        dayNumSpan.addClass('has-daily-note');
-                    }
+                    if (getDailyNote(dayMoment, allDNs)) { dayNumSpan.addClass('has-daily-note'); }
                 }
 
-                // Render single-day event dots
                 const matchingNotes = pagesData.filter(p => p.date === dateStr);
                 matchingNotes.forEach(note => {
                     const dot = dotAreaDiv.createSpan({ cls: 'dot note-dot', text: '●' });
                     dot.title = note.name;
                     dot.style.color = note.color || this.plugin.settings.defaultDotColor;
                 });
-
-                // Render birthday dots
-                const matchingBirthdays = birthdayData.filter(b => {
-                    const bdayMoment = moment(b.birthday, "YYYY-MM-DD");
-                    return bdayMoment.month() === dayMoment.month() && bdayMoment.date() === dayMoment.date();
-                });
+                const matchingBirthdays = birthdayData.filter(b => moment(b.birthday).format('MM-DD') === dayMoment.format('MM-DD'));
                 if (matchingBirthdays.length > 0) {
                     const dot = dotAreaDiv.createSpan({ cls: 'dot birthday-dot' });
                     dot.textContent = this.plugin.settings.defaultBirthdaySymbol;
                     dot.title = matchingBirthdays.map(b => b.name).join('\n');
-                    // Use the color from the first birthday note, or the default birthday color
                     dot.style.color = matchingBirthdays[0].color || this.plugin.settings.defaultBirthdayColor;
                 }
-
-                // Render range bars
                 const matchingRanges = pagesData.filter(p => p.dateStart && p.dateEnd && dayMoment.isBetween(p.dateStart, p.dateEnd, 'day', '[]'));
                 matchingRanges.forEach(p => {
                     const bar = rangeBarAreaDiv.createDiv({ cls: 'range-bar', title: p.name });
