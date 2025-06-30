@@ -162,16 +162,12 @@ export class CalendarView extends ItemView {
     "Mon Tue Wed Thu Fri Sat Sun"
       .split(" ")
       .forEach((day) => headerRow.createEl("th", { text: day }));
-    headerRow.createEl("th", { text: "M" }); // Month column header
-
+    headerRow.createEl("th", { text: "M" });
     const tbody = table.createEl("tbody");
     const startDate = moment(`${year}-01-01`).startOf("isoWeek");
     const endDate = moment(`${year}-12-31`).endOf("isoWeek");
-
     let currentWeek = startDate.clone();
-    const now = moment();
     let lastDisplayedMonth = -1;
-
     while (currentWeek.isBefore(endDate)) {
       const weekRow = tbody.createEl("tr");
       weekRow.createEl("td", {
@@ -218,8 +214,8 @@ export class CalendarView extends ItemView {
             moment(b.birthday).format("MM-DD") === dayMoment.format("MM-DD")
         );
         const isCurrentMonth =
-          dayMoment.isSame(now, "month") && dayMoment.year() === now.year();
-
+          dayMoment.isSame(moment(), "month") &&
+          dayMoment.year() === moment().year();
         const cellClasses = ["calendar-cell"];
         cellClasses.push(
           dayMoment.month() % 2 === 1 ? "odd-month" : "even-month"
@@ -239,14 +235,17 @@ export class CalendarView extends ItemView {
         }
         cell.addClass(...cellClasses);
 
+        // --- Refactored Cell Structure ---
         const cellContentWrapper = cell.createDiv({ cls: "cell-content" });
         const topContentDiv = cellContentWrapper.createDiv({
           cls: "top-content",
         });
         const dotAreaDiv = cellContentWrapper.createDiv({ cls: "dot-area" });
+        // Range bar area is now part of the flex flow
         const rangeBarAreaDiv = cellContentWrapper.createDiv({
           cls: "range-bar-area",
         });
+
         const dayNumSpan = topContentDiv.createSpan({ cls: "day-number" });
         if (dayMoment.year() === year) {
           dayNumSpan.setText(dayMoment.date().toString());
@@ -311,7 +310,8 @@ export class CalendarView extends ItemView {
             }
           }
         });
-        let expandedHTML = `<div class="expanded-content"><button class="close-button">×</button><strong>${dayMoment.format("dddd, MMMM Do")}</strong>`; /* ... */
+
+        let expandedHTML = `<div class="expanded-content"><button class="close-button">×</button><strong>${dayMoment.format("dddd, MMMM Do")}</strong>`;
         if (isHoliday) {
           expandedHTML += `<ul>${holidaysOnDay.map((h) => `<li>${h.name}</li>`).join("")}</ul>`;
         }
@@ -335,9 +335,8 @@ export class CalendarView extends ItemView {
         expandedHTML += `</div>`;
         cell.dataset.cellContent = expandedHTML;
       }
-
       const monthCell = weekRow.createEl("td", { cls: "month-column" });
-      const monthForThisRow = currentWeek.clone().add(3, "days").month(); // Get month from middle of week
+      const monthForThisRow = currentWeek.clone().add(3, "days").month();
       if (
         monthForThisRow !== lastDisplayedMonth &&
         currentWeek.year() === year
@@ -346,13 +345,10 @@ export class CalendarView extends ItemView {
         monthCell.setText(monthName);
         lastDisplayedMonth = monthForThisRow;
       }
-
       currentWeek.add(7, "days");
     }
-
-    this.applyOutlineStyles(tbody, year, now.month());
+    this.applyOutlineStyles(tbody, year, moment().month());
   }
-
   applyOutlineStyles(
     tbody: HTMLTableSectionElement,
     targetYear: number,
@@ -378,7 +374,6 @@ export class CalendarView extends ItemView {
           cellsMap.set(cellNode.dataset.date, cellNode);
         }
       });
-
     tbody
       .querySelectorAll(
         `td.calendar-cell[data-month-index="${currentMonthIndex}"]`
@@ -388,7 +383,6 @@ export class CalendarView extends ItemView {
         const cell = cellNode;
         const cellMoment = moment(cell.dataset.date);
         if (cellMoment.year() !== targetYear) return;
-
         const isNeighborInSameMonth = (
           neighborCell: HTMLElement | undefined
         ): boolean => {
@@ -396,7 +390,6 @@ export class CalendarView extends ItemView {
             ? neighborCell.dataset.monthIndex === currentMonthIndex.toString()
             : false;
         };
-
         if (
           !isNeighborInSameMonth(
             cellsMap.get(
@@ -429,7 +422,6 @@ export class CalendarView extends ItemView {
           cell.addClass("border-outline-right");
       });
   }
-
   handleClick(event: MouseEvent) {
     const target = event.target as HTMLElement;
     const dayNumberEl = target.closest(".day-number");

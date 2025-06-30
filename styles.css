@@ -43,6 +43,7 @@
   flex-direction: column;
   height: 100%;
   min-height: 50px;
+  justify-content: space-between;
 }
 .top-content {
   flex-shrink: 0;
@@ -53,6 +54,7 @@
   text-align: center;
   margin: 2px 0;
   min-height: 1em;
+  flex-grow: 1;
 }
 .dot {
   display: inline-block;
@@ -66,15 +68,13 @@
   font-size: 1em;
 }
 .range-bar-area {
-  position: absolute;
-  bottom: 2px;
-  left: 0;
-  right: 0;
+  flex-shrink: 0;
   height: auto;
   display: flex;
   flex-direction: column;
   gap: 1px;
   padding: 0 1px;
+  margin-bottom: 2px;
 }
 .range-slot {
   height: 4px;
@@ -170,8 +170,18 @@
 .close-button:hover {
   color: var(--text-normal);
 }
-
-/* --- New Styles for V23 --- */
+.border-outline-top {
+  border-top: 2px solid var(--text-faint) !important;
+}
+.border-outline-bottom {
+  border-bottom: 2px solid var(--text-faint) !important;
+}
+.border-outline-left {
+  border-left: 2px solid var(--text-faint) !important;
+}
+.border-outline-right {
+  border-right: 2px solid var(--text-faint) !important;
+}
 .month-column {
   text-align: center;
   border-left: 1px dotted var(--background-modifier-border);
@@ -188,16 +198,4 @@
 .current-month {
   opacity: 1;
   color: var(--text-normal);
-}
-.border-outline-top {
-  border-top: 2px solid var(--text-faint) !important;
-}
-.border-outline-bottom {
-  border-bottom: 2px solid var(--text-faint) !important;
-}
-.border-outline-left {
-  border-left: 2px solid var(--text-faint) !important;
-}
-.border-outline-right {
-  border-right: 2px solid var(--text-faint) !important;
 }
