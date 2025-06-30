@@ -1,6 +1,6 @@
 // src/view.ts
 import { ItemView, WorkspaceLeaf, moment } from 'obsidian';
-import MyCalendarPlugin from './main'; // Import the plugin class
+import MyCalendarPlugin from './main'; 
 
 export const CALENDAR_VIEW_TYPE = 'yearly-calendar-view';
 
@@ -28,27 +28,45 @@ export class CalendarView extends ItemView {
         const container = this.containerEl.children[1];
         container.empty();
         
-        this.renderCalendar(container);
+        await this.renderCalendar(container);
     }
 
     async onClose() {
         // No cleanup needed yet
     }
 
-    // New method to handle refreshing the view
     async refresh() {
-        // Update the view's title
         this.leaf.updateHeader(); 
         
-        // Re-render the calendar content
         const container = this.containerEl.children[1];
         container.empty();
-        this.renderCalendar(container);
+        await this.renderCalendar(container);
     }
     
-    renderCalendar(container: Element) {
+    async renderCalendar(container: Element) {
         const year = this.plugin.settings.year;
         const today = moment().format("YYYY-MM-DD");
+
+        // --- Data Fetching ---
+        const allFiles = this.app.vault.getMarkdownFiles();
+        let pagesData: any[] = [];
+
+        for (const file of allFiles) {
+            const cache = this.app.metadataCache.getFileCache(file);
+            const fm = cache?.frontmatter;
+            if (!fm) continue;
+
+            if (fm.date) {
+                const mDate = moment(fm.date.toString(), "YYYY-MM-DD", true);
+                if (mDate.isValid()) {
+                    pagesData.push({
+                        date: mDate.format("YYYY-MM-DD"),
+                        name: file.basename,
+                    });
+                }
+            }
+        }
+        // --- End Data Fetching ---
 
         const table = container.createEl('table', { cls: 'my-calendar-table' });
         const thead = table.createEl('thead');
@@ -70,6 +88,7 @@ export class CalendarView extends ItemView {
             
             for (let i = 0; i < 7; i++) {
                 const dayMoment = currentDay;
+                const dateStr = dayMoment.format("YYYY-MM-DD");
                 const cell = weekRow.createEl('td');
                 
                 const cellClasses = ['calendar-cell'];
@@ -81,15 +100,28 @@ export class CalendarView extends ItemView {
                     cellClasses.push('other-year');
                 }
 
-                if (dayMoment.format("YYYY-MM-DD") === today) {
+                if (dateStr === today) {
                     cellClasses.push('today');
                 }
                 
                 cell.addClass(...cellClasses);
 
+                // --- New Cell Structure ---
+                const cellContentWrapper = cell.createDiv({ cls: 'cell-content' });
+                const topContentDiv = cellContentWrapper.createDiv({ cls: 'top-content' });
+                const dotAreaDiv = cellContentWrapper.createDiv({ cls: 'dot-area' });
+
                 if (dayMoment.year() === year) {
-                    cell.setText(dayMoment.date().toString());
+                    topContentDiv.setText(dayMoment.date().toString());
                 }
+
+                // Check for matching notes for this day
+                const matchingNotes = pagesData.filter(p => p.date === dateStr);
+                matchingNotes.forEach(note => {
+                    const dot = dotAreaDiv.createSpan({ cls: 'dot', text: '●' });
+                    dot.title = note.name;
+                });
+                // --- End New Cell Structure ---
 
                 currentDay.add(1, 'day');
             }
