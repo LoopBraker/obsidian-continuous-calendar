@@ -132,7 +132,6 @@
   );
 }
 
-/* --- New Styles for V16 --- */
 .calendar-cell.expanded {
   border: 2px solid var(--interactive-accent) !important;
 }
@@ -166,4 +165,10 @@
 }
 .close-button:hover {
   color: var(--text-normal);
+}
+
+/* --- New Styles for V20 --- */
+.range-slot {
+  height: 4px;
+  width: 100%;
 }
