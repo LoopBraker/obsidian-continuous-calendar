@@ -1,9 +1,43 @@
 // src/settings.ts
-import { App, PluginSettingTab, Setting, Notice } from "obsidian";
+import {
+  App,
+  PluginSettingTab,
+  Setting,
+  Notice,
+  AbstractInputSuggest,
+  prepareFuzzySearch,
+  fuzzySearch,
+} from "obsidian";
 import MyCalendarPlugin from "./main";
 import { HolidaySource, CountryHolidaySource } from "./types";
 
-const AVAILABLE_COLOR_OPTIONS: Record<string, string> = {
+// Helper class for suggesting tags in an input field
+class TagSuggest extends AbstractInputSuggest<string> {
+  private allTags: string[];
+  constructor(
+    app: App,
+    private inputEl: HTMLInputElement
+  ) {
+    super(app, inputEl);
+    this.allTags = Object.keys(app.metadataCache.getTags() || {});
+  }
+  getSuggestions(query: string): string[] {
+    const lowerCaseQuery = query.toLowerCase();
+    return this.allTags.filter((tag) =>
+      tag.toLowerCase().includes(lowerCaseQuery)
+    );
+  }
+  renderSuggestion(tag: string, el: HTMLElement): void {
+    el.setText(tag);
+  }
+  selectSuggestion(tag: string): void {
+    this.inputEl.value = tag;
+    this.inputEl.dispatchEvent(new Event("input"));
+    this.close();
+  }
+}
+
+const ALL_COLOR_OPTIONS: Record<string, string> = {
   "Default (Red Tint)": "var(--color-red-tint)",
   "Orange Tint": "var(--color-orange-tint)",
   "Yellow Tint": "var(--color-yellow-tint)",
@@ -11,68 +45,41 @@ const AVAILABLE_COLOR_OPTIONS: Record<string, string> = {
   "Cyan Tint": "var(--color-cyan-tint)",
   "Blue Tint": "var(--color-blue-tint)",
   "Purple Tint": "var(--color-purple-tint)",
+  "Theme Default": "currentColor",
+  "Accent Color": "var(--interactive-accent)",
 };
 
 export class CalendarSettingTab extends PluginSettingTab {
   plugin: MyCalendarPlugin;
   private availableCountries: { code: string; name: string }[] = [];
-
   constructor(app: App, plugin: MyCalendarPlugin) {
     super(app, plugin);
     this.plugin = plugin;
   }
-
   async display(): Promise<void> {
     const { containerEl } = this;
     containerEl.empty();
     containerEl.createEl("h2", { text: "Continuous Calendar Settings" });
-    new Setting(containerEl).setName("Year to Display").addText((t) =>
-      t
-        .setPlaceholder("e.g., 2024")
-        .setValue(this.plugin.settings.year.toString())
-        .onChange(async (v) => {
-          const y = parseInt(v);
-          if (!isNaN(y)) {
-            this.plugin.settings.year = y;
-            await this.plugin.saveSettings();
-            this.plugin.refreshCalendarView();
-          }
-        })
-    );
-    containerEl.createEl("h3", { text: "Holidays" });
-    new Setting(containerEl).setName("Holiday Definition Folder").addText((t) =>
-      t
-        .setPlaceholder("e.g. Calendar/Holidays")
-        .setValue(this.plugin.settings.holidayStorageFolder)
-        .onChange(async (v) => {
-          this.plugin.settings.holidayStorageFolder = v.trim();
+    // --- Year Setting ---
+    new Setting(containerEl).setName("Year").addText((t) =>
+      t.setValue(this.plugin.settings.year.toString()).onChange(async (v) => {
+        const y = parseInt(v);
+        if (!isNaN(y)) {
+          this.plugin.settings.year = y;
           await this.plugin.saveSettings();
           this.plugin.refreshCalendarView();
-        })
+        }
+      })
     );
-    containerEl.createEl("h4", { text: "Active Holiday Sources" });
-    const sourcesListEl = containerEl.createDiv();
-    if (this.plugin.settings.holidaySources.length === 0) {
-      sourcesListEl.createEl("p", { text: "No holiday sources configured." });
-    } else {
-      this.renderHolidaySources(sourcesListEl);
-    }
-    containerEl.createEl("h4", { text: "Add New Holiday Source" });
-    if (this.availableCountries.length === 0) {
-      await this.fetchAvailableCountries();
-    }
-    this.renderAddHolidaySourceControls(containerEl);
 
+    // --- Event Display ---
     containerEl.createEl("h3", { text: "Event Display" });
-    const o = {
-      "Theme Default": "currentColor",
-      ...AVAILABLE_COLOR_OPTIONS,
-      "Accent Color": "var(--interactive-accent)",
-    };
     new Setting(containerEl)
       .setName("Default Event Dot Color")
       .addDropdown((d) => {
-        Object.keys(o).forEach((n) => d.addOption(o[n], n));
+        Object.keys(ALL_COLOR_OPTIONS).forEach((n) =>
+          d.addOption(ALL_COLOR_OPTIONS[n], n)
+        );
         d.setValue(this.plugin.settings.defaultDotColor);
         d.onChange(async (v) => {
           this.plugin.settings.defaultDotColor = v;
@@ -83,7 +90,9 @@ export class CalendarSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName("Default Range Bar Color")
       .addDropdown((d) => {
-        Object.keys(o).forEach((n) => d.addOption(o[n], n));
+        Object.keys(ALL_COLOR_OPTIONS).forEach((n) =>
+          d.addOption(ALL_COLOR_OPTIONS[n], n)
+        );
         d.setValue(this.plugin.settings.defaultBarColor);
         d.onChange(async (v) => {
           this.plugin.settings.defaultBarColor = v;
@@ -92,8 +101,12 @@ export class CalendarSettingTab extends PluginSettingTab {
         });
       });
 
-    containerEl.createEl("h3", { text: "Birthdays" });
-    new Setting(containerEl).setName("Birthdays Folder Path").addText((t) => {
+    this.renderTagColorSettings(containerEl); // New section
+
+    // --- Data Sources ---
+    containerEl.createEl("h3", { text: "Data Sources" });
+    // Birthdays
+    new Setting(containerEl).setName("Birthdays Folder").addText((t) => {
       t.setPlaceholder("e.g. People")
         .setValue(this.plugin.settings.birthdayFolder)
         .onChange(async (v) => {
@@ -102,7 +115,7 @@ export class CalendarSettingTab extends PluginSettingTab {
           this.plugin.refreshCalendarView();
         });
     });
-    new Setting(containerEl).setName("Birthday symbol / emoji").addText((t) => {
+    new Setting(containerEl).setName("Birthday Symbol").addText((t) => {
       t.setPlaceholder("🎂")
         .setValue(this.plugin.settings.defaultBirthdaySymbol)
         .onChange(async (v) => {
@@ -114,7 +127,9 @@ export class CalendarSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName("Default Birthday Color")
       .addDropdown((d) => {
-        Object.keys(o).forEach((n) => d.addOption(o[n], n));
+        Object.keys(ALL_COLOR_OPTIONS).forEach((n) =>
+          d.addOption(ALL_COLOR_OPTIONS[n], n)
+        );
         d.setValue(this.plugin.settings.defaultBirthdayColor);
         d.onChange(async (v) => {
           this.plugin.settings.defaultBirthdayColor = v;
@@ -122,29 +137,119 @@ export class CalendarSettingTab extends PluginSettingTab {
           this.plugin.refreshCalendarView();
         });
       });
+    // Holidays
+    new Setting(containerEl).setName("Holiday Storage Folder").addText((t) =>
+      t
+        .setValue(this.plugin.settings.holidayStorageFolder)
+        .onChange(async (v) => {
+          this.plugin.settings.holidayStorageFolder = v.trim();
+          await this.plugin.saveSettings();
+          this.plugin.refreshCalendarView();
+        })
+    );
+    containerEl.createEl("h4", { text: "Holiday Sources" });
+    const sourcesListEl = containerEl.createDiv();
+    if (this.plugin.settings.holidaySources.length === 0) {
+      sourcesListEl.createEl("p", { text: "No sources." });
+    } else {
+      this.renderHolidaySources(sourcesListEl);
+    }
+    if (this.availableCountries.length === 0) {
+      await this.fetchAvailableCountries();
+    }
+    this.renderAddHolidaySourceControls(containerEl);
 
+    // --- Interaction ---
     containerEl.createEl("h3", { text: "Interaction" });
-    new Setting(containerEl)
-      .setName("Confirm before creating daily notes")
-      .addToggle((t) =>
-        t
-          .setValue(this.plugin.settings.shouldConfirmBeforeCreate)
-          .onChange(async (v) => {
-            this.plugin.settings.shouldConfirmBeforeCreate = v;
-            await this.plugin.saveSettings();
+    new Setting(containerEl).setName("Confirm Daily Note").addToggle((t) =>
+      t
+        .setValue(this.plugin.settings.shouldConfirmBeforeCreate)
+        .onChange(async (v) => {
+          this.plugin.settings.shouldConfirmBeforeCreate = v;
+          await this.plugin.saveSettings();
+        })
+    );
+    new Setting(containerEl).setName("Confirm Range Note").addToggle((t) =>
+      t
+        .setValue(this.plugin.settings.shouldConfirmBeforeCreateRange)
+        .onChange(async (v) => {
+          this.plugin.settings.shouldConfirmBeforeCreateRange = v;
+          await this.plugin.saveSettings();
+        })
+    );
+  }
+  private renderTagColorSettings(containerEl: HTMLElement): void {
+    containerEl.createEl("h4", { text: "Tag-Based Default Colors" });
+    containerEl.createEl("p", {
+      text: "Define default colors for notes based on their tags. This is used if a note has a matching tag but does NOT have an explicit `color` in its frontmatter.",
+      cls: "setting-item-description",
+    });
+
+    // Display existing mappings
+    Object.keys(this.plugin.settings.tagAppearance)
+      .sort()
+      .forEach((tag) => {
+        new Setting(containerEl)
+          .setName(tag)
+          .addDropdown((dd) => {
+            Object.keys(ALL_COLOR_OPTIONS).forEach((key) =>
+              dd.addOption(ALL_COLOR_OPTIONS[key], key)
+            );
+            dd.setValue(this.plugin.settings.tagAppearance[tag].color);
+            dd.onChange(async (newVar) => {
+              this.plugin.settings.tagAppearance[tag].color = newVar;
+              await this.plugin.saveSettings();
+              this.plugin.refreshCalendarView();
+            });
           })
+          .addButton((btn) =>
+            btn
+              .setIcon("trash")
+              .setWarning()
+              .onClick(async () => {
+                delete this.plugin.settings.tagAppearance[tag];
+                await this.plugin.saveSettings();
+                this.display();
+                this.plugin.refreshCalendarView();
+              })
+          );
+      });
+
+    // Add new mapping
+    const newMappingSetting = new Setting(containerEl).setName(
+      "New Tag Mapping"
+    );
+    let newTag = "";
+    newMappingSetting.addText((text) => {
+      text.setPlaceholder("#your/tag").onChange((val) => (newTag = val));
+      new TagSuggest(this.app, text.inputEl); // Attach suggester
+    });
+    let newColor = ALL_COLOR_OPTIONS["Theme Default"];
+    newMappingSetting.addDropdown((dd) => {
+      Object.keys(ALL_COLOR_OPTIONS).forEach((key) =>
+        dd.addOption(ALL_COLOR_OPTIONS[key], key)
       );
-    new Setting(containerEl)
-      .setName("Confirm before creating range notes")
-      .setDesc("Show a confirmation dialog for new date range notes.")
-      .addToggle((t) =>
-        t
-          .setValue(this.plugin.settings.shouldConfirmBeforeCreateRange)
-          .onChange(async (v) => {
-            this.plugin.settings.shouldConfirmBeforeCreateRange = v;
-            await this.plugin.saveSettings();
-          })
-      );
+      dd.setValue(newColor).onChange((val) => (newColor = val));
+    });
+    newMappingSetting.addButton((btn) =>
+      btn
+        .setButtonText("Add")
+        .setCta()
+        .onClick(async () => {
+          if (!newTag || !newTag.startsWith("#")) {
+            new Notice("Tag must start with '#'");
+            return;
+          }
+          if (this.plugin.settings.tagAppearance[newTag]) {
+            new Notice(`Mapping for "${newTag}" already exists`);
+            return;
+          }
+          this.plugin.settings.tagAppearance[newTag] = { color: newColor };
+          await this.plugin.saveSettings();
+          this.display();
+          this.plugin.refreshCalendarView();
+        })
+    );
   }
   private getCountryName(c: string) {
     return (
@@ -162,8 +267,8 @@ export class CalendarSettingTab extends PluginSettingTab {
       );
       if (s.type === "country") {
         item.addDropdown((d) => {
-          Object.keys(AVAILABLE_COLOR_OPTIONS).forEach((k) =>
-            d.addOption(AVAILABLE_COLOR_OPTIONS[k], k)
+          Object.keys(ALL_COLOR_OPTIONS).forEach((k) =>
+            d.addOption(ALL_COLOR_OPTIONS[k], k)
           );
           d.setValue(s.color || "var(--color-red-tint)");
           d.onChange(async (v) => {
@@ -206,7 +311,7 @@ export class CalendarSettingTab extends PluginSettingTab {
         .addOption("custom", "Custom")
         .setValue(type)
         .onChange((v) => {
-          type = v as "country" | "custom";
+          type = v as any;
           this.display();
         });
     });
@@ -221,8 +326,8 @@ export class CalendarSettingTab extends PluginSettingTab {
         });
       });
       new Setting(addControls).setName("Color").addDropdown((d) => {
-        Object.keys(AVAILABLE_COLOR_OPTIONS).forEach((k) =>
-          d.addOption(AVAILABLE_COLOR_OPTIONS[k], k)
+        Object.keys(ALL_COLOR_OPTIONS).forEach((k) =>
+          d.addOption(ALL_COLOR_OPTIONS[k], k)
         );
         d.setValue(color).onChange((v) => {
           color = v;
@@ -243,7 +348,7 @@ export class CalendarSettingTab extends PluginSettingTab {
           let newSource: HolidaySource | null = null;
           if (type === "country") {
             if (!code) {
-              new Notice("Select a country.");
+              new Notice("Select country");
               return;
             }
             if (
@@ -253,13 +358,13 @@ export class CalendarSettingTab extends PluginSettingTab {
                   s.countryCode.toUpperCase() === code.toUpperCase()
               )
             ) {
-              new Notice("Country source exists.");
+              new Notice("Source exists");
               return;
             }
             newSource = { type: "country", countryCode: code, color: color };
           } else {
             if (!name) {
-              new Notice("Enter a name.");
+              new Notice("Enter name");
               return;
             }
             const id = this.plugin.holidayService.getHolidaySourceId({
@@ -273,7 +378,7 @@ export class CalendarSettingTab extends PluginSettingTab {
                   this.plugin.holidayService.getHolidaySourceId(s) === id
               )
             ) {
-              new Notice(`Custom source '${id}' exists.`);
+              new Notice("Source exists");
               return;
             }
             newSource = { type: "custom", name: name };

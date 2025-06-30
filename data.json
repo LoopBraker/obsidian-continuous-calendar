@@ -3,6 +3,7 @@
   "defaultDotColor": "currentColor",
   "defaultBarColor": "var(--interactive-accent)",
   "shouldConfirmBeforeCreate": true,
+  "shouldConfirmBeforeCreateRange": true,
   "birthdayFolder": "",
   "defaultBirthdaySymbol": "🎂",
   "defaultBirthdayColor": "var(--color-red-tint)",
@@ -18,5 +19,10 @@
       "countryCode": "CO"
     }
   ],
+  "tagAppearance": {
+    "#source/meeting": {
+      "color": "var(--color-blue-tint)"
+    }
+  },
   "holidayCountry": "US"
 }

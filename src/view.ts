@@ -72,10 +72,18 @@ export class CalendarView extends ItemView {
       const cache = this.app.metadataCache.getFileCache(file);
       const fm = cache?.frontmatter;
       if (!fm) continue;
+
+      // --- Start of updated data processing block ---
       let hasDate = false,
         validDate: string | null = null,
         validDateStart: string | null = null,
         validDateEnd: string | null = null;
+      let explicitColor: string | undefined = fm.color
+        ? fm.color.toString()
+        : undefined;
+      let defaultColorFromTag: string | undefined = undefined;
+      let noteTags: string[] = [];
+
       if (fm.date) {
         const mDate = moment(fm.date.toString(), "YYYY-MM-DD", true);
         if (mDate.isValid()) {
@@ -92,6 +100,27 @@ export class CalendarView extends ItemView {
           hasDate = true;
         }
       }
+
+      // Determine default color from tags if no explicit color is set
+      if (!explicitColor && fm.tags) {
+        let rawTags: any[] = Array.isArray(fm.tags)
+          ? fm.tags
+          : String(fm.tags)
+              .split(",")
+              .map((t) => t.trim());
+        noteTags = rawTags
+          .map((tag) => String(tag).trim())
+          .filter((t) => t)
+          .map((tag) => (tag.startsWith("#") ? tag : `#${tag}`));
+        for (const tag of noteTags) {
+          const appearance = this.plugin.settings.tagAppearance[tag];
+          if (appearance) {
+            defaultColorFromTag = appearance.color;
+            break; // Use the first match
+          }
+        }
+      }
+
       if (hasDate) {
         pagesData.push({
           path: file.path,
@@ -99,7 +128,8 @@ export class CalendarView extends ItemView {
           dateStart: validDateStart,
           dateEnd: validDateEnd,
           name: file.basename,
-          color: fm.color,
+          color: explicitColor,
+          defaultColorFromTag: defaultColorFromTag,
         });
       }
       if (
@@ -113,10 +143,12 @@ export class CalendarView extends ItemView {
             path: file.path,
             birthday: mBday.format("YYYY-MM-DD"),
             name: file.basename,
-            color: fm.color,
+            color: explicitColor,
+            defaultColorFromTag: defaultColorFromTag,
           });
         }
       }
+      // --- End of updated data processing block ---
     }
 
     const table = this.calendarContentEl.createEl("table", {
@@ -157,7 +189,6 @@ export class CalendarView extends ItemView {
           (b) =>
             moment(b.birthday).format("MM-DD") === dayMoment.format("MM-DD")
         );
-
         const cellClasses = ["calendar-cell"];
         cellClasses.push(
           dayMoment.month() % 2 === 1 ? "odd-month" : "even-month"
@@ -171,7 +202,6 @@ export class CalendarView extends ItemView {
           cell.style.setProperty("--holiday-background-color", holidayColorVar);
         }
         cell.addClass(...cellClasses);
-
         const cellContentWrapper = cell.createDiv({ cls: "cell-content" });
         const topContentDiv = cellContentWrapper.createDiv({
           cls: "top-content",
@@ -187,10 +217,15 @@ export class CalendarView extends ItemView {
             dayNumSpan.addClass("has-daily-note");
           }
         }
+
+        // --- Apply prioritized coloring ---
         matchingNotes.forEach((note) => {
           const dot = dotAreaDiv.createSpan({ cls: "dot note-dot", text: "●" });
           dot.title = note.name;
-          dot.style.color = note.color || this.plugin.settings.defaultDotColor;
+          dot.style.color =
+            note.color ||
+            note.defaultColorFromTag ||
+            this.plugin.settings.defaultDotColor;
         });
         if (matchingBirthdays.length > 0) {
           const dot = dotAreaDiv.createSpan({ cls: "dot birthday-dot" });
@@ -198,6 +233,7 @@ export class CalendarView extends ItemView {
           dot.title = matchingBirthdays.map((b) => b.name).join("\n");
           dot.style.color =
             matchingBirthdays[0].color ||
+            matchingBirthdays[0].defaultColorFromTag ||
             this.plugin.settings.defaultBirthdayColor;
         }
         matchingRanges.forEach((p) => {
@@ -206,15 +242,14 @@ export class CalendarView extends ItemView {
             title: p.name,
           });
           bar.style.backgroundColor =
-            p.color || this.plugin.settings.defaultBarColor;
+            p.color ||
+            p.defaultColorFromTag ||
+            this.plugin.settings.defaultBarColor;
           if (dayMoment.isSame(p.dateStart, "day")) bar.addClass("range-start");
           if (dayMoment.isSame(p.dateEnd, "day")) bar.addClass("range-end");
         });
 
-        // --- Generate and store expanded content ---
-        let expandedHTML = `<div class="expanded-content">`;
-        expandedHTML += `<button class="close-button" aria-label="Close">×</button>`;
-        expandedHTML += `<strong>${dayMoment.format("dddd, MMMM Do")}</strong>`;
+        let expandedHTML = `<div class="expanded-content"><button class="close-button">×</button><strong>${dayMoment.format("dddd, MMMM Do")}</strong>`;
         if (isHoliday) {
           expandedHTML += `<ul>${holidaysOnDay.map((h) => `<li>${h.name}</li>`).join("")}</ul>`;
         }
@@ -229,44 +264,37 @@ export class CalendarView extends ItemView {
         }
         if (
           !isHoliday &&
-          matchingBirthdays.length === 0 &&
-          matchingNotes.length === 0 &&
-          matchingRanges.length === 0
+          !matchingBirthdays.length &&
+          !matchingNotes.length &&
+          !matchingRanges.length
         ) {
           expandedHTML += `<p>No events.</p>`;
         }
         expandedHTML += `</div>`;
         cell.dataset.cellContent = expandedHTML;
-        // ---
-
         currentDay.add(1, "day");
       }
     }
   }
 
   handleClick(event: MouseEvent) {
+    /* ... same as before ... */
     const target = event.target as HTMLElement;
     const dayNumberEl = target.closest(".day-number");
-
     if (dayNumberEl) {
-      // A day number was clicked
       this.handleDayNumberClick(event, dayNumberEl);
       return;
     }
-
     const closeButton = target.closest(".close-button");
     if (closeButton) {
-      // Close button inside an expanded view
       const expandedRow = closeButton.closest("tr.expanded-row");
       if (expandedRow) {
         this.closeExpandedRow(expandedRow);
       }
       return;
     }
-
     const internalLink = target.closest("a.internal-link");
     if (internalLink) {
-      // A link inside an expanded view
       event.preventDefault();
       const path = internalLink.dataset.href;
       if (path) {
@@ -278,15 +306,13 @@ export class CalendarView extends ItemView {
       }
       return;
     }
-
     const cellEl = target.closest("td.calendar-cell");
     if (cellEl) {
-      // A click on the cell body
       this.handleCellClick(cellEl);
     }
   }
-
   handleDayNumberClick(event: MouseEvent, dayNumberEl: Element) {
+    /* ... same as before ... */
     const isCmdClick = event.metaKey || event.ctrlKey;
     const cellEl = dayNumberEl.closest("td.calendar-cell");
     if (!cellEl || !cellEl.dataset.date) {
@@ -294,7 +320,6 @@ export class CalendarView extends ItemView {
       return;
     }
     const dateMoment = moment(cellEl.dataset.date);
-
     if (isCmdClick) {
       if (this.startRangeDate) {
         const endRangeDate = dateMoment;
@@ -307,7 +332,7 @@ export class CalendarView extends ItemView {
         this.createRangeNote(finalStartDate, finalEndDate);
         this.clearDayNumberEngagement();
       } else {
-        new Notice("Click a start date first (without holding Cmd/Ctrl).");
+        new Notice("Click a start date first.");
       }
     } else {
       if (this.engagedStartRangeEl === dayNumberEl) {
@@ -321,15 +346,13 @@ export class CalendarView extends ItemView {
       }
     }
   }
-
   handleCellClick(cellEl: HTMLElement) {
+    /* ... same as before ... */
     const currentRow = cellEl.parentElement as HTMLTableRowElement;
     if (!currentRow) return;
     const tbody = currentRow.parentElement as HTMLTableSectionElement;
     const existingExpanded = tbody.querySelector("tr.expanded-row");
     const wasThisCellExpanded = cellEl.classList.contains("expanded");
-
-    // Clear any existing expanded row
     if (existingExpanded) {
       const previouslyExpandedCell = tbody.querySelector(
         "td.calendar-cell.expanded"
@@ -337,8 +360,6 @@ export class CalendarView extends ItemView {
       previouslyExpandedCell?.removeClass("expanded");
       existingExpanded.remove();
     }
-
-    // If we didn't just close the clicked cell, open a new expanded row
     if (!wasThisCellExpanded) {
       const contentHtml = cellEl.dataset.cellContent;
       if (!contentHtml) return;
@@ -352,13 +373,12 @@ export class CalendarView extends ItemView {
       currentRow.after(expandedRow);
     }
   }
-
   closeExpandedRow(expandedRow: Element) {
+    /* ... same as before ... */
     const tbody = expandedRow.parentElement;
     tbody?.querySelector("td.calendar-cell.expanded")?.removeClass("expanded");
     expandedRow.remove();
   }
-
   clearDayNumberEngagement() {
     if (this.engagedStartRangeEl) {
       this.engagedStartRangeEl.removeClass("range-start-engaged");
@@ -366,7 +386,6 @@ export class CalendarView extends ItemView {
     }
     this.startRangeDate = null;
   }
-
   async openOrCreateDailyNote(
     date: moment.Moment,
     event: MouseEvent
@@ -399,35 +418,27 @@ export class CalendarView extends ItemView {
       }
     }
   }
-
   async createRangeNote(
     startDate: moment.Moment,
     endDate: moment.Moment
   ): Promise<void> {
     /* ... same as before ... */
     const performCreateAndOpen = async () => {
-      const noteContent = `---
-dateStart: ${startDate.format("YYYY-MM-DD")}
-dateEnd: ${endDate.format("YYYY-MM-DD")}
-color: ${this.plugin.settings.defaultBarColor}
----
-
-# New Event
-`;
+      const noteContent = `---\ndateStart: ${startDate.format("YYYY-MM-DD")}\ndateEnd: ${endDate.format("YYYY-MM-DD")}\ncolor: ${this.plugin.settings.defaultBarColor}\n---\n\n# New Event\n`;
       try {
         const fileName = `Range ${startDate.format("YYMMDD")}-${endDate.format("YYMMDD")}.md`;
         const newFile = await this.app.vault.create(fileName, noteContent);
-        new Notice(`Created range note: ${newFile.basename}`);
+        new Notice(`Created: ${newFile.basename}`);
         await this.app.workspace.getLeaf("tab").openFile(newFile);
       } catch (err) {
-        console.error("Error creating range note file:", err);
-        new Notice("Error creating the range note file.");
+        console.error("Error creating range note:", err);
+        new Notice("Error creating file.");
       }
     };
     if (this.plugin.settings.shouldConfirmBeforeCreateRange) {
       createConfirmationDialog(this.app, {
         title: "Create Range Note?",
-        text: `Create a new note for the range ${startDate.format("YYYY-MM-DD")} to ${endDate.format("YYYY-MM-DD")}?`,
+        text: `Create note for ${startDate.format("YYYY-MM-DD")} to ${endDate.format("YYYY-MM-DD")}?`,
         cta: "Create",
         onAccept: performCreateAndOpen,
       });

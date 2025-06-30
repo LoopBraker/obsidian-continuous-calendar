@@ -5,6 +5,25 @@ export interface Holiday {
   color?: string;
 }
 
+// New type for defining tag-based appearance
+interface TagAppearance {
+  color: string;
+}
+
+export interface MyCalendarPluginSettings {
+  year: number;
+  defaultDotColor: string;
+  defaultBarColor: string;
+  shouldConfirmBeforeCreate: boolean;
+  shouldConfirmBeforeCreateRange: boolean;
+  birthdayFolder: string;
+  defaultBirthdaySymbol: string;
+  defaultBirthdayColor: string;
+  holidayStorageFolder: string;
+  holidaySources: HolidaySource[];
+  tagAppearance: Record<string, TagAppearance>; // New setting
+}
+
 export interface CountryHolidaySource {
   type: "country";
   countryCode: string;
@@ -17,19 +36,6 @@ export interface CustomHolidaySource {
 }
 
 export type HolidaySource = CountryHolidaySource | CustomHolidaySource;
-
-export interface MyCalendarPluginSettings {
-  year: number;
-  defaultDotColor: string;
-  defaultBarColor: string;
-  shouldConfirmBeforeCreate: boolean;
-  shouldConfirmBeforeCreateRange: boolean; // New setting
-  birthdayFolder: string;
-  defaultBirthdaySymbol: string;
-  defaultBirthdayColor: string;
-  holidayStorageFolder: string;
-  holidaySources: HolidaySource[];
-}
 
 export interface HolidayFileFrontMatter {
   holidaySourceType: "country" | "custom";

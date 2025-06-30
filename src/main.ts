@@ -2,7 +2,7 @@
 import { Plugin, WorkspaceLeaf, Notice } from "obsidian";
 import { CalendarView, CALENDAR_VIEW_TYPE } from "./view";
 import { CalendarSettingTab } from "./settings";
-import { MyCalendarPluginSettings, CountryHolidaySource } from "./types";
+import { MyCalendarPluginSettings } from "./types";
 import { HolidayService } from "./holidayService";
 
 const DEFAULT_SETTINGS: MyCalendarPluginSettings = {
@@ -10,12 +10,13 @@ const DEFAULT_SETTINGS: MyCalendarPluginSettings = {
   defaultDotColor: "currentColor",
   defaultBarColor: "var(--interactive-accent)",
   shouldConfirmBeforeCreate: true,
-  shouldConfirmBeforeCreateRange: true, // New setting default
+  shouldConfirmBeforeCreateRange: true,
   birthdayFolder: "",
   defaultBirthdaySymbol: "🎂",
   defaultBirthdayColor: "var(--color-red-tint)",
   holidayStorageFolder: "Calendar/Holidays",
   holidaySources: [],
+  tagAppearance: {}, // New setting default
 };
 
 export default class MyCalendarPlugin extends Plugin {
@@ -26,6 +27,15 @@ export default class MyCalendarPlugin extends Plugin {
   async onload() {
     console.log("Loading Continuous Calendar Plugin");
     await this.loadSettings();
+
+    // Safety check for the new setting
+    if (
+      typeof this.settings.tagAppearance !== "object" ||
+      this.settings.tagAppearance === null
+    ) {
+      this.settings.tagAppearance = DEFAULT_SETTINGS.tagAppearance;
+    }
+
     this.holidayService = new HolidayService(this.app, this);
     this.registerView(CALENDAR_VIEW_TYPE, (leaf) => {
       this.calendarView = new CalendarView(leaf, this);
@@ -47,7 +57,6 @@ export default class MyCalendarPlugin extends Plugin {
   }
 
   onunload() {
-    console.log("Unloading Continuous Calendar Plugin");
     this.calendarView = null;
   }
 
@@ -77,7 +86,6 @@ export default class MyCalendarPlugin extends Plugin {
   refreshCalendarView() {
     if (this.calendarView) {
       this.calendarView.refresh();
-      console.log("Calendar view refreshed.");
     }
   }
 }
