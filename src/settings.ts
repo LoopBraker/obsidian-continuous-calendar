@@ -5,9 +5,47 @@ import {
   Setting,
   Notice,
   AbstractInputSuggest,
+  TFolder,
 } from "obsidian";
 import MyCalendarPlugin from "./main";
 import { HolidaySource, CountryHolidaySource } from "./types";
+
+// --- Suggester Classes and Helpers ---
+
+function getAllFolderPaths(app: App): string[] {
+  const folders: string[] = ["/"]; // Add root folder explicitly
+  app.vault.getAllLoadedFiles().forEach((file) => {
+    if (file instanceof TFolder && file.path !== "/") {
+      folders.push(file.path);
+    }
+  });
+  return folders.sort();
+}
+
+class FolderSuggest extends AbstractInputSuggest<string> {
+  private allFolders: string[];
+  constructor(
+    app: App,
+    private inputEl: HTMLInputElement
+  ) {
+    super(app, inputEl);
+    this.allFolders = getAllFolderPaths(app);
+  }
+  getSuggestions(query: string): string[] {
+    const lowerCaseQuery = query.toLowerCase();
+    return this.allFolders.filter((folder) =>
+      folder.toLowerCase().includes(lowerCaseQuery)
+    );
+  }
+  renderSuggestion(folder: string, el: HTMLElement): void {
+    el.setText(folder);
+  }
+  selectSuggestion(folder: string): void {
+    this.inputEl.value = folder;
+    this.inputEl.dispatchEvent(new Event("input"));
+    this.close();
+  }
+}
 
 class TagSuggest extends AbstractInputSuggest<string> {
   private allTags: string[];
@@ -93,19 +131,22 @@ export class CalendarSettingTab extends PluginSettingTab {
           this.plugin.refreshCalendarView();
         });
       });
-
-    this.renderTagAppearanceSettings(containerEl); // Renamed method
+    this.renderTagAppearanceSettings(containerEl);
 
     containerEl.createEl("h3", { text: "Data Sources" });
-    new Setting(containerEl).setName("Birthdays Folder").addText((t) => {
-      t.setPlaceholder("e.g. People")
-        .setValue(this.plugin.settings.birthdayFolder)
-        .onChange(async (v) => {
-          this.plugin.settings.birthdayFolder = v.trim();
-          await this.plugin.saveSettings();
-          this.plugin.refreshCalendarView();
-        });
-    });
+    new Setting(containerEl)
+      .setName("Birthdays Folder")
+      .setDesc("Path to folder. Type to search.")
+      .addText((t) => {
+        t.setPlaceholder("e.g. People")
+          .setValue(this.plugin.settings.birthdayFolder)
+          .onChange(async (v) => {
+            this.plugin.settings.birthdayFolder = v.trim();
+            await this.plugin.saveSettings();
+            this.plugin.refreshCalendarView();
+          });
+        new FolderSuggest(this.app, t.inputEl);
+      });
     new Setting(containerEl).setName("Birthday Symbol").addText((t) => {
       t.setPlaceholder("🎂")
         .setValue(this.plugin.settings.defaultBirthdaySymbol)
@@ -128,15 +169,19 @@ export class CalendarSettingTab extends PluginSettingTab {
           this.plugin.refreshCalendarView();
         });
       });
-    new Setting(containerEl).setName("Holiday Storage Folder").addText((t) =>
-      t
-        .setValue(this.plugin.settings.holidayStorageFolder)
-        .onChange(async (v) => {
-          this.plugin.settings.holidayStorageFolder = v.trim();
-          await this.plugin.saveSettings();
-          this.plugin.refreshCalendarView();
-        })
-    );
+    new Setting(containerEl)
+      .setName("Holiday Storage Folder")
+      .setDesc("Path to folder. Type to search.")
+      .addText((t) => {
+        t.setValue(this.plugin.settings.holidayStorageFolder).onChange(
+          async (v) => {
+            this.plugin.settings.holidayStorageFolder = v.trim();
+            await this.plugin.saveSettings();
+            this.plugin.refreshCalendarView();
+          }
+        );
+        new FolderSuggest(this.app, t.inputEl);
+      });
     containerEl.createEl("h4", { text: "Holiday Sources" });
     const sourcesListEl = containerEl.createDiv();
     if (this.plugin.settings.holidaySources.length === 0) {
@@ -169,11 +214,6 @@ export class CalendarSettingTab extends PluginSettingTab {
   }
   private renderTagAppearanceSettings(containerEl: HTMLElement): void {
     containerEl.createEl("h4", { text: "Tag-Based Appearance" });
-    containerEl.createEl("p", {
-      text: "Define default colors and symbols for notes based on their tags.",
-      cls: "setting-item-description",
-    });
-
     Object.keys(this.plugin.settings.tagAppearance)
       .sort()
       .forEach((tag) => {
@@ -190,7 +230,6 @@ export class CalendarSettingTab extends PluginSettingTab {
           });
         });
         setting.addText((text) => {
-          // Symbol input for existing mapping
           text
             .setPlaceholder("●")
             .setValue(appearance.symbol || "")
@@ -212,7 +251,6 @@ export class CalendarSettingTab extends PluginSettingTab {
             })
         );
       });
-
     const newMappingSetting = new Setting(containerEl).setName(
       "New Tag Mapping"
     );
@@ -227,7 +265,7 @@ export class CalendarSettingTab extends PluginSettingTab {
       text
         .setPlaceholder("●")
         .onChange((val) => (newSymbol = val.trim() || "●"));
-    }); // Symbol input for new mapping
+    });
     newMappingSetting.addDropdown((dd) => {
       Object.keys(ALL_COLOR_OPTIONS).forEach((key) =>
         dd.addOption(ALL_COLOR_OPTIONS[key], key)
@@ -250,7 +288,7 @@ export class CalendarSettingTab extends PluginSettingTab {
           this.plugin.settings.tagAppearance[newTag] = {
             color: newColor,
             symbol: newSymbol,
-          }; // Save both
+          };
           await this.plugin.saveSettings();
           this.display();
           this.plugin.refreshCalendarView();
