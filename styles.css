@@ -123,8 +123,6 @@
     transparent 60%
   );
 }
-
-/* --- New Styles for V15 --- */
 .day-number.range-start-engaged {
   outline: 2px solid var(--interactive-accent);
   background-color: color-mix(
@@ -132,4 +130,40 @@
     var(--interactive-accent),
     transparent 80%
   );
+}
+
+/* --- New Styles for V16 --- */
+.calendar-cell.expanded {
+  border: 2px solid var(--interactive-accent) !important;
+}
+.expanded-row td {
+  padding: 10px;
+  text-align: left;
+  vertical-align: top;
+  border: 1px solid var(--background-modifier-border);
+  background-color: var(--background-secondary-alt);
+}
+.expanded-content {
+  position: relative;
+}
+.expanded-content ul {
+  list-style: none;
+  padding-left: 10px;
+  margin: 5px 0;
+}
+.expanded-content li {
+  margin-bottom: 4px;
+}
+.close-button {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  background: none;
+  border: none;
+  font-size: 1.2em;
+  cursor: pointer;
+  color: var(--text-muted);
+}
+.close-button:hover {
+  color: var(--text-normal);
 }

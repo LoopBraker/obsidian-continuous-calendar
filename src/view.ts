@@ -54,19 +54,20 @@ export class CalendarView extends ItemView {
   }
 
   async renderCalendar() {
-    /* ... rendering logic is identical to previous version ... */
     this.calendarContentEl.empty();
     const year = this.plugin.settings.year;
     const today = moment().format("YYYY-MM-DD");
     const allDNs = getAllDailyNotes();
     const holidaysByDate =
       await this.plugin.holidayService.getAggregatedHolidays(year);
+
     const allFiles = this.app.vault.getMarkdownFiles();
     let pagesData: any[] = [];
     let birthdayData: any[] = [];
     const birthdayFolder = this.plugin.settings.birthdayFolder.toLowerCase();
     const hasBirthdayFolderSetting =
       this.plugin.settings.birthdayFolder.trim() !== "";
+
     for (const file of allFiles) {
       const cache = this.app.metadataCache.getFileCache(file);
       const fm = cache?.frontmatter;
@@ -93,6 +94,7 @@ export class CalendarView extends ItemView {
       }
       if (hasDate) {
         pagesData.push({
+          path: file.path,
           date: validDate,
           dateStart: validDateStart,
           dateEnd: validDateEnd,
@@ -108,6 +110,7 @@ export class CalendarView extends ItemView {
         const mBday = moment(fm.birthday.toString(), "YYYY-MM-DD", true);
         if (mBday.isValid()) {
           birthdayData.push({
+            path: file.path,
             birthday: mBday.format("YYYY-MM-DD"),
             name: file.basename,
             color: fm.color,
@@ -115,6 +118,7 @@ export class CalendarView extends ItemView {
         }
       }
     }
+
     const table = this.calendarContentEl.createEl("table", {
       cls: "my-calendar-table",
     });
@@ -127,6 +131,7 @@ export class CalendarView extends ItemView {
     const tbody = table.createEl("tbody");
     const startDate = moment(`${year}-01-01`).startOf("isoWeek");
     const endDate = moment(`${year}-12-31`).endOf("isoWeek");
+
     let currentDay = startDate.clone();
     while (currentDay.isBefore(endDate)) {
       const weekRow = tbody.createEl("tr");
@@ -141,6 +146,18 @@ export class CalendarView extends ItemView {
         cell.dataset.date = dateStr;
         const holidaysOnDay = holidaysByDate.get(dateStr) || [];
         const isHoliday = holidaysOnDay.length > 0;
+        const matchingNotes = pagesData.filter((p) => p.date === dateStr);
+        const matchingRanges = pagesData.filter(
+          (p) =>
+            p.dateStart &&
+            p.dateEnd &&
+            dayMoment.isBetween(p.dateStart, p.dateEnd, "day", "[]")
+        );
+        const matchingBirthdays = birthdayData.filter(
+          (b) =>
+            moment(b.birthday).format("MM-DD") === dayMoment.format("MM-DD")
+        );
+
         const cellClasses = ["calendar-cell"];
         cellClasses.push(
           dayMoment.month() % 2 === 1 ? "odd-month" : "even-month"
@@ -154,9 +171,7 @@ export class CalendarView extends ItemView {
           cell.style.setProperty("--holiday-background-color", holidayColorVar);
         }
         cell.addClass(...cellClasses);
-        if (isHoliday) {
-          cell.title = holidaysOnDay.map((h) => h.name).join("\n");
-        }
+
         const cellContentWrapper = cell.createDiv({ cls: "cell-content" });
         const topContentDiv = cellContentWrapper.createDiv({
           cls: "top-content",
@@ -172,16 +187,11 @@ export class CalendarView extends ItemView {
             dayNumSpan.addClass("has-daily-note");
           }
         }
-        const matchingNotes = pagesData.filter((p) => p.date === dateStr);
         matchingNotes.forEach((note) => {
           const dot = dotAreaDiv.createSpan({ cls: "dot note-dot", text: "●" });
           dot.title = note.name;
           dot.style.color = note.color || this.plugin.settings.defaultDotColor;
         });
-        const matchingBirthdays = birthdayData.filter(
-          (b) =>
-            moment(b.birthday).format("MM-DD") === dayMoment.format("MM-DD")
-        );
         if (matchingBirthdays.length > 0) {
           const dot = dotAreaDiv.createSpan({ cls: "dot birthday-dot" });
           dot.textContent = this.plugin.settings.defaultBirthdaySymbol;
@@ -190,12 +200,6 @@ export class CalendarView extends ItemView {
             matchingBirthdays[0].color ||
             this.plugin.settings.defaultBirthdayColor;
         }
-        const matchingRanges = pagesData.filter(
-          (p) =>
-            p.dateStart &&
-            p.dateEnd &&
-            dayMoment.isBetween(p.dateStart, p.dateEnd, "day", "[]")
-        );
         matchingRanges.forEach((p) => {
           const bar = rangeBarAreaDiv.createDiv({
             cls: "range-bar",
@@ -206,6 +210,35 @@ export class CalendarView extends ItemView {
           if (dayMoment.isSame(p.dateStart, "day")) bar.addClass("range-start");
           if (dayMoment.isSame(p.dateEnd, "day")) bar.addClass("range-end");
         });
+
+        // --- Generate and store expanded content ---
+        let expandedHTML = `<div class="expanded-content">`;
+        expandedHTML += `<button class="close-button" aria-label="Close">×</button>`;
+        expandedHTML += `<strong>${dayMoment.format("dddd, MMMM Do")}</strong>`;
+        if (isHoliday) {
+          expandedHTML += `<ul>${holidaysOnDay.map((h) => `<li>${h.name}</li>`).join("")}</ul>`;
+        }
+        if (matchingBirthdays.length > 0) {
+          expandedHTML += `<ul>${matchingBirthdays.map((b) => `<li><a class="internal-link" data-href="${b.path}" href="${b.path}">${b.name}</a></li>`).join("")}</ul>`;
+        }
+        if (matchingNotes.length > 0) {
+          expandedHTML += `<ul>${matchingNotes.map((p) => `<li><a class="internal-link" data-href="${p.path}" href="${p.path}">${p.name}</a></li>`).join("")}</ul>`;
+        }
+        if (matchingRanges.length > 0) {
+          expandedHTML += `<ul>${matchingRanges.map((p) => `<li><a class="internal-link" data-href="${p.path}" href="${p.path}">${p.name}</a></li>`).join("")}</ul>`;
+        }
+        if (
+          !isHoliday &&
+          matchingBirthdays.length === 0 &&
+          matchingNotes.length === 0 &&
+          matchingRanges.length === 0
+        ) {
+          expandedHTML += `<p>No events.</p>`;
+        }
+        expandedHTML += `</div>`;
+        cell.dataset.cellContent = expandedHTML;
+        // ---
+
         currentDay.add(1, "day");
       }
     }
@@ -213,52 +246,117 @@ export class CalendarView extends ItemView {
 
   handleClick(event: MouseEvent) {
     const target = event.target as HTMLElement;
-    const isCmdClick = event.metaKey || event.ctrlKey;
     const dayNumberEl = target.closest(".day-number");
 
-    if (!dayNumberEl) {
-      this.clearDayNumberEngagement();
+    if (dayNumberEl) {
+      // A day number was clicked
+      this.handleDayNumberClick(event, dayNumberEl);
       return;
     }
 
+    const closeButton = target.closest(".close-button");
+    if (closeButton) {
+      // Close button inside an expanded view
+      const expandedRow = closeButton.closest("tr.expanded-row");
+      if (expandedRow) {
+        this.closeExpandedRow(expandedRow);
+      }
+      return;
+    }
+
+    const internalLink = target.closest("a.internal-link");
+    if (internalLink) {
+      // A link inside an expanded view
+      event.preventDefault();
+      const path = internalLink.dataset.href;
+      if (path) {
+        this.app.workspace.openLinkText(
+          path,
+          "",
+          event.ctrlKey || event.metaKey
+        );
+      }
+      return;
+    }
+
+    const cellEl = target.closest("td.calendar-cell");
+    if (cellEl) {
+      // A click on the cell body
+      this.handleCellClick(cellEl);
+    }
+  }
+
+  handleDayNumberClick(event: MouseEvent, dayNumberEl: Element) {
+    const isCmdClick = event.metaKey || event.ctrlKey;
     const cellEl = dayNumberEl.closest("td.calendar-cell");
     if (!cellEl || !cellEl.dataset.date) {
       this.clearDayNumberEngagement();
       return;
     }
-
     const dateMoment = moment(cellEl.dataset.date);
 
     if (isCmdClick) {
-      if (this.startRangeDate && this.engagedStartRangeEl) {
+      if (this.startRangeDate) {
         const endRangeDate = dateMoment;
-        // Ensure start is always before end
         const finalStartDate = this.startRangeDate.isBefore(endRangeDate)
           ? this.startRangeDate
           : endRangeDate;
         const finalEndDate = this.startRangeDate.isBefore(endRangeDate)
           ? endRangeDate
           : this.startRangeDate;
-
         this.createRangeNote(finalStartDate, finalEndDate);
         this.clearDayNumberEngagement();
       } else {
         new Notice("Click a start date first (without holding Cmd/Ctrl).");
       }
     } else {
-      // Normal click
       if (this.engagedStartRangeEl === dayNumberEl) {
-        // Second normal click on the same day: open daily note
         this.openOrCreateDailyNote(dateMoment, event);
         this.clearDayNumberEngagement();
       } else {
-        // First normal click: set as potential range start
         this.clearDayNumberEngagement();
         this.startRangeDate = dateMoment;
         this.engagedStartRangeEl = dayNumberEl as HTMLElement;
         this.engagedStartRangeEl.addClass("range-start-engaged");
       }
     }
+  }
+
+  handleCellClick(cellEl: HTMLElement) {
+    const currentRow = cellEl.parentElement as HTMLTableRowElement;
+    if (!currentRow) return;
+    const tbody = currentRow.parentElement as HTMLTableSectionElement;
+    const existingExpanded = tbody.querySelector("tr.expanded-row");
+    const wasThisCellExpanded = cellEl.classList.contains("expanded");
+
+    // Clear any existing expanded row
+    if (existingExpanded) {
+      const previouslyExpandedCell = tbody.querySelector(
+        "td.calendar-cell.expanded"
+      );
+      previouslyExpandedCell?.removeClass("expanded");
+      existingExpanded.remove();
+    }
+
+    // If we didn't just close the clicked cell, open a new expanded row
+    if (!wasThisCellExpanded) {
+      const contentHtml = cellEl.dataset.cellContent;
+      if (!contentHtml) return;
+      cellEl.addClass("expanded");
+      const expandedRow = document.createElement("tr");
+      expandedRow.className = "expanded-row";
+      const expandedCell = expandedRow.createEl("td", {
+        attr: { colspan: "8" },
+      });
+      expandedCell.innerHTML = contentHtml;
+      currentRow.after(expandedRow);
+    }
+  }
+
+  closeExpandedRow(expandedRow: Element) {
+    const tbody = expandedRow.parentElement;
+    tbody?.querySelector("td.calendar-cell.expanded")?.removeClass("expanded");
+    expandedRow.remove();
   }
 
   clearDayNumberEngagement() {
@@ -273,6 +371,7 @@ export class CalendarView extends ItemView {
     date: moment.Moment,
     event: MouseEvent
   ): Promise<void> {
+    /* ... same as before ... */
     const { workspace } = this.app;
     const allDailyNotes = getAllDailyNotes();
     const existingFile = getDailyNote(date, allDailyNotes);
@@ -305,8 +404,8 @@ export class CalendarView extends ItemView {
     startDate: moment.Moment,
     endDate: moment.Moment
   ): Promise<void> {
+    /* ... same as before ... */
     const performCreateAndOpen = async () => {
-      const defaultFolder = ""; // Could be a setting later
       const noteContent = `---
 dateStart: ${startDate.format("YYYY-MM-DD")}
 dateEnd: ${endDate.format("YYYY-MM-DD")}
@@ -316,24 +415,15 @@ color: ${this.plugin.settings.defaultBarColor}
 # New Event
 `;
       try {
-        // A helper function to find an available path might be needed in a real scenario
         const fileName = `Range ${startDate.format("YYMMDD")}-${endDate.format("YYMMDD")}.md`;
-        const notePath = defaultFolder
-          ? `${defaultFolder}/${fileName}`
-          : fileName;
-
-        const newFile = await this.app.vault.create(notePath, noteContent);
+        const newFile = await this.app.vault.create(fileName, noteContent);
         new Notice(`Created range note: ${newFile.basename}`);
-
-        // Open the new note
-        const leaf = this.app.workspace.getLeaf("tab");
-        await leaf.openFile(newFile);
+        await this.app.workspace.getLeaf("tab").openFile(newFile);
       } catch (err) {
         console.error("Error creating range note file:", err);
         new Notice("Error creating the range note file.");
       }
     };
-
     if (this.plugin.settings.shouldConfirmBeforeCreateRange) {
       createConfirmationDialog(this.app, {
         title: "Create Range Note?",
