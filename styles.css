@@ -13,7 +13,7 @@
   font-size: var(--font-adaptive-small);
   vertical-align: top;
   height: 60px;
-  position: relative; /* Needed for positioning range bar area */
+  position: relative;
 }
 
 .my-calendar-table th {
@@ -32,10 +32,12 @@
   opacity: 0.3;
 }
 
-.calendar-cell.today {
+.calendar-cell.today .day-number { /* Target day-number inside today cell */
   background-color: var(--interactive-accent) !important;
   color: var(--text-on-accent);
   font-weight: bold;
+  border-radius: 3px;
+  padding: 1px 3px;
 }
 
 .week-number {
@@ -44,12 +46,11 @@
   font-size: var(--font-adaptive-smaller);
 }
 
-/* Cell Content Structure */
 .cell-content {
   display: flex;
   flex-direction: column;
   height: 100%;
-  min-height: 50px; /* Ensure a minimum height for content */
+  min-height: 50px;
 }
 
 .top-content {
@@ -57,11 +58,11 @@
 }
 
 .dot-area {
-  flex-shrink: 0; /* Keep dot area from growing/shrinking too much */
+  flex-shrink: 0;
   line-height: 1.1;
   text-align: center;
   margin: 2px 0;
-  min-height: 1em; /* Reserve some space for dots */
+  min-height: 1em;
 }
 
 .dot {
@@ -71,8 +72,6 @@
   font-weight: bold;
 }
 
-/* --- New Styles for V7 --- */
-
 .range-bar-area {
   position: absolute;
   bottom: 2px;
@@ -81,17 +80,16 @@
   height: auto;
   display: flex;
   flex-direction: column;
-  gap: 1px; /* Space between multiple bars on the same day */
+  gap: 1px;
   padding: 0 1px;
 }
 
 .range-bar {
-  height: 6px; /* A nice, visible height for bars */
+  height: 6px;
   width: 100%;
   display: block;
 }
 
-/* Style the start and end of the bars to have rounded corners */
 .range-bar.range-start {
   border-top-left-radius: 3px;
   border-bottom-left-radius: 3px;
@@ -100,4 +98,31 @@
 .range-bar.range-end {
   border-top-right-radius: 3px;
   border-bottom-right-radius: 3px;
+}
+
+/* --- New Styles for V8 --- */
+
+.day-number {
+  cursor: pointer;
+  display: inline-block;
+  padding: 1px 3px;
+}
+
+.day-number:hover {
+  background-color: var(--background-modifier-hover);
+  border-radius: 3px;
+}
+
+.day-number.has-daily-note {
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+
+/* Style for the modal buttons */
+.modal-button-container {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+    margin-top: 20px;
 }

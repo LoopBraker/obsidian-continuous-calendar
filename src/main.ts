@@ -7,7 +7,8 @@ import { MyCalendarPluginSettings } from './types';
 const DEFAULT_SETTINGS: MyCalendarPluginSettings = {
     year: new Date().getFullYear(),
     defaultDotColor: 'currentColor',
-    defaultBarColor: 'var(--interactive-accent)', // A good default for a prominent bar
+    defaultBarColor: 'var(--interactive-accent)',
+    shouldConfirmBeforeCreate: true, // Default to asking the user
 };
 
 export default class MyCalendarPlugin extends Plugin {
@@ -19,7 +20,6 @@ export default class MyCalendarPlugin extends Plugin {
 
         await this.loadSettings();
 
-        // Register the View
         this.registerView(
             CALENDAR_VIEW_TYPE,
             (leaf) => {
@@ -28,18 +28,16 @@ export default class MyCalendarPlugin extends Plugin {
             }
         );
 
-        // Add Ribbon Icon to Open View
         this.addRibbonIcon('calendar-days', 'Open Continuous Calendar', (evt: MouseEvent) => {
             this.activateView();
         });
 
-        // Add Settings Tab
         this.addSettingTab(new CalendarSettingTab(this.app, this));
     }
 
     onunload() {
         console.log('Unloading Continuous Calendar Plugin');
-        this.calendarView = null; // Clear reference
+        this.calendarView = null;
     }
 
     async loadSettings() {

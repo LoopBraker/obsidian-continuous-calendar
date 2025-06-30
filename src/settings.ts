@@ -11,7 +11,7 @@ const AVAILABLE_COLOR_OPTIONS: Record<string, string> = {
 	"Cyan": "var(--color-cyan-tint)",
 	"Blue": "var(--color-blue-tint)",
 	"Purple": "var(--color-purple-tint)",
-    "Accent Color": "var(--interactive-accent)", // Add accent color as an option
+    "Accent Color": "var(--interactive-accent)",
 };
 
 export class CalendarSettingTab extends PluginSettingTab {
@@ -59,7 +59,6 @@ export class CalendarSettingTab extends PluginSettingTab {
 				});
 			});
 
-        // --- New Setting for Default Bar Color ---
         new Setting(containerEl)
 			.setName('Default Range Bar Color')
 			.setDesc('Fallback color for range bars if note has no `color` frontmatter.')
@@ -74,5 +73,16 @@ export class CalendarSettingTab extends PluginSettingTab {
 					this.plugin.refreshCalendarView();
 				});
 			});
+
+        // --- New Setting for Confirmation ---
+        new Setting(containerEl)
+            .setName('Confirm before creating daily notes')
+            .setDesc('Show a confirmation dialog asking if you want to create a missing daily note.')
+            .addToggle(toggle => toggle
+                .setValue(this.plugin.settings.shouldConfirmBeforeCreate)
+                .onChange(async (value) => {
+                    this.plugin.settings.shouldConfirmBeforeCreate = value;
+                    await this.plugin.saveSettings();
+                }));
 	}
 }
