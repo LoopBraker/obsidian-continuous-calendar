@@ -4,7 +4,7 @@
 
 
 >[!IMPORTANT] Why another calendar?
-Monthly views chop weeks in half and hide adjacent days on separate pages. A **continuous calendar** lines the whole year up—week by week—so you can spot gaps, overlaps, and long-range deadlines at a glance. Think of it as the Kanban board for time itself.
+>Monthly views chop weeks in half and hide adjacent days on separate pages. A **continuous calendar** lines the whole year up—week by week—so you can spot gaps, overlaps, and long-range deadlines at a glance. Think of it as the Kanban board for time itself.
 
 
 
@@ -25,21 +25,24 @@ Monthly views chop weeks in half and hide adjacent days on separate pages. A **c
 ## Quick start
 
 1. **Install**   
-   - Manual: clone/download the latest release to `<vault>/.obsidian/plugins/continuous-calendar`  
-   - Obsidian: go to *Settings → Community plugins → Searched installed plugins* and search for `continuous-calendar` 
+   - Clone/download the latest release to `<vault>/.obsidian/plugins/continuous-calendar`  
+   - Go to *Settings → Community plugins → Searched installed plugins* and search for `continuous-calendar` 
    - Toggle the plugin on.
 
-2. **Reload Obsidian**, click the 📅 ribbon icon, and the calendar opens in the right split.
+2. Click the 📅 ribbon icon, and the calendar opens in the right split.
 
 3. **Tweak settings** under *Settings → Plugin → Continuous Calendar*  
    - Pick the year to display.  
    - Choose folders, default colors, and holiday sources.  
    - Add tag→color rules or per-country holiday tints.
 
-
-
 >[!IMPORTANT]
 >continuous-calendar requires Obsidian 1.0+, [Daily Notes core plugin](https://help.obsidian.md/plugins/daily-notes), [dataview](https://help.obsidian.md/plugins/daily-notes), and [periodic-notes](https://github.com/liamcain/obsidian-periodic-notes) plugins to work.
 
+
+## Say thanks 🙏
+If you like this plugin or want to support further development, you can!
+
+[<img src="https://img.shields.io/badge/paypal-LoopBreaker-yellow?style=social&logo=paypal" alt="BuyMeACoffee" width="100">](https://www.paypal.com/donate/?hosted_button_id=R24VP67KCPC88)
 
 
