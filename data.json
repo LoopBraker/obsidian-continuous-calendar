@@ -22,15 +22,17 @@
   ],
   "tagAppearance": {
     "#todo/next-action": {
-      "color": "var(--color-orange-tint)",
+      "color": "var(--color-blue-tint)",
       "symbol": "●"
     }
   },
   "focusedMonths": [
-    6
+    4,
+    7
   ],
   "opaqueMonths": [
-    6
+    4,
+    7
   ],
   "collapseDuplicateTagSymbols": true
 }
