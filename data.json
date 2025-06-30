@@ -1,12 +1,12 @@
 {
   "year": 2025,
+  "birthdayFolder": "05-People",
+  "defaultBirthdaySymbol": "🎂",
+  "defaultBirthdayColor": "var(--color-red-tint)",
   "defaultDotColor": "currentColor",
   "defaultBarColor": "var(--interactive-accent)",
   "shouldConfirmBeforeCreate": true,
   "shouldConfirmBeforeCreateRange": true,
-  "birthdayFolder": "",
-  "defaultBirthdaySymbol": "🎂",
-  "defaultBirthdayColor": "var(--color-red-tint)",
   "holidayStorageFolder": "02-Calendar/Years",
   "holidaySources": [
     {
@@ -16,15 +16,12 @@
     },
     {
       "type": "country",
-      "countryCode": "CO"
+      "countryCode": "CO",
+      "color": "var(--color-red-tint)"
     }
   ],
-  "tagAppearance": {
-    "#source/meeting": {
-      "color": "currentColor",
-      "symbol": "🤓"
-    }
-  },
-  "collapseDuplicateTagSymbols": true,
-  "holidayCountry": "US"
+  "tagAppearance": {},
+  "focusedMonths": [],
+  "opaqueMonths": [],
+  "collapseDuplicateTagSymbols": true
 }

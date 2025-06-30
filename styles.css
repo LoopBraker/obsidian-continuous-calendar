@@ -1,201 +1,851 @@
 /* src/styles.css */
-.my-calendar-table {
-  width: 100%;
-  border-collapse: collapse;
-  table-layout: fixed;
+/* =========================================== */
+/*         CONTINUOUS CALENDAR PLUGIN          */
+/* =========================================== */
+
+/* --- Main Container & Scroll --- */
+.continuous-calendar {
+  position: relative; /* Needed for absolute positioning of controls if used, but flex is better */
+  height: 100%; /* Make continuous-calendar fill its container */
+  display: flex; /* Use flexbox */
+  flex-direction: column; /* Stack scroll area and controls */
 }
-.my-calendar-table th,
-.my-calendar-table td {
-  border: 1px solid var(--background-modifier-border);
+
+.continuous-calendar .calendar-scroll-container {
+  flex-grow: 1; /* Allow scroll container to take up available space */
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+/* --- End Main Container & Scroll --- */
+
+/* Base Table & Cell Styling */
+.continuous-calendar .my-calendar-table {
+  width: 100%;
+  border-collapse: separate !important; /* Changed from collapse */
+  border-spacing: 0;
+  table-layout: fixed; /* Use fixed layout algorithm for equal column resizing */
+}
+
+.continuous-calendar .my-calendar-table th,
+.continuous-calendar .my-calendar-table td {
+  position: relative;
   text-align: center;
+  vertical-align: top;
+  border: 0.5px dotted var(--background-modifier-border);
+  /* border: none; */
   padding: 2px;
   font-size: var(--font-adaptive-small);
-  vertical-align: top;
-  height: 60px;
-  position: relative;
+  line-height: 1.2;
+  overflow: hidden;
+  overflow-wrap: break-word;
+  word-wrap: break-word;
+  /* background-color: var(--background-primary); */
 }
-.my-calendar-table th {
-  background-color: var(--background-secondary);
-}
-.calendar-cell.even-month {
+
+/* -------------------------------------------
+ Continuous‑Calendar – alternate month colours
+ (put this as the *last* rule in the file)
+ ------------------------------------------- */
+
+.continuous-calendar td.calendar-cell.even-month {
   background-color: var(--background-primary);
 }
-.calendar-cell.odd-month {
-  background-color: var(--background-secondary-alt);
+
+.continuous-calendar td.calendar-cell.odd-month {
+  background-color: color-mix(in srgb, var(--background-primary), black 1.2%);
+  /* border: 0.5px dotted var(--background-primary); */
 }
-.calendar-cell.other-year {
-  opacity: 0.3;
+
+/* keep the same hover tint */
+.continuous-calendar td.calendar-cell.even-month:hover {
+  background-color: var(--bg2);
 }
-.calendar-cell.today .day-number {
-  background-color: var(--interactive-accent) !important;
-  color: var(--text-on-accent);
-  font-weight: 700;
-  border-radius: 3px;
-  padding: 1px 3px;
+
+.continuous-calendar td.calendar-cell.odd-month:hover {
+  background-color: var(--background-primary);
+  transition: all 0.1s ease-in-out;
 }
-.week-number {
-  background-color: var(--background-secondary);
-  color: var(--text-muted);
-  font-size: var(--font-adaptive-smaller);
+
+.continuous-calendar td.calendar-cell {
+  min-height: 60px;
 }
-.cell-content {
+
+/* General Cell Hover */
+.continuous-calendar .calendar-cell,
+.continuous-calendar .week-number {
+  cursor: pointer;
+}
+
+.continuous-calendar .week-number:hover {
+  transform: scale(1.3);
+  transition: all 0.1s ease-in-out;
+  opacity: 1;
+}
+
+.continuous-calendar .calendar-cell:hover {
+  background-color: var(--background-modifier-hover);
+  border-color: var(--background-modifier-border-hover);
+  border-radius: 6px;
+  /* cell get a little bit bigger than cell around it */
+  transform: scale(1.05);
+  transition: all 0.1s ease-in-out;
+  z-index: 1; /* Bring hovered cell to the front */
+  box-shadow: 0 0 3px var(--background-modifier-border-hover);
+}
+
+/* --- Cell Content Structure --- */
+.continuous-calendar .cell-content {
   display: flex;
   flex-direction: column;
   height: 100%;
-  min-height: 50px;
-  justify-content: space-between;
+  width: 100%;
+  min-height: 60px;
+  padding-bottom: 16px;
 }
-.top-content {
-  flex-shrink: 0;
+
+/* 1. Top Content (Day Number) */
+.continuous-calendar .top-content {
+  flex-shrink:;
+  padding-bottom: 2px;
+  text-align: center;
 }
-.dot-area {
+
+.continuous-calendar .day-number {
+  display: inline-block;
+  font-weight: normal;
+  vertical-align: middle;
+  position: relative;
+  padding: 1px 2px;
+  margin: 0;
+  border-radius: 3px;
+  cursor: pointer;
+  outline: 1px solid transparent;
+  outline-offset: 1px;
+  transition:
+    outline-color 0.1s ease-in-out,
+    background-color 0.1s ease-in-out;
+}
+
+.continuous-calendar .day-number.today {
+  color: var(--background-primary);
+  font-size: var(--font-adaptive-small);
+  font-weight: bold !important;
+  display: block;
+  width: 100%;
+  background-color: var(--text-normal);
+  border-radius: 2px;
+  margin-left: auto; /* Center the block */
+  margin-right: auto; /* Center the block */
+  padding: 1px 4px !important; /* Adjust padding */
+}
+
+/* 2. Dot Area */
+.continuous-calendar .dot-area {
   flex-shrink: 0;
+  max-height: 1.3em;
+  overflow: hidden;
   line-height: 1.1;
   text-align: center;
-  margin: 2px 0;
-  min-height: 1em;
-  flex-grow: 1;
+  margin: 0 auto; /* Center the dots */
+  /* margin-bottom: 2px; */
 }
-.dot {
+
+.continuous-calendar .dot {
   display: inline-block;
   margin: 0 1px;
+  vertical-align: middle;
+  white-space: normal;
 }
-.dot.note-dot {
+
+.continuous-calendar .dot.note-dot {
+  font-size: 0.6em;
+  line-height: 1;
+}
+
+/* Style the specific daily note indicator */
+.continuous-calendar .dot.daily-note-indicator {
+  font-size: 0.8em; /* Make pin slightly larger? Adjust as needed */
+  /* Override color if you want it different from the note's color */
+  /* color: var(--text-accent); */
+  /* Adjust vertical alignment if needed */
+  vertical-align: middle; /* or baseline, text-bottom etc. */
+  font-weight: bold;
+  /* Ensure it doesn't get margin from the base .dot rule if needed */
+  /* margin: 0; */
+}
+
+.continuous-calendar .dot.birthday-dot {
   font-size: 0.8em;
-  font-weight: 700;
+  font-weight: bold;
+  vertical-align: middle;
 }
-.dot.birthday-dot {
-  font-size: 1em;
-}
-.range-bar-area {
-  flex-shrink: 0;
+
+/* 3. Range Bar Area & Slots */
+.continuous-calendar .range-bar-area {
+  position: absolute;
+  bottom: 2px;
+  left: 0;
+  right: 0;
   height: auto;
   display: flex;
   flex-direction: column;
   gap: 1px;
-  padding: 0 1px;
-  margin-bottom: 2px;
+  padding: 0 0;
+  margin: 0 auto; /* Center the range bar */
 }
-.range-slot {
+
+.continuous-calendar .range-slot {
   height: 4px;
   width: 100%;
 }
-.range-bar {
-  height: 100%;
+
+.continuous-calendar .range-bar {
   width: 100%;
+  height: 100%;
   display: block;
   border-radius: 0;
 }
+
+/* Range Bar Start/End Styles */
+/* left corner when this individual bar starts here */
 .range-bar.range-start {
   border-top-left-radius: 2px;
   border-bottom-left-radius: 2px;
 }
+
+/* right corner when this bar ends here */
 .range-bar.range-end {
   border-top-right-radius: 2px;
   border-bottom-right-radius: 2px;
 }
-.day-number {
-  cursor: pointer;
+
+/* both start & end on the same day */
+.range-bar.range-start.range-end {
+  border-radius: 3px !important; /* square */
+}
+
+/* Holiday Cells */
+/* .continuous-calendar .calendar-cell.holiday {
+background-color: color-mix(in srgb, var(--color-red-tint), transparent 85%);
+color: var(--color-red-text) !important;
+}
+.continuous-calendar .calendar-cell.holiday:hover {
+background-color: color-mix(in srgb, var(--color-red-tint), transparent 60%);
+
+} */
+
+/* Weekends (Saturday 7th col, Sunday 8th col) */
+.continuous-calendar .my-calendar-table td:nth-child(7),
+.continuous-calendar .my-calendar-table td:nth-child(8) {
+  /* background-color: color-mix(in srgb, var(--color-red-tint), transparent 85%);} */
+  background-color: color-mix(in srgb, var(--bg2), black 0%);
+}
+.continuous-calendar .my-calendar-table td:nth-child(7):hover,
+.continuous-calendar .my-calendar-table td:nth-child(8):hover {
+  background-color: color-mix(
+    in srgb,
+    var(--background-modifier-hover),
+    transparent 0%
+  );
+  /* background-color: var(--background-primary); */
+}
+
+/* Outside Year */
+.continuous-calendar .calendar-cell.other-year {
+  opacity: 0.2;
+}
+
+/* Non-Current Month Fading - Original rule modified by JS logic adding 'is-faded' */
+.continuous-calendar .calendar-cell:not(.current-month) {
+  color: var(--text-muted);
+  font-size: var(--font-adaptive-smaller) !important;
+}
+
+/* Current Month Cells */
+.continuous-calendar .calendar-cell.current-month {
+  opacity: 1;
+  color: var(--text-normal);
+  font-weight: 500;
+  font-size: var(--font-adaptive-small) !important;
+}
+
+/* Week Number Styling */
+.continuous-calendar .week-number {
+  text-align: center;
+  border-right: 1px dashed var(--text-muted) !important;
+  /* line-height: 3; */
+  font-weight: normal;
+  vertical-align: middle !important;
+  padding: 4px 2px !important;
+  font-size: var(--font-adaptive-smaller) !important;
+  border: none !important;
+  opacity: 0.5;
+}
+
+.continuous-calendar :not(.week-number.current-week) .week-number-text {
+  /* opacity: 0.5; */
+  color: var(--text-muted);
   display: inline-block;
-  padding: 1px 3px;
 }
-.day-number:hover {
-  background-color: var(--background-modifier-hover);
-  border-radius: 3px;
+
+.continuous-calendar .week-number.current-week {
+  opacity: 1 !important; /* Ensure it stays visible */
 }
-.day-number.has-daily-note {
-  text-decoration: underline;
-  text-decoration-thickness: 1px;
-  text-underline-offset: 2px;
+
+.continuous-calendar .week-number.current-week .week-number-text {
+  font-size: var(--font-adaptive-small) !important;
+  font-weight: bold !important;
+  border-radius: 2px !important;
+  padding: 2px 6px !important;
+  display: inline-block;
 }
-.modal-button-container {
+
+/* --- Month Column & Icons (Vertical Stack) --- */
+.continuous-calendar .month-column {
+  text-align: center;
+  border-left: 0.5px dotted var(--background-modifier-border);
+  vertical-align: middle; /* Center content vertically */
+  border: none !important; /* Remove default border */
+}
+
+.continuous-calendar .month-cell-wrapper {
   display: flex;
-  justify-content: flex-end;
-  gap: 10px;
-  margin-top: 20px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center; /* Center items vertically */
+  height: 100%;
+  padding: 2px 0px; /* Reduced padding */
+  gap: 1px; /* Reduced gap between label and icon cells */
+  width: 100%; /* Ensure wrapper takes full width */
 }
-.calendar-cell.holiday-colored {
-  background-color: color-mix(
-    in srgb,
-    var(--holiday-background-color, var(--color-red-tint)),
-    transparent 85%
-  );
+
+.continuous-calendar .month-label-text {
+  /* Styles for the text itself, e.g., current-month-label, other-month-label */
+  display: block; /* Ensure it takes space */
+  line-height: 1.2; /* Adjust line height */
+  margin-bottom: 0; /* Remove bottom margin if using gap */
+  padding: 2px 3px; /* Adjust padding */
+  border-radius: 2px;
+  width: max-content; /* Prevent stretching */
+  font-size: var(--font-adaptive-smaller);
 }
-.calendar-cell.holiday-colored:hover {
-  background-color: color-mix(
-    in srgb,
-    var(--holiday-background-color, var(--color-red-tint)),
-    transparent 60%
-  );
+
+/* Make the label text clickable */
+.continuous-calendar .month-label-text.clickable-month-label {
+  cursor: pointer;
 }
-.day-number.range-start-engaged {
-  outline: 2px solid var(--interactive-accent);
+
+.continuous-calendar .month-label-text.clickable-month-label:hover {
+  background-color: var(--text-accent);
+  color: var(--background-primary);
+  transform: scale(1.05);
+  transition: all 0.1s ease-in-out;
+  z-index: 1; /* Bring hovered cell to the front */
+}
+
+.continuous-calendar .month-action-cell {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  width: 100%; /* Take full width */
+  line-height: 1; /* Prevent extra height */
+  /* height: 18px; */ /* Optional: Fixed height */
+}
+
+.continuous-calendar .month-action-icon {
+  cursor: pointer;
+  padding: 1px; /* Reduced padding */
+  border-radius: 3px;
+  opacity: 0.6; /* Slightly more visible default */
+  transition: all 0.2s ease;
+  display: flex; /* Needed for setIcon */
+  align-items: center; /* Needed for setIcon */
+  justify-content: center; /* Needed for setIcon */
+  pointer-events: auto !important; /* Ensure clickable */
+  color: var(--text-muted);
+  width: 18px; /* Slightly smaller */
+  height: 18px;
+}
+
+.continuous-calendar .month-action-icon > svg {
+  /* Target the SVG set by setIcon */
+  width: 12px; /* Smaller icon */
+  height: 12px;
+}
+
+.continuous-calendar .month-action-icon:hover {
+  opacity: 1;
+  color: var(--background-primary);
+  transform: scale(1.05);
+  background-color: var(--text-accent);
+  transition: all 0.1s ease-in-out;
+}
+
+/* --- END Month Column --- */
+
+/* Month Boundaries (vertical & horizontal) */
+.calendar-cell.month-start {
+  border-left: 0.5px dashed var(--text-muted) !important;
+}
+
+.calendar-cell.month-end {
+  border-right: 0.5px dashed var(--text-muted) !important;
+}
+
+.calendar-cell.month-top {
+  border-top: 1px dashed var(--text-muted) !important;
+}
+.calendar-cell.month-bottom {
+  border-bottom: 1px dashed var(--text-muted) !important;
+}
+
+/* For month-boundary as an extra separate class if needed */
+.calendar-cell.month-boundary {
+  border-left: 1px dashed var(--text-muted) !important;
+}
+
+/* Current Month Outline Styles */
+:root {
+  /* Or .continuous-calendar */
+  --current-month-corner-radius: 8px; /* Make sure value is valid */
+}
+
+/* Border Outline Classes */
+.continuous-calendar .border-outline-top {
+  border-top: 2px solid var(--text-muted) !important;
+  /* box-shadow: 0px -7px 0px 0px color-mix(in srgb, var(--text-faint), transparent 60%) !important; */
+  z-index: 1;
+}
+
+.continuous-calendar .border-outline-left {
+  border-left: 2px solid var(--text-muted) !important;
+  z-index: 1;
+}
+
+.continuous-calendar .border-outline-right {
+  border-right: 2px solid var(--text-muted) !important;
+  z-index: 1;
+}
+.continuous-calendar .border-outline-bottom {
+  border-bottom: 2px solid var(--text-muted) !important;
+  /* box-shadow: 0px 7px 0px 0px color-mix(in srgb, var(--text-faint), transparent 60%) !important; */
+  z-index: 1;
+}
+
+/* Rounded Corner Classes */
+.continuous-calendar .corner-top-left {
+  border-top-left-radius: var(--current-month-corner-radius);
+  overflow: hidden;
+}
+
+.continuous-calendar .corner-top-right {
+  border-top-right-radius: var(--current-month-corner-radius);
+  overflow: hidden;
+}
+
+.continuous-calendar .corner-bottom-left {
+  border-bottom-left-radius: var(--current-month-corner-radius);
+  overflow: hidden;
+}
+
+.continuous-calendar .corner-bottom-right {
+  border-bottom-right-radius: var(--current-month-corner-radius);
+  overflow: hidden;
+}
+
+/* Style the cell that contains a clickable label */
+.continuous-calendar td.month-column.clickable-month-label {
+  cursor: pointer;
+}
+
+/* Style the text itself on hover (targets spans inside the cell) */
+/* This hover might need adjustment if it interferes with icon clicks */
+.continuous-calendar
+  td.month-column.clickable-month-label:hover
+  .month-label-text {
+  background-color: var(--text-accent); /* Use theme accent color */
+  text-decoration: underline !important;
+  color: var(--background-primary);
+  padding: 3px;
+  border-radius: 2px;
+  opacity: 1 !important; /* ensure it stays visible */
+  transition:
+    outline-color 0.1s ease-in-out,
+    background-color 0.1s ease-in-out;
+}
+
+/* Ensure the specific label spans inherit pointer */
+.continuous-calendar .current-month-label,
+.continuous-calendar .other-month-label {
+  /* Add class for other months if needed */
+}
+
+.continuous-calendar .current-month-label {
+  /* background-color: var(--text-normal); */
+  /* color: var(--background-primary); */
+  padding: 3px;
+  /* line-height: 3 !important; */
+  border-radius: 2px;
+  opacity: 1 !important; /* ensure it stays visible */
+  font-weight: bold !important;
+  font-size: var(--font-adaptive-small) !important;
+}
+
+/* Expanded (Click-to-Open) Rows */
+.continuous-calendar .calendar-cell.expanded,
+.continuous-calendar .calendar-cell.expanded:hover {
+  border: 2px solid var(--text-normal) !important; /* Use theme accent color */
+  border-radius: 4px !important;
+  background-color: var(
+    --background-secondary-alt
+  ); /* Slightly different bg when expanded */
+}
+
+.continuous-calendar .expanded-row td {
+  padding: 10px;
+  border: 1px solid var(--text-muted);
+  border-radius: 4px;
+  text-align: left !important;
+  opacity: 0;
+  max-height: 0;
+  overflow: hidden;
+  /* transition: all 0.3s ease-in-out; */
+  transition:
+    opacity 0.3s ease-in-out,
+    max-height 0.3s ease-in-out,
+    padding 0.3s ease-in-out; /* Smooth transition */
+}
+
+.continuous-calendar .expanded-row.show td {
+  max-height: 1000px;
+  opacity: 1;
+}
+
+/* Expanded Content */
+.continuous-calendar .expanded-content {
+  font-size: var(--font-adaptive-normal) !important;
+  position: relative; /* for close button positioning */
+}
+
+.continuous-calendar .expanded-content h3,
+.continuous-calendar .expanded-content h4 {
+  line-height: 0.8;
+}
+
+.continuous-calendar .expanded-content p {
+  margin-bottom: 8px;
+}
+
+.continuous-calendar .expanded-content a:hover {
+  text-decoration: underline;
+}
+
+/* Close Button */
+.continuous-calendar .close-button {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  background: transparent;
+  border: none;
+  font-size: 20px;
+  font-weight: bold;
+  color: #888;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.continuous-calendar .close-button:hover {
+  color: #000;
+}
+
+/* Tooltip */
+.continuous-calendar .close-button::after {
+  content: "Close";
+  position: absolute;
+  top: -25px;
+  right: 0;
+  background-color: #333;
+  color: #fff;
+  padding: 3px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  white-space: nowrap;
+  opacity: 0;
+  transition: opacity 0.3s;
+  pointer-events: none;
+}
+
+.continuous-calendar .close-button:hover::after {
+  opacity: 1;
+}
+
+/* Notes & Range Bars */
+.continuous-calendar .notes-container {
+  font-size: 12px;
+}
+
+.continuous-calendar .note-link,
+.continuous-calendar .range-bar-link {
+  text-decoration: none;
+  margin-right: 2px;
+}
+
+.force-focused-month {
+  opacity: 1 !important; /* Ensure it's fully visible */
+  font-size: var(--font-adaptive-small);
+  color: var(--text-normal) !important;
+}
+
+.is-faded {
+  opacity: 0.4 !important; /* Use important to override other opacity rules if needed */
+}
+
+/* Responsive Layout */
+@media (max-width: 768px) {
+  .continuous-calendar .my-calendar-table th,
+  .continuous-calendar .my-calendar-table td {
+    font-size: 10px;
+    padding: 2px;
+  }
+  .continuous-calendar .expanded-content {
+    font-size: 14px;
+  }
+  .continuous-calendar .close-button {
+    font-size: 18px;
+  }
+}
+
+/* --- Controls Container Styling --- */
+.calendar-controls-bottom {
+  flex-shrink: 0; /* Prevent controls from shrinking */
+  padding: 5px 10px; /* Add some padding */
+  display: flex;
+  justify-content: flex-end; /* Align items to the right */
+  align-items: center;
+  gap: 15px; /* Increased space between control groups */
+  background-color: var(--background-secondary); /* Match theme */
+  border-top: 1px solid var(--background-modifier-border);
+}
+
+/* Group for Reset/Relocate buttons */
+.calendar-controls-bottom .focus-controls {
+  display: flex;
+  gap: 8px; /* Space within the focus group */
+}
+
+/* Year Selector */
+.year-update-controls {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.year-input {
+  width: 55px;
+  padding: 3px 5px;
+  text-align: center;
+  border: 1px solid var(--background-modifier-border);
+  background-color: var(--background-primary);
+  color: var(--text-normal);
+  border-radius: 4px;
+}
+
+.year-update-button {
+  padding: 3px 10px;
+  font-size: var(--font-adaptive-smaller);
+  cursor: pointer;
+  border: none;
+  background-color: var(--interactive-accent);
+  color: var(--text-on-accent);
+  border-radius: 4px;
+  transition: background-color 0.1s ease-in-out;
+}
+
+.year-update-button:hover {
+  background-color: var(--interactive-accent-hover);
+}
+
+/* Reset/Relocate Button Styling */
+.reset-focus-button,
+.relocate-button {
+  padding: 3px 10px;
+  font-size: var(--font-adaptive-smaller);
+  cursor: pointer;
+  border: 1px solid var(--background-modifier-border);
+  background-color: var(--background-primary);
+  color: var(--text-muted); /* Make less prominent than year load */
+  border-radius: 4px;
+  transition: all 0.1s ease-in-out;
+}
+
+.reset-focus-button:hover,
+.relocate-button:hover {
+  background-color: var(--background-modifier-hover);
+  color: var(--text-normal);
+  border-color: var(--background-modifier-border-hover);
+}
+
+/* Calendar Refresh Button */
+.calendar-refresh-button {
+  padding: 3px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: var(--background-primary);
+  color: var(--text-muted);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 4px;
+  cursor: pointer;
+  height: 30px;
+  width: 30px;
+  transition: all 0.1s ease-in-out;
+}
+
+.calendar-refresh-button:hover {
+  background-color: var(--background-modifier-hover);
+  color: var(--text-normal);
+  border-color: var(--background-modifier-border-hover);
+}
+
+.calendar-refresh-button svg {
+  height: 16px;
+  width: 16px;
+}
+
+/* --- END Controls --- */
+
+/* Misc. Classes */
+.birthday-link {
+  color: hotpink;
+}
+.birthday-link:hover {
+  color: deeppink;
+}
+.month-abbr-column {
+  text-align: center;
+  line-height: 3 !important;
+  font-size: 4em;
+  font-family: monospace;
+  color: var(--background-modifier-border) !important;
+  background-color: #000 !important;
+}
+
+/* Sticky header: <thead> or specifically <thead> th. */
+.continuous-calendar .my-calendar-table thead th {
+  position: sticky;
+  font-weight: normal;
+  font-size: var(--font-adaptive-smaller);
+  top: -5px;
+  z-index: 2; /* So it stays above the scrolling cells */
+  background-color: var(--background-primary);
+  padding: 4px 2px;
+  box-shadow: 0 2px 2px -1px var(--background-modifier-border);
+}
+
+/* --- Styling for Days --- */
+.continuous-calendar .day-number:hover {
+  outline-color: var(--text-faint); /* Use a faint theme color */
+}
+
+.continuous-calendar .day-number.engaged {
+  outline-color: var(
+    --text-normal
+  ); /* Use theme's normal text color for outline */
+}
+
+/* Style for the first clicked day number when selecting a range */
+.continuous-calendar .day-number.range-start-engaged {
+  outline: 2px solid var(--interactive-accent) !important; /* Example: Blue outline, use !important if needed */
   background-color: color-mix(
     in srgb,
     var(--interactive-accent),
     transparent 80%
-  );
+  ); /* Example: Light blue background */
+  border-radius: 3px;
 }
-.calendar-cell.expanded {
-  border: 2px solid var(--interactive-accent) !important;
+
+/* Ensure engaged style doesn't fully override range-start if both are applied briefly */
+.continuous-calendar .day-number.range-start-engaged.engaged {
+  outline-width: 2px; /* Keep the thicker outline */
 }
-.expanded-row td {
-  padding: 10px;
-  text-align: left;
-  vertical-align: top;
-  border: 1px solid var(--background-modifier-border);
-  background-color: var(--background-secondary-alt);
+
+.continuous-calendar .day-number .day-number-text.has-daily-note-linkable {
+  text-decoration: underline;
+  cursor: pointer; /* Optional: makes it visually clear it's interactive */
+  /* color: var(--text-accent); */
 }
-.expanded-content {
-  position: relative;
+
+.continuous-calendar .pencil-indicator {
+  display: none; /* Hidden by default */
+  margin-left: 4px; /* Space between number and pencil */
+  font-size: 0.9em; /* Slightly smaller */
+  color: var(--text-muted); /* Use a muted theme color */
+  vertical-align: middle; /* Align with number text */
 }
-.expanded-content ul {
-  list-style: none;
-  padding-left: 10px;
-  margin: 5px 0;
+
+.continuous-calendar .pencil-indicator.always-visible {
+  display: inline; /* Show if daily note exists, regardless of engagement */
 }
-.expanded-content li {
-  margin-bottom: 4px;
+
+.continuous-calendar .day-number.engaged .pencil-indicator {
+  display: inline; /* Show the pencil */
 }
-.close-button {
-  position: absolute;
-  top: -5px;
-  right: -5px;
-  background: 0 0;
-  border: none;
-  font-size: 1.2em;
-  cursor: pointer;
-  color: var(--text-muted);
+
+.continuous-calendar .day-number.today:hover {
+  background-color: var(--text-accent);
+  outline-color: var(--text-faint);
 }
-.close-button:hover {
+
+.continuous-calendar .day-number.today.engaged {
+  outline-color: var(--text-normal);
+}
+
+.continuous-calendar .day-number.today .pencil-indicator,
+.continuous-calendar .day-number.today .pencil-indicator.always-visible {
+  /* Ensure 'today' styling applies to always-visible pencil */
+  color: var(--background-primary); /* Pencil color on 'today' background */
+  margin-left: 2px;
+  font-size: 0.7em; /* Smaller pencil on 'today' */
+}
+
+/* Styling for Expanded Holiday List */
+.continuous-calendar .expanded-holidays {
+  list-style: none; /* Remove default bullets */
+  padding-left: 0;
+  margin-top: 5px;
+  margin-bottom: 10px;
+}
+
+.continuous-calendar .expanded-holidays li {
+  padding: 2px 0;
+  color: var(--text-muted); /* Style holiday names distinctively */
+}
+
+.continuous-calendar .expanded-content .expanded-holidays li {
+  color: var(--color-red-text);
+}
+
+.continuous-calendar .calendar-cell.holiday-colored {
+  background-color: color-mix(
+    in srgb,
+    var(--holiday-background-color, var(--color-red-tint)),
+    transparent 85%
+  ) !important;
   color: var(--text-normal);
+  font-weight: 500;
 }
-.border-outline-top {
-  border-top: 2px solid var(--text-faint) !important;
+
+.continuous-calendar .calendar-cell.holiday-colored:hover {
+  background-color: color-mix(
+    in srgb,
+    var(--holiday-background-color, var(--color-red-tint)),
+    transparent 60%
+  ) !important;
 }
-.border-outline-bottom {
-  border-bottom: 2px solid var(--text-faint) !important;
-}
-.border-outline-left {
-  border-left: 2px solid var(--text-faint) !important;
-}
-.border-outline-right {
-  border-right: 2px solid var(--text-faint) !important;
-}
-.month-column {
-  text-align: center;
-  border-left: 1px dotted var(--background-modifier-border);
-  vertical-align: middle;
-  writing-mode: vertical-rl;
-  text-orientation: mixed;
-  color: var(--text-faint);
-  font-size: var(--font-adaptive-bigger);
-}
-.is-faded {
-  opacity: 0.4;
-  color: var(--text-muted);
-}
-.current-month {
-  opacity: 1;
-  color: var(--text-normal);
+
+/* Year Selector Controls */
+.continuous-calendar {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
 }
