@@ -2,7 +2,6 @@
 import { App, PluginSettingTab, Setting } from 'obsidian';
 import MyCalendarPlugin from './main';
 
-// A curated list of theme-friendly CSS color variables
 const AVAILABLE_COLOR_OPTIONS: Record<string, string> = {
 	"Default (Theme-based)": "currentColor",
 	"Red": "var(--color-red-tint)",
@@ -12,6 +11,7 @@ const AVAILABLE_COLOR_OPTIONS: Record<string, string> = {
 	"Cyan": "var(--color-cyan-tint)",
 	"Blue": "var(--color-blue-tint)",
 	"Purple": "var(--color-purple-tint)",
+    "Accent Color": "var(--interactive-accent)", // Add accent color as an option
 };
 
 export class CalendarSettingTab extends PluginSettingTab {
@@ -44,21 +44,32 @@ export class CalendarSettingTab extends PluginSettingTab {
 						}
 					}));
         
-        // --- New Setting for Default Dot Color ---
         new Setting(containerEl)
 			.setName('Default Event Dot Color')
 			.setDesc('Fallback color if a note has a date but no `color` frontmatter specified.')
 			.addDropdown(dropdown => {
-				// Populate dropdown with our curated color list
 				Object.keys(AVAILABLE_COLOR_OPTIONS).forEach((friendlyName) => {
-					const cssVar = AVAILABLE_COLOR_OPTIONS[friendlyName];
-					dropdown.addOption(cssVar, friendlyName);
+					dropdown.addOption(AVAILABLE_COLOR_OPTIONS[friendlyName], friendlyName);
 				});
-
 				dropdown.setValue(this.plugin.settings.defaultDotColor);
-
 				dropdown.onChange(async (value: string) => {
 					this.plugin.settings.defaultDotColor = value;
+					await this.plugin.saveSettings();
+					this.plugin.refreshCalendarView();
+				});
+			});
+
+        // --- New Setting for Default Bar Color ---
+        new Setting(containerEl)
+			.setName('Default Range Bar Color')
+			.setDesc('Fallback color for range bars if note has no `color` frontmatter.')
+			.addDropdown(dropdown => {
+				Object.keys(AVAILABLE_COLOR_OPTIONS).forEach((friendlyName) => {
+					dropdown.addOption(AVAILABLE_COLOR_OPTIONS[friendlyName], friendlyName);
+				});
+				dropdown.setValue(this.plugin.settings.defaultBarColor);
+				dropdown.onChange(async (value: string) => {
+					this.plugin.settings.defaultBarColor = value;
 					await this.plugin.saveSettings();
 					this.plugin.refreshCalendarView();
 				});

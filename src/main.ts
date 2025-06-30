@@ -6,7 +6,8 @@ import { MyCalendarPluginSettings } from './types';
 
 const DEFAULT_SETTINGS: MyCalendarPluginSettings = {
     year: new Date().getFullYear(),
-    defaultDotColor: 'currentColor', // Use the current theme's text color by default
+    defaultDotColor: 'currentColor',
+    defaultBarColor: 'var(--interactive-accent)', // A good default for a prominent bar
 };
 
 export default class MyCalendarPlugin extends Plugin {
@@ -49,26 +50,21 @@ export default class MyCalendarPlugin extends Plugin {
         await this.saveData(this.settings);
     }
 
-    // Function to activate/open the view
     async activateView() {
-        // Detach existing leaves first to ensure only one instance runs
         this.app.workspace.getLeavesOfType(CALENDAR_VIEW_TYPE).forEach((leaf) => {
             leaf.detach();
         });
 
-        // Add to the right sidebar
         await this.app.workspace.getRightLeaf(false)?.setViewState({
             type: CALENDAR_VIEW_TYPE,
             active: true,
         });
 
-        // Reveal the view
         this.app.workspace.revealLeaf(
             this.app.workspace.getLeavesOfType(CALENDAR_VIEW_TYPE)[0]
         );
     }
 
-    // Helper function to refresh the calendar view if it's open
     refreshCalendarView() {
         if (this.calendarView) {
             this.calendarView.refresh();

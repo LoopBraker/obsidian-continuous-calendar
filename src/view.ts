@@ -56,15 +56,39 @@ export class CalendarView extends ItemView {
             const fm = cache?.frontmatter;
             if (!fm) continue;
 
+            let hasDate = false;
+            let validDate: string | null = null;
+            let validDateStart: string | null = null;
+            let validDateEnd: string | null = null;
+            
+            // Check for single date
             if (fm.date) {
                 const mDate = moment(fm.date.toString(), "YYYY-MM-DD", true);
                 if (mDate.isValid()) {
-                    pagesData.push({
-                        date: mDate.format("YYYY-MM-DD"),
-                        name: file.basename,
-                        color: fm.color // Extract color from frontmatter
-                    });
+                    validDate = mDate.format("YYYY-MM-DD");
+                    hasDate = true;
                 }
+            }
+
+            // Check for date range
+            if (fm.dateStart && fm.dateEnd) {
+                const mStart = moment(fm.dateStart.toString(), "YYYY-MM-DD", true);
+                const mEnd = moment(fm.dateEnd.toString(), "YYYY-MM-DD", true);
+                if (mStart.isValid() && mEnd.isValid()) {
+                    validDateStart = mStart.format("YYYY-MM-DD");
+                    validDateEnd = mEnd.format("YYYY-MM-DD");
+                    hasDate = true;
+                }
+            }
+
+            if (hasDate) {
+                pagesData.push({
+                    date: validDate,
+                    dateStart: validDateStart,
+                    dateEnd: validDateEnd,
+                    name: file.basename,
+                    color: fm.color
+                });
             }
         }
         // --- End Data Fetching ---
@@ -107,23 +131,42 @@ export class CalendarView extends ItemView {
                 
                 cell.addClass(...cellClasses);
 
-                // --- Cell Structure ---
+                // --- Updated Cell Structure ---
                 const cellContentWrapper = cell.createDiv({ cls: 'cell-content' });
                 const topContentDiv = cellContentWrapper.createDiv({ cls: 'top-content' });
                 const dotAreaDiv = cellContentWrapper.createDiv({ cls: 'dot-area' });
+                const rangeBarAreaDiv = cellContentWrapper.createDiv({ cls: 'range-bar-area' }); // New area
 
                 if (dayMoment.year() === year) {
                     topContentDiv.setText(dayMoment.date().toString());
                 }
 
+                // Render single-day event dots
                 const matchingNotes = pagesData.filter(p => p.date === dateStr);
                 matchingNotes.forEach(note => {
                     const dot = dotAreaDiv.createSpan({ cls: 'dot', text: '●' });
                     dot.title = note.name;
-                    // Apply color from frontmatter or fall back to the default setting
                     dot.style.color = note.color || this.plugin.settings.defaultDotColor;
                 });
-                // --- End Cell Structure ---
+
+                // Render range bars
+                const matchingRanges = pagesData.filter(p => 
+                    p.dateStart && p.dateEnd &&
+                    dayMoment.isBetween(p.dateStart, p.dateEnd, 'day', '[]') // '[]' includes start and end
+                );
+                
+                matchingRanges.forEach(p => {
+                    const bar = rangeBarAreaDiv.createDiv({ cls: 'range-bar', title: p.name });
+                    bar.style.backgroundColor = p.color || this.plugin.settings.defaultBarColor;
+
+                    if (dayMoment.isSame(p.dateStart, 'day')) {
+                        bar.addClass('range-start');
+                    }
+                    if (dayMoment.isSame(p.dateEnd, 'day')) {
+                        bar.addClass('range-end');
+                    }
+                });
+                // --- End Updated Cell Structure ---
 
                 currentDay.add(1, 'day');
             }
