@@ -1,8 +1,8 @@
 # Continuous Calendar for Obsidian
 
 *A year-at-a-glance calendar that turns your vault into a lightweight personal planner.*
-
->[!IMPORTANT] Why a continuous calendar?
+ 
+>Why a continuous calendar?
 >Monthly views chop weeks in half and hide adjacent days on separate pages. A **continuous calendar** lines the whole year up—week by week—so you can spot gaps, overlaps, and long-range deadlines at a glance. Think of it as the Kanban board for time itself.
 
 ![screenshot-full](https://github.com/LoopBraker/continuous-calendar/blob/ae614dac31ef33f5eaed361a652bb06c259bbc64/images/Screenshot-full.png)
