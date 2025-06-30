@@ -9,7 +9,7 @@
 .my-calendar-table td {
   border: 1px solid var(--background-modifier-border);
   text-align: center;
-  padding: 2px; /* Reduced padding to make room for content */
+  padding: 2px;
   font-size: var(--font-adaptive-small);
   vertical-align: top;
   height: 60px;
@@ -43,8 +43,6 @@
   font-size: var(--font-adaptive-smaller);
 }
 
-/* --- New Styles for V5 --- */
-
 /* Cell Content Structure */
 .cell-content {
   display: flex;
@@ -53,19 +51,21 @@
 }
 
 .top-content {
-  flex-shrink: 0; /* Prevents the day number from shrinking */
+  flex-shrink: 0;
 }
 
 .dot-area {
-  flex-grow: 1; /* Allows the dot area to fill remaining space */
+  flex-grow: 1;
   line-height: 1.1;
   text-align: center;
   margin-top: 4px;
 }
 
+/* --- Updated Dot Style --- */
 .dot {
   display: inline-block;
   margin: 0 1px;
-  font-size: 0.6em;
-  color: var(--text-muted);
+  font-size: 0.8em; /* Slightly larger */
+  font-weight: bold;
+  /* Color is now set via inline style, so we remove the default color here */
 }

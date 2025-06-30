@@ -62,6 +62,7 @@ export class CalendarView extends ItemView {
                     pagesData.push({
                         date: mDate.format("YYYY-MM-DD"),
                         name: file.basename,
+                        color: fm.color // Extract color from frontmatter
                     });
                 }
             }
@@ -106,7 +107,7 @@ export class CalendarView extends ItemView {
                 
                 cell.addClass(...cellClasses);
 
-                // --- New Cell Structure ---
+                // --- Cell Structure ---
                 const cellContentWrapper = cell.createDiv({ cls: 'cell-content' });
                 const topContentDiv = cellContentWrapper.createDiv({ cls: 'top-content' });
                 const dotAreaDiv = cellContentWrapper.createDiv({ cls: 'dot-area' });
@@ -115,13 +116,14 @@ export class CalendarView extends ItemView {
                     topContentDiv.setText(dayMoment.date().toString());
                 }
 
-                // Check for matching notes for this day
                 const matchingNotes = pagesData.filter(p => p.date === dateStr);
                 matchingNotes.forEach(note => {
                     const dot = dotAreaDiv.createSpan({ cls: 'dot', text: '●' });
                     dot.title = note.name;
+                    // Apply color from frontmatter or fall back to the default setting
+                    dot.style.color = note.color || this.plugin.settings.defaultDotColor;
                 });
-                // --- End New Cell Structure ---
+                // --- End Cell Structure ---
 
                 currentDay.add(1, 'day');
             }

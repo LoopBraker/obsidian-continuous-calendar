@@ -6,6 +6,7 @@ import { MyCalendarPluginSettings } from './types';
 
 const DEFAULT_SETTINGS: MyCalendarPluginSettings = {
     year: new Date().getFullYear(),
+    defaultDotColor: 'currentColor', // Use the current theme's text color by default
 };
 
 export default class MyCalendarPlugin extends Plugin {
@@ -63,7 +64,7 @@ export default class MyCalendarPlugin extends Plugin {
 
         // Reveal the view
         this.app.workspace.revealLeaf(
-            this.app.workspace.getLeavesOfType(CAL-VIEW_TYPE)[0]
+            this.app.workspace.getLeavesOfType(CALENDAR_VIEW_TYPE)[0]
         );
     }
 
