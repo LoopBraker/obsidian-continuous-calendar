@@ -1,57 +1,126 @@
 // src/holidayService.ts
-import { Notice, moment } from 'obsidian';
-import { Holiday } from './types';
+import {
+  App,
+  TFile,
+  Notice,
+  normalizePath,
+  stringifyYaml,
+  moment,
+} from "obsidian";
+import MyCalendarPlugin from "./main";
+import { Holiday, HolidayFileFrontMatter } from "./types";
+
+const HOLIDAY_FILE_PREFIX = "Holidays ";
 
 export class HolidayService {
-    private hd: any = null; // To hold the date-holidays library instance
+  app: App;
+  plugin: MyCalendarPlugin;
+  private hd: any = null;
 
-    constructor() {
-        this.initialize();
+  constructor(app: App, plugin: MyCalendarPlugin) {
+    this.app = app;
+    this.plugin = plugin;
+    this.initialize();
+  }
+
+  private async initialize() {
+    try {
+      this.hd = require("date-holidays");
+    } catch (err) {
+      console.error("Failed to load 'date-holidays' library.", err);
+      this.hd = null;
     }
+  }
 
-    private async initialize() {
-        try {
-            // This is how we dynamically import an external library in Obsidian plugins
-            this.hd = require('date-holidays');
-        } catch (err) {
-            console.error("Failed to load 'date-holidays' library. Holiday feature will be disabled.", err);
-            new Notice("Holiday library not found. Please install it or check for errors.");
-            this.hd = null;
-        }
+  private async fetchHolidaysFromLibrary(
+    countryCode: string,
+    year: number
+  ): Promise<Holiday[]> {
+    if (!this.hd || !countryCode) return [];
+    try {
+      const holidaysInstance = new this.hd(countryCode);
+      const rawHolidays = holidaysInstance.getHolidays(year);
+      if (!rawHolidays || !Array.isArray(rawHolidays)) return [];
+
+      return rawHolidays
+        .map((h: any): Holiday | null => {
+          if (!h || !h.date || !h.name) return null;
+          const dateMoment = moment(h.date);
+          if (!dateMoment.isValid()) return null;
+          return { date: dateMoment.format("YYYY-MM-DD"), name: h.name };
+        })
+        .filter((h): h is Holiday => h !== null);
+    } catch (err: any) {
+      console.error(`Error fetching holidays for ${countryCode}:`, err);
+      return [];
     }
+  }
 
-    async fetchHolidaysForCountry(countryCode: string, year: number): Promise<Holiday[]> {
-        if (!this.hd || !countryCode) {
-            return []; // Return empty if library isn't loaded or no country is set
-        }
+  getHolidayFileName(year: number, countryCode: string): string {
+    return `${year} ${HOLIDAY_FILE_PREFIX}${countryCode.toUpperCase()}.md`;
+  }
 
-        try {
-            const holidaysInstance = new this.hd(countryCode);
-            const rawHolidays = holidaysInstance.getHolidays(year);
+  getHolidayFilePath(year: number, countryCode: string): string {
+    const folder = this.plugin.settings.holidayStorageFolder;
+    const fileName = this.getHolidayFileName(year, countryCode);
+    return normalizePath(`${folder}/${fileName}`);
+  }
 
-            if (!rawHolidays || !Array.isArray(rawHolidays)) {
-                return [];
-            }
-            
-            // Map the library's format to our internal Holiday type
-            const mappedHolidays = rawHolidays.map((h: any): Holiday | null => {
-                if (!h || !h.date || !h.name) return null;
+  async ensureHolidayFileExists(
+    year: number,
+    countryCode: string
+  ): Promise<TFile | null> {
+    const filePath = this.getHolidayFilePath(year, countryCode);
+    let file = this.app.vault.getAbstractFileByPath(filePath);
 
-                const dateMoment = moment(h.date);
-                if (!dateMoment.isValid()) return null;
+    if (file instanceof TFile) return file;
 
-                return {
-                    date: dateMoment.format('YYYY-MM-DD'),
-                    name: h.name,
-                };
-            }).filter((h): h is Holiday => h !== null);
+    try {
+      const folder = this.plugin.settings.holidayStorageFolder;
+      if (!(await this.app.vault.adapter.exists(normalizePath(folder)))) {
+        await this.app.vault.createFolder(folder);
+      }
 
-            return mappedHolidays;
-
-        } catch (err: any) {
-            console.error(`Error fetching holidays for ${countryCode}:`, err);
-            // new Notice(`Could not fetch holidays for country: ${countryCode}. Is the code valid?`);
-            return [];
-        }
+      const initialFrontMatter: HolidayFileFrontMatter = {
+        countryCode: countryCode.toUpperCase(),
+        year: year,
+        holidays: [],
+      };
+      const fmString = `---\n${stringifyYaml(initialFrontMatter)}---\n\n# ${year} Holidays for ${countryCode.toUpperCase()}`;
+      file = await this.app.vault.create(filePath, fmString);
+      return file instanceof TFile ? file : null;
+    } catch (err) {
+      console.error(`Error creating holiday file ${filePath}:`, err);
+      new Notice(`Failed to create file for ${countryCode} holidays.`);
+      return null;
     }
+  }
+
+  async updateCountryHolidayFile(
+    year: number,
+    countryCode: string
+  ): Promise<boolean> {
+    const file = await this.ensureHolidayFileExists(year, countryCode);
+    if (!file) return false;
+
+    const fetchedHolidays = await this.fetchHolidaysFromLibrary(
+      countryCode,
+      year
+    );
+
+    try {
+      await this.app.fileManager.processFrontMatter(file, (fm) => {
+        fm.holidays = fetchedHolidays;
+        fm.lastFetched = new Date().toISOString();
+      });
+      new Notice(
+        `Updated ${countryCode} holidays for ${year} with ${fetchedHolidays.length} events.`
+      );
+      return true;
+    } catch (err) {
+      console.error(`Error updating frontmatter for ${file.path}:`, err);
+      new Notice(`Failed to save updated holidays for ${countryCode}.`);
+      return false;
+    }
+  }
 }

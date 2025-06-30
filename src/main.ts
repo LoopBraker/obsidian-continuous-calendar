@@ -13,7 +13,8 @@ const DEFAULT_SETTINGS: MyCalendarPluginSettings = {
     birthdayFolder: '',
     defaultBirthdaySymbol: '🎂',
     defaultBirthdayColor: 'var(--color-red-tint)',
-    holidayCountry: '', // Default to none
+    holidayCountry: '',
+    holidayStorageFolder: 'Calendar/Holidays', // A sensible default
 };
 
 export default class MyCalendarPlugin extends Plugin {
@@ -26,8 +27,8 @@ export default class MyCalendarPlugin extends Plugin {
 
         await this.loadSettings();
         
-        // Instantiate the HolidayService
-        this.holidayService = new HolidayService();
+        // Pass the plugin instance to the service
+        this.holidayService = new HolidayService(this.app, this);
 
         this.registerView(
             CALENDAR_VIEW_TYPE,
@@ -39,6 +40,21 @@ export default class MyCalendarPlugin extends Plugin {
 
         this.addRibbonIcon('calendar-days', 'Open Continuous Calendar', (evt: MouseEvent) => {
             this.activateView();
+        });
+
+        // Add Command to Fetch/Update Holidays
+        this.addCommand({
+            id: 'update-country-holidays',
+            name: 'Update Country Holidays for Displayed Year',
+            callback: async () => {
+                if (!this.settings.holidayCountry) {
+                    new Notice("Please set a country code in Calendar settings first.");
+                    return;
+                }
+                new Notice(`Updating holidays for ${this.settings.holidayCountry}...`);
+                await this.holidayService.updateCountryHolidayFile(this.settings.year, this.settings.holidayCountry);
+                this.refreshCalendarView(); // Refresh after updating
+            },
         });
 
         this.addSettingTab(new CalendarSettingTab(this.app, this));
@@ -58,18 +74,9 @@ export default class MyCalendarPlugin extends Plugin {
     }
 
     async activateView() {
-        this.app.workspace.getLeavesOfType(CALENDAR_VIEW_TYPE).forEach((leaf) => {
-            leaf.detach();
-        });
-
-        await this.app.workspace.getRightLeaf(false)?.setViewState({
-            type: CALENDAR_VIEW_TYPE,
-            active: true,
-        });
-
-        this.app.workspace.revealLeaf(
-            this.app.workspace.getLeavesOfType(CALENDAR_VIEW_TYPE)[0]
-        );
+        this.app.workspace.getLeavesOfType(CALENDAR_VIEW_TYPE).forEach((leaf) => { leaf.detach(); });
+        await this.app.workspace.getRightLeaf(false)?.setViewState({ type: CALENDAR_VIEW_TYPE, active: true, });
+        this.app.workspace.revealLeaf( this.app.workspace.getLeavesOfType(CALENDAR_VIEW_TYPE)[0] );
     }
 
     refreshCalendarView() {

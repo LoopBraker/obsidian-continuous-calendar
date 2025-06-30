@@ -11,6 +11,15 @@ export interface Holiday {
     shouldConfirmBeforeCreate: boolean;
     birthdayFolder: string;
     defaultBirthdaySymbol: string;
-    defaultBirthdayColor: string;
-    holidayCountry: string; // e.g., 'US', 'DE', 'GB'
+    defaultBirthdayColor:string;
+    holidayCountry: string;
+    holidayStorageFolder: string; // New setting
+  }
+  
+  // New type for the holiday file's frontmatter
+  export interface HolidayFileFrontMatter {
+    countryCode: string;
+    year: number;
+    holidays: Holiday[];
+    lastFetched?: string; // ISO timestamp
   }

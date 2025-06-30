@@ -6,5 +6,6 @@
   "birthdayFolder": "",
   "defaultBirthdaySymbol": "🎂",
   "defaultBirthdayColor": "var(--color-red-tint)",
-  "holidayCountry": "CO"
+  "holidayCountry": "US",
+  "holidayStorageFolder": "02-Calendar/Years"
 }
