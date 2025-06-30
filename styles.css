@@ -1,20 +1,55 @@
 /* src/styles.css */
 .my-calendar-table {
-    width: 100%;
-    border-collapse: collapse;
-    table-layout: fixed;
-  }
-  
-  .my-calendar-table th,
-  .my-calendar-table td {
-    border: 1px solid var(--background-modifier-border);
-    text-align: center;
-    padding: 4px;
-    font-size: var(--font-adaptive-small);
-    vertical-align: top;
-    height: 60px;
-  }
-  
-  .my-calendar-table th {
-    background-color: var(--background-secondary);
-  }
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+.my-calendar-table th,
+.my-calendar-table td {
+  border: 1px solid var(--background-modifier-border);
+  text-align: center;
+  padding: 4px;
+  font-size: var(--font-adaptive-small);
+  vertical-align: top;
+  height: 60px;
+}
+
+.my-calendar-table th {
+  background-color: var(--background-secondary);
+}
+
+/* --- New Styles for V3 --- */
+
+/* Cell base class for consistency */
+.calendar-cell {
+    /* Future styles can go here */
+}
+
+/* Alternating month colors */
+.calendar-cell.even-month {
+  background-color: var(--background-primary);
+}
+
+.calendar-cell.odd-month {
+  background-color: var(--background-secondary-alt);
+}
+
+/* Fade out days not in the current year */
+.calendar-cell.other-year {
+  opacity: 0.3;
+}
+
+/* Highlight the current day */
+.calendar-cell.today {
+  background-color: var(--interactive-accent) !important; /* Use !important to override month color */
+  color: var(--text-on-accent);
+  font-weight: bold;
+}
+
+/* Styling for the week number column */
+.week-number {
+  background-color: var(--background-secondary);
+  color: var(--text-muted);
+  font-size: var(--font-adaptive-smaller);
+}

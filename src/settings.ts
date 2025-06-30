@@ -12,7 +12,7 @@ export class CalendarSettingTab extends PluginSettingTab {
 
 	display(): void {
 		const { containerEl } = this;
-		containerEl.empty(); // Clear old settings
+		containerEl.empty();
 
 		containerEl.createEl('h2', { text: 'Continuous Calendar Settings' });
 
@@ -28,6 +28,9 @@ export class CalendarSettingTab extends PluginSettingTab {
 						if (!isNaN(year)) {
 							this.plugin.settings.year = year;
 							await this.plugin.saveSettings();
+							// This won't work yet, but we're adding it in anticipation
+							// of the next step where we implement the refresh logic.
+							// For now, it will require a manual reopen of the view.
 						}
 					}));
 	}

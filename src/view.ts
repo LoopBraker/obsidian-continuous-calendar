@@ -29,7 +29,6 @@ export class CalendarView extends ItemView {
         const container = this.containerEl.children[1];
         container.empty();
         
-        // The view's display text is now dynamic, so a static h2 is no longer needed.
         this.renderCalendar(container);
     }
 
@@ -38,15 +37,14 @@ export class CalendarView extends ItemView {
     }
     
     renderCalendar(container: Element) {
-        // Use the year from settings
         const year = this.plugin.settings.year;
+        const today = moment().format("YYYY-MM-DD"); // Get today's date once for comparison
 
         const table = container.createEl('table', { cls: 'my-calendar-table' });
         const thead = table.createEl('thead');
         const headerRow = thead.createEl('tr');
         
-        // Add day headers
-        headerRow.createEl('th', { text: 'W' }); // For week number
+        headerRow.createEl('th', { text: 'W' });
         "Mon Tue Wed Thu Fri Sat Sun".split(" ").forEach(day => headerRow.createEl('th', { text: day }));
 
         const tbody = table.createEl('tbody');
@@ -58,15 +56,31 @@ export class CalendarView extends ItemView {
         while (currentDay.isBefore(endDate)) {
             const weekRow = tbody.createEl('tr');
             
-            // Add week number cell
-            weekRow.createEl('td', { text: currentDay.isoWeek().toString() });
+            weekRow.createEl('td', { cls: 'week-number', text: currentDay.isoWeek().toString() });
             
             for (let i = 0; i < 7; i++) {
+                const dayMoment = currentDay;
                 const cell = weekRow.createEl('td');
-                // Only display day number if it's within the target year
-                if (currentDay.year() === year) {
-                    cell.setText(currentDay.date().toString());
+                
+                const cellClasses = ['calendar-cell'];
+                const isOddMonth = dayMoment.month() % 2 === 1; // 0-indexed month
+                
+                cellClasses.push(isOddMonth ? 'odd-month' : 'even-month');
+
+                if (dayMoment.year() !== year) {
+                    cellClasses.push('other-year');
                 }
+
+                if (dayMoment.format("YYYY-MM-DD") === today) {
+                    cellClasses.push('today');
+                }
+                
+                cell.addClass(...cellClasses);
+
+                if (dayMoment.year() === year) {
+                    cell.setText(dayMoment.date().toString());
+                }
+
                 currentDay.add(1, 'day');
             }
         }
