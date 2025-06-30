@@ -1,12 +1,15 @@
 // src/view.ts
 import { ItemView, WorkspaceLeaf, moment } from 'obsidian';
+import MyCalendarPlugin from './main'; // Import the plugin class
 
 export const CALENDAR_VIEW_TYPE = 'yearly-calendar-view';
 
 export class CalendarView extends ItemView {
+    plugin: MyCalendarPlugin; // Store a reference to the plugin
 
-    constructor(leaf: WorkspaceLeaf) {
+    constructor(leaf: WorkspaceLeaf, plugin: MyCalendarPlugin) { // Accept plugin instance
         super(leaf);
+        this.plugin = plugin;
     }
 
     getViewType(): string {
@@ -14,8 +17,8 @@ export class CalendarView extends ItemView {
     }
 
     getDisplayText(): string {
-        // Hardcoded for now
-        return `Year Calendar - 2024`; 
+        // Use the year from settings
+        return `Year Calendar - ${this.plugin.settings.year}`; 
     }
 
     getIcon(): string {
@@ -25,8 +28,8 @@ export class CalendarView extends ItemView {
     async onOpen() {
         const container = this.containerEl.children[1];
         container.empty();
-        container.createEl('h2', { text: 'Continuous Calendar' });
         
+        // The view's display text is now dynamic, so a static h2 is no longer needed.
         this.renderCalendar(container);
     }
 
@@ -35,7 +38,8 @@ export class CalendarView extends ItemView {
     }
     
     renderCalendar(container: Element) {
-        const year = 2024; // Hardcoded year
+        // Use the year from settings
+        const year = this.plugin.settings.year;
 
         const table = container.createEl('table', { cls: 'my-calendar-table' });
         const thead = table.createEl('thead');
