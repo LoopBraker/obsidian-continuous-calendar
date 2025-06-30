@@ -25,7 +25,6 @@ interface AggregatedHolidayInfo {
 export class HolidayService {
   app: App;
   plugin: MyCalendarPlugin;
-  // Use a cache to hold date-holidays instances keyed by country code
   private hdCache = new Map<string, any>();
 
   constructor(app: App, plugin: MyCalendarPlugin) {
@@ -36,16 +35,12 @@ export class HolidayService {
   private async getDateHolidaysInstance(
     countryCode?: string
   ): Promise<any | null> {
-    // Use a specific cache key if countryCode is provided; otherwise use a generic key for listing all countries.
     const cacheKey = countryCode ? countryCode.toUpperCase() : "__generic__";
-
     if (this.hdCache.has(cacheKey)) {
       return this.hdCache.get(cacheKey);
     }
-
     try {
       const Holidays = require("date-holidays");
-      // Pass the country code to the constructor if provided
       const instance = countryCode ? new Holidays(countryCode) : new Holidays();
       this.hdCache.set(cacheKey, instance);
       return instance;
@@ -60,7 +55,6 @@ export class HolidayService {
   }
 
   async getAvailableCountries(): Promise<{ code: string; name: string }[]> {
-    // Get the generic instance (no country code) for listing available countries.
     const hd = await this.getDateHolidaysInstance();
     if (!hd) return [];
     try {
@@ -94,27 +88,62 @@ export class HolidayService {
     return normalizePath(`${folder}/${fileName}`);
   }
 
-  private async fetchCountryHolidays(
+  async fetchCountryHolidays(
     countryCode: string,
     year: number
   ): Promise<Holiday[]> {
-    // Get the instance specifically initialized for this country
+    console.log(
+      `[Debug] fetchCountryHolidays called for: ${countryCode}, ${year}`
+    );
     const hd = await this.getDateHolidaysInstance(countryCode);
-    if (!hd) return [];
-
+    if (!hd) {
+      console.warn(
+        `[Debug] Cannot fetch holidays: date-holidays instance not available for ${countryCode}.`
+      );
+      return [];
+    }
     try {
       const rawHolidays = hd.getHolidays(year);
-      if (!rawHolidays || !Array.isArray(rawHolidays)) return [];
-      return rawHolidays
-        .map((h: any): Holiday | null => {
-          if (!h || !h.date || !h.name) return null;
-          const dateMoment = moment(h.date);
-          if (!dateMoment.isValid()) return null;
-          return { date: dateMoment.format("YYYY-MM-DD"), name: h.name };
-        })
-        .filter((h): h is Holiday => h !== null);
+      console.log("[Debug] Raw holidays received from library:", rawHolidays);
+
+      if (!rawHolidays || !Array.isArray(rawHolidays)) {
+        console.warn(
+          `[Debug] Received invalid/non-array holidays for ${countryCode}, ${year}.`
+        );
+        return [];
+      }
+
+      const mappedHolidays = rawHolidays.map((h: any) => {
+        if (!h || !h.date || !h.name) {
+          console.warn("[Debug] Skipping invalid holiday object received:", h);
+          return null;
+        }
+        const dateMoment = moment(h.date);
+        if (!dateMoment.isValid()) {
+          console.warn(
+            `[Debug] Invalid date format received for ${h.name}: ${h.date}`
+          );
+          return null;
+        }
+        return {
+          date: dateMoment.format("YYYY-MM-DD"),
+          name: h.name,
+        };
+      });
+
+      const filteredHolidays = mappedHolidays.filter(
+        (h): h is Holiday => h !== null && h.date.startsWith(year.toString())
+      );
+      console.log(
+        `[Debug] Final filtered holidays for ${countryCode}, ${year}:`,
+        filteredHolidays
+      );
+      return filteredHolidays;
     } catch (err: any) {
-      console.error(`Error fetching holidays for ${countryCode}:`, err);
+      console.error(
+        `[Debug] Error caught in fetchCountryHolidays for ${countryCode}, ${year}:`,
+        err
+      );
       return [];
     }
   }
