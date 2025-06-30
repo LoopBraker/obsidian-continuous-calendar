@@ -47,7 +47,7 @@ If you like this plugin or want to support further development, you can!
 
 
 
-[<img src="https://img.shields.io/badge/buy_me_a_coffee-LoopBreaker-FFDD00?style=social&logo=buy-me-a-coffee&logoColor=black" width="300">](coff.ee/loopbraker)
+[<img src="https://img.shields.io/badge/buy_me_a_coffee-LoopBreaker-FFDD00?style=social&logo=buy-me-a-coffee&logoColor=black" width="300">]([coff.ee/loopbraker](https://buymeacoffee.com/loopbraker))
 
 
 ## Work in progress
