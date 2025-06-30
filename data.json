@@ -21,7 +21,11 @@
     }
   ],
   "tagAppearance": {},
-  "focusedMonths": [],
-  "opaqueMonths": [],
+  "focusedMonths": [
+    1
+  ],
+  "opaqueMonths": [
+    1
+  ],
   "collapseDuplicateTagSymbols": true
 }
