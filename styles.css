@@ -170,3 +170,34 @@
 .close-button:hover {
   color: var(--text-normal);
 }
+
+/* --- New Styles for V23 --- */
+.month-column {
+  text-align: center;
+  border-left: 1px dotted var(--background-modifier-border);
+  vertical-align: middle;
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  color: var(--text-faint);
+  font-size: var(--font-adaptive-bigger);
+}
+.is-faded {
+  opacity: 0.4;
+  color: var(--text-muted);
+}
+.current-month {
+  opacity: 1;
+  color: var(--text-normal);
+}
+.border-outline-top {
+  border-top: 2px solid var(--text-faint) !important;
+}
+.border-outline-bottom {
+  border-bottom: 2px solid var(--text-faint) !important;
+}
+.border-outline-left {
+  border-left: 2px solid var(--text-faint) !important;
+}
+.border-outline-right {
+  border-right: 2px solid var(--text-faint) !important;
+}

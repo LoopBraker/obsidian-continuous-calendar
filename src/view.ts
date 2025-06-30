@@ -162,10 +162,16 @@ export class CalendarView extends ItemView {
     "Mon Tue Wed Thu Fri Sat Sun"
       .split(" ")
       .forEach((day) => headerRow.createEl("th", { text: day }));
+    headerRow.createEl("th", { text: "M" }); // Month column header
+
     const tbody = table.createEl("tbody");
     const startDate = moment(`${year}-01-01`).startOf("isoWeek");
     const endDate = moment(`${year}-12-31`).endOf("isoWeek");
+
     let currentWeek = startDate.clone();
+    const now = moment();
+    let lastDisplayedMonth = -1;
+
     while (currentWeek.isBefore(endDate)) {
       const weekRow = tbody.createEl("tr");
       weekRow.createEl("td", {
@@ -197,6 +203,7 @@ export class CalendarView extends ItemView {
         const dateStr = dayMoment.format("YYYY-MM-DD");
         const cell = weekRow.createEl("td");
         cell.dataset.date = dateStr;
+        cell.dataset.monthIndex = dayMoment.month().toString();
         const holidaysOnDay = holidaysByDate.get(dateStr) || [];
         const isHoliday = holidaysOnDay.length > 0;
         const matchingNotes = pagesData.filter((p) => p.date === dateStr);
@@ -210,6 +217,9 @@ export class CalendarView extends ItemView {
           (b) =>
             moment(b.birthday).format("MM-DD") === dayMoment.format("MM-DD")
         );
+        const isCurrentMonth =
+          dayMoment.isSame(now, "month") && dayMoment.year() === now.year();
+
         const cellClasses = ["calendar-cell"];
         cellClasses.push(
           dayMoment.month() % 2 === 1 ? "odd-month" : "even-month"
@@ -222,7 +232,13 @@ export class CalendarView extends ItemView {
             holidaysOnDay[0].color || "var(--color-red-tint)";
           cell.style.setProperty("--holiday-background-color", holidayColorVar);
         }
+        if (isCurrentMonth) {
+          cellClasses.push("current-month");
+        } else {
+          cellClasses.push("is-faded");
+        }
         cell.addClass(...cellClasses);
+
         const cellContentWrapper = cell.createDiv({ cls: "cell-content" });
         const topContentDiv = cellContentWrapper.createDiv({
           cls: "top-content",
@@ -238,8 +254,6 @@ export class CalendarView extends ItemView {
             dayNumSpan.addClass("has-daily-note");
           }
         }
-
-        // --- New De-duplication Logic ---
         const emittedSymbols = new Set<string>();
         matchingNotes.forEach((note) => {
           const symbol = note.defaultSymbolFromTag || "●";
@@ -249,7 +263,7 @@ export class CalendarView extends ItemView {
             fromTag &&
             emittedSymbols.has(symbol)
           ) {
-            return; // Skip duplicate symbol
+            return;
           }
           const dot = dotAreaDiv.createSpan({
             cls: "dot note-dot",
@@ -264,7 +278,6 @@ export class CalendarView extends ItemView {
             emittedSymbols.add(symbol);
           }
         });
-
         if (matchingBirthdays.length > 0) {
           const dot = dotAreaDiv.createSpan({ cls: "dot birthday-dot" });
           dot.textContent = this.plugin.settings.defaultBirthdaySymbol;
@@ -298,8 +311,7 @@ export class CalendarView extends ItemView {
             }
           }
         });
-
-        let expandedHTML = `<div class="expanded-content"><button class="close-button">×</button><strong>${dayMoment.format("dddd, MMMM Do")}</strong>`; /* ... expandedHTML same as before ... */
+        let expandedHTML = `<div class="expanded-content"><button class="close-button">×</button><strong>${dayMoment.format("dddd, MMMM Do")}</strong>`; /* ... */
         if (isHoliday) {
           expandedHTML += `<ul>${holidaysOnDay.map((h) => `<li>${h.name}</li>`).join("")}</ul>`;
         }
@@ -323,9 +335,101 @@ export class CalendarView extends ItemView {
         expandedHTML += `</div>`;
         cell.dataset.cellContent = expandedHTML;
       }
+
+      const monthCell = weekRow.createEl("td", { cls: "month-column" });
+      const monthForThisRow = currentWeek.clone().add(3, "days").month(); // Get month from middle of week
+      if (
+        monthForThisRow !== lastDisplayedMonth &&
+        currentWeek.year() === year
+      ) {
+        const monthName = currentWeek.clone().add(3, "days").format("MMM");
+        monthCell.setText(monthName);
+        lastDisplayedMonth = monthForThisRow;
+      }
+
       currentWeek.add(7, "days");
     }
+
+    this.applyOutlineStyles(tbody, year, now.month());
   }
+
+  applyOutlineStyles(
+    tbody: HTMLTableSectionElement,
+    targetYear: number,
+    currentMonthIndex: number
+  ) {
+    tbody
+      .querySelectorAll(
+        ".border-outline-top, .border-outline-bottom, .border-outline-left, .border-outline-right"
+      )
+      .forEach((cell) =>
+        cell.removeClass(
+          "border-outline-top",
+          "border-outline-bottom",
+          "border-outline-left",
+          "border-outline-right"
+        )
+      );
+    const cellsMap = new Map<string, HTMLElement>();
+    tbody
+      .querySelectorAll("td.calendar-cell[data-date]")
+      .forEach((cellNode) => {
+        if (cellNode instanceof HTMLElement && cellNode.dataset.date) {
+          cellsMap.set(cellNode.dataset.date, cellNode);
+        }
+      });
+
+    tbody
+      .querySelectorAll(
+        `td.calendar-cell[data-month-index="${currentMonthIndex}"]`
+      )
+      .forEach((cellNode) => {
+        if (!(cellNode instanceof HTMLElement && cellNode.dataset.date)) return;
+        const cell = cellNode;
+        const cellMoment = moment(cell.dataset.date);
+        if (cellMoment.year() !== targetYear) return;
+
+        const isNeighborInSameMonth = (
+          neighborCell: HTMLElement | undefined
+        ): boolean => {
+          return neighborCell
+            ? neighborCell.dataset.monthIndex === currentMonthIndex.toString()
+            : false;
+        };
+
+        if (
+          !isNeighborInSameMonth(
+            cellsMap.get(
+              cellMoment.clone().subtract(7, "days").format("YYYY-MM-DD")
+            )
+          )
+        )
+          cell.addClass("border-outline-top");
+        if (
+          !isNeighborInSameMonth(
+            cellsMap.get(cellMoment.clone().add(7, "days").format("YYYY-MM-DD"))
+          )
+        )
+          cell.addClass("border-outline-bottom");
+        if (
+          cellMoment.isoWeekday() === 1 ||
+          !isNeighborInSameMonth(
+            cellsMap.get(
+              cellMoment.clone().subtract(1, "day").format("YYYY-MM-DD")
+            )
+          )
+        )
+          cell.addClass("border-outline-left");
+        if (
+          cellMoment.isoWeekday() === 7 ||
+          !isNeighborInSameMonth(
+            cellsMap.get(cellMoment.clone().add(1, "day").format("YYYY-MM-DD"))
+          )
+        )
+          cell.addClass("border-outline-right");
+      });
+  }
+
   handleClick(event: MouseEvent) {
     const target = event.target as HTMLElement;
     const dayNumberEl = target.closest(".day-number");
@@ -413,7 +517,7 @@ export class CalendarView extends ItemView {
       const expandedRow = document.createElement("tr");
       expandedRow.className = "expanded-row";
       const expandedCell = expandedRow.createEl("td", {
-        attr: { colspan: "8" },
+        attr: { colspan: "9" },
       });
       expandedCell.innerHTML = contentHtml;
       currentRow.after(expandedRow);
