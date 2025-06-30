@@ -13,10 +13,15 @@ import {
   Holiday,
   HolidayFileFrontMatter,
   CountryHolidaySource,
-  CustomHolidaySource,
 } from "./types";
 
 const HOLIDAY_FILE_PREFIX = " Holidays ";
+
+// Define a new type for the aggregated map value
+interface AggregatedHolidayInfo {
+  name: string;
+  color?: string; // The CSS variable string assigned to the source
+}
 
 export class HolidayService {
   app: App;
@@ -38,7 +43,6 @@ export class HolidayService {
     }
   }
 
-  // New method to provide country list for settings UI
   async getAvailableCountries(): Promise<{ code: string; name: string }[]> {
     if (!this.hd) return [];
     try {
@@ -54,12 +58,10 @@ export class HolidayService {
     }
   }
 
-  // Helper to generate a consistent ID for any source type
   getHolidaySourceId(source: HolidaySource): string {
     if (source.type === "country") {
       return source.countryCode.toUpperCase();
     } else {
-      // A simple way to create a file-safe name from a custom source name
       return source.name.replace(/[^a-zA-Z0-9_-\s]/g, "").replace(/\s+/g, "_");
     }
   }
@@ -84,7 +86,6 @@ export class HolidayService {
       const holidaysInstance = new this.hd(countryCode);
       const rawHolidays = holidaysInstance.getHolidays(year);
       if (!rawHolidays || !Array.isArray(rawHolidays)) return [];
-
       return rawHolidays
         .map((h: any): Holiday | null => {
           if (!h || !h.date || !h.name) return null;
@@ -106,16 +107,13 @@ export class HolidayService {
     const filePath = this.getHolidayFilePath(year, source);
     let file = this.app.vault.getAbstractFileByPath(filePath);
     if (file instanceof TFile) return file;
-
     try {
       const folder = this.plugin.settings.holidayStorageFolder;
       if (!(await this.app.vault.adapter.exists(normalizePath(folder)))) {
         await this.app.vault.createFolder(folder);
       }
-
       let initialFrontMatter: HolidayFileFrontMatter;
       let fileContent = "";
-
       if (source.type === "country") {
         initialFrontMatter = {
           holidaySourceType: "country",
@@ -125,7 +123,6 @@ export class HolidayService {
         };
         fileContent = `# ${year} Holidays for ${source.countryCode.toUpperCase()}`;
       } else {
-        // Custom type
         initialFrontMatter = {
           holidaySourceType: "custom",
           customName: source.name,
@@ -134,7 +131,6 @@ export class HolidayService {
         };
         fileContent = `# ${year} Custom Holidays: ${source.name}`;
       }
-
       const fmString = `---\n${stringifyYaml(initialFrontMatter)}---`;
       file = await this.app.vault.create(
         filePath,
@@ -156,7 +152,6 @@ export class HolidayService {
   ): Promise<boolean> {
     const file = await this.ensureHolidayFileExists(year, source);
     if (!file) return false;
-
     const fetchedHolidays = await this.fetchCountryHolidays(
       source.countryCode,
       year
@@ -197,19 +192,19 @@ export class HolidayService {
     this.plugin.refreshCalendarView();
   }
 
-  // New method for the view to consume all holiday data at once
-  async getAggregatedHolidays(year: number): Promise<Map<string, Holiday[]>> {
-    const aggregatedHolidays = new Map<string, Holiday[]>();
+  async getAggregatedHolidays(
+    year: number
+  ): Promise<Map<string, AggregatedHolidayInfo[]>> {
+    const aggregatedHolidays = new Map<string, AggregatedHolidayInfo[]>();
     const activeSources = this.plugin.settings.holidaySources;
 
     for (const source of activeSources) {
+      // Get the assigned color for this source
+      const sourceColor = source.type === "country" ? source.color : undefined;
       const filePath = this.getHolidayFilePath(year, source);
       const file = this.app.vault.getAbstractFileByPath(filePath);
 
-      if (!(file instanceof TFile)) {
-        // Silently fail if file doesn't exist, as user might not have run the update command yet
-        continue;
-      }
+      if (!(file instanceof TFile)) continue;
 
       try {
         const cache = this.app.metadataCache.getFileCache(file);
@@ -219,17 +214,20 @@ export class HolidayService {
           cache.frontmatter.year === year
         ) {
           const holidaysFromFile = cache.frontmatter.holidays as Holiday[];
-          holidaysFromFile.forEach((h) => {
-            if (!aggregatedHolidays.has(h.date)) {
-              aggregatedHolidays.set(h.date, []);
+          holidaysFromFile.forEach((holiday: Holiday) => {
+            const dateStr = holiday.date;
+            if (!aggregatedHolidays.has(dateStr)) {
+              aggregatedHolidays.set(dateStr, []);
             }
-            // Avoid duplicates if multiple sources have the same holiday (e.g., New Year's Day)
             if (
               !aggregatedHolidays
-                .get(h.date)
-                ?.some((existing) => existing.name === h.name)
+                .get(dateStr)
+                ?.some((h) => h.name === holiday.name)
             ) {
-              aggregatedHolidays.get(h.date)?.push(h);
+              // Push the holiday with its source's color
+              aggregatedHolidays
+                .get(dateStr)
+                ?.push({ name: holiday.name, color: sourceColor });
             }
           });
         }

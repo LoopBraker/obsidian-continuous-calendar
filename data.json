@@ -10,7 +10,8 @@
   "holidaySources": [
     {
       "type": "country",
-      "countryCode": "US"
+      "countryCode": "US",
+      "color": "var(--color-blue-tint)"
     },
     {
       "type": "country",

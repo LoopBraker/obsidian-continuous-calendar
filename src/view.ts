@@ -5,10 +5,10 @@ import {
   getAllDailyNotes,
   getDailyNote,
 } from "obsidian-daily-notes-interface";
-
 import MyCalendarPlugin from "./main";
 import { createConfirmationDialog } from "./modal";
-import { Holiday } from "./types";
+// Removed unused Holiday type, as the service now provides AggregatedHolidayInfo
+import { AggregatedHolidayInfo } from "./holidayService";
 
 export const CALENDAR_VIEW_TYPE = "yearly-calendar-view";
 
@@ -56,7 +56,6 @@ export class CalendarView extends ItemView {
     const today = moment().format("YYYY-MM-DD");
     const allDNs = getAllDailyNotes();
 
-    // --- Data Fetching ---
     const holidaysByDate =
       await this.plugin.holidayService.getAggregatedHolidays(year);
 
@@ -66,8 +65,8 @@ export class CalendarView extends ItemView {
     const birthdayFolder = this.plugin.settings.birthdayFolder.toLowerCase();
     const hasBirthdayFolderSetting =
       this.plugin.settings.birthdayFolder.trim() !== "";
-
     for (const file of allFiles) {
+      /* ... data fetching for notes/birthdays is the same ... */
       const cache = this.app.metadataCache.getFileCache(file);
       const fm = cache?.frontmatter;
       if (!fm) continue;
@@ -141,15 +140,23 @@ export class CalendarView extends ItemView {
         const dateStr = dayMoment.format("YYYY-MM-DD");
         const cell = weekRow.createEl("td");
         cell.dataset.date = dateStr;
+
         const holidaysOnDay = holidaysByDate.get(dateStr) || [];
         const isHoliday = holidaysOnDay.length > 0;
+
         const cellClasses = ["calendar-cell"];
         cellClasses.push(
           dayMoment.month() % 2 === 1 ? "odd-month" : "even-month"
         );
         if (dayMoment.year() !== year) cellClasses.push("other-year");
         if (dateStr === today) cellClasses.push("today");
-        if (isHoliday) cellClasses.push("holiday");
+        if (isHoliday) {
+          cellClasses.push("holiday-colored");
+          // Use the color of the first holiday on that day, or a default red
+          const holidayColorVar =
+            holidaysOnDay[0].color || "var(--color-red-tint)";
+          cell.style.setProperty("--holiday-background-color", holidayColorVar);
+        }
         cell.addClass(...cellClasses);
         if (isHoliday) {
           cell.title = holidaysOnDay.map((h) => h.name).join("\n");
