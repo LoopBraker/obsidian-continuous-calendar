@@ -109,8 +109,6 @@
   gap: 10px;
   margin-top: 20px;
 }
-
-/* --- Updated Style for V13 --- */
 .calendar-cell.holiday-colored {
   background-color: color-mix(
     in srgb,
@@ -123,5 +121,15 @@
     in srgb,
     var(--holiday-background-color, var(--color-red-tint)),
     transparent 60%
+  );
+}
+
+/* --- New Styles for V15 --- */
+.day-number.range-start-engaged {
+  outline: 2px solid var(--interactive-accent);
+  background-color: color-mix(
+    in srgb,
+    var(--interactive-accent),
+    transparent 80%
   );
 }

@@ -2,13 +2,13 @@
 export interface Holiday {
   date: string; // YYYY-MM-DD
   name: string;
-  color?: string; // Add color to the base holiday type for aggregation
+  color?: string;
 }
 
 export interface CountryHolidaySource {
   type: "country";
   countryCode: string;
-  color?: string; // New optional property for color
+  color?: string;
 }
 
 export interface CustomHolidaySource {
@@ -23,6 +23,7 @@ export interface MyCalendarPluginSettings {
   defaultDotColor: string;
   defaultBarColor: string;
   shouldConfirmBeforeCreate: boolean;
+  shouldConfirmBeforeCreateRange: boolean; // New setting
   birthdayFolder: string;
   defaultBirthdaySymbol: string;
   defaultBirthdayColor: string;
@@ -35,6 +36,6 @@ export interface HolidayFileFrontMatter {
   countryCode?: string;
   customName?: string;
   year: number;
-  holidays: Holiday[]; // The file itself won't store the color
+  holidays: Holiday[];
   lastFetched?: string;
 }
