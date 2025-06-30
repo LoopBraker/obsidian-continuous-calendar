@@ -21,7 +21,8 @@
   ],
   "tagAppearance": {
     "#source/meeting": {
-      "color": "var(--color-blue-tint)"
+      "color": "currentColor",
+      "symbol": "🤓"
     }
   },
   "holidayCountry": "US"

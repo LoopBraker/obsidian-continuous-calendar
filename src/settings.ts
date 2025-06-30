@@ -5,13 +5,10 @@ import {
   Setting,
   Notice,
   AbstractInputSuggest,
-  prepareFuzzySearch,
-  fuzzySearch,
 } from "obsidian";
 import MyCalendarPlugin from "./main";
 import { HolidaySource, CountryHolidaySource } from "./types";
 
-// Helper class for suggesting tags in an input field
 class TagSuggest extends AbstractInputSuggest<string> {
   private allTags: string[];
   constructor(
@@ -22,9 +19,8 @@ class TagSuggest extends AbstractInputSuggest<string> {
     this.allTags = Object.keys(app.metadataCache.getTags() || {});
   }
   getSuggestions(query: string): string[] {
-    const lowerCaseQuery = query.toLowerCase();
     return this.allTags.filter((tag) =>
-      tag.toLowerCase().includes(lowerCaseQuery)
+      tag.toLowerCase().includes(query.toLowerCase())
     );
   }
   renderSuggestion(tag: string, el: HTMLElement): void {
@@ -60,7 +56,6 @@ export class CalendarSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
     containerEl.createEl("h2", { text: "Continuous Calendar Settings" });
-    // --- Year Setting ---
     new Setting(containerEl).setName("Year").addText((t) =>
       t.setValue(this.plugin.settings.year.toString()).onChange(async (v) => {
         const y = parseInt(v);
@@ -71,8 +66,6 @@ export class CalendarSettingTab extends PluginSettingTab {
         }
       })
     );
-
-    // --- Event Display ---
     containerEl.createEl("h3", { text: "Event Display" });
     new Setting(containerEl)
       .setName("Default Event Dot Color")
@@ -101,11 +94,9 @@ export class CalendarSettingTab extends PluginSettingTab {
         });
       });
 
-    this.renderTagColorSettings(containerEl); // New section
+    this.renderTagAppearanceSettings(containerEl); // Renamed method
 
-    // --- Data Sources ---
     containerEl.createEl("h3", { text: "Data Sources" });
-    // Birthdays
     new Setting(containerEl).setName("Birthdays Folder").addText((t) => {
       t.setPlaceholder("e.g. People")
         .setValue(this.plugin.settings.birthdayFolder)
@@ -137,7 +128,6 @@ export class CalendarSettingTab extends PluginSettingTab {
           this.plugin.refreshCalendarView();
         });
       });
-    // Holidays
     new Setting(containerEl).setName("Holiday Storage Folder").addText((t) =>
       t
         .setValue(this.plugin.settings.holidayStorageFolder)
@@ -159,7 +149,6 @@ export class CalendarSettingTab extends PluginSettingTab {
     }
     this.renderAddHolidaySourceControls(containerEl);
 
-    // --- Interaction ---
     containerEl.createEl("h3", { text: "Interaction" });
     new Setting(containerEl).setName("Confirm Daily Note").addToggle((t) =>
       t
@@ -178,53 +167,67 @@ export class CalendarSettingTab extends PluginSettingTab {
         })
     );
   }
-  private renderTagColorSettings(containerEl: HTMLElement): void {
-    containerEl.createEl("h4", { text: "Tag-Based Default Colors" });
+  private renderTagAppearanceSettings(containerEl: HTMLElement): void {
+    containerEl.createEl("h4", { text: "Tag-Based Appearance" });
     containerEl.createEl("p", {
-      text: "Define default colors for notes based on their tags. This is used if a note has a matching tag but does NOT have an explicit `color` in its frontmatter.",
+      text: "Define default colors and symbols for notes based on their tags.",
       cls: "setting-item-description",
     });
 
-    // Display existing mappings
     Object.keys(this.plugin.settings.tagAppearance)
       .sort()
       .forEach((tag) => {
-        new Setting(containerEl)
-          .setName(tag)
-          .addDropdown((dd) => {
-            Object.keys(ALL_COLOR_OPTIONS).forEach((key) =>
-              dd.addOption(ALL_COLOR_OPTIONS[key], key)
-            );
-            dd.setValue(this.plugin.settings.tagAppearance[tag].color);
-            dd.onChange(async (newVar) => {
-              this.plugin.settings.tagAppearance[tag].color = newVar;
+        const setting = new Setting(containerEl).setName(tag);
+        const appearance = this.plugin.settings.tagAppearance[tag];
+        setting.addDropdown((dd) => {
+          Object.keys(ALL_COLOR_OPTIONS).forEach((key) =>
+            dd.addOption(ALL_COLOR_OPTIONS[key], key)
+          );
+          dd.setValue(appearance.color).onChange(async (newVar) => {
+            appearance.color = newVar;
+            await this.plugin.saveSettings();
+            this.plugin.refreshCalendarView();
+          });
+        });
+        setting.addText((text) => {
+          // Symbol input for existing mapping
+          text
+            .setPlaceholder("●")
+            .setValue(appearance.symbol || "")
+            .onChange(async (val) => {
+              appearance.symbol = val.trim() || undefined;
               await this.plugin.saveSettings();
               this.plugin.refreshCalendarView();
             });
-          })
-          .addButton((btn) =>
-            btn
-              .setIcon("trash")
-              .setWarning()
-              .onClick(async () => {
-                delete this.plugin.settings.tagAppearance[tag];
-                await this.plugin.saveSettings();
-                this.display();
-                this.plugin.refreshCalendarView();
-              })
-          );
+        });
+        setting.addButton((btn) =>
+          btn
+            .setIcon("trash")
+            .setWarning()
+            .onClick(async () => {
+              delete this.plugin.settings.tagAppearance[tag];
+              await this.plugin.saveSettings();
+              this.display();
+              this.plugin.refreshCalendarView();
+            })
+        );
       });
 
-    // Add new mapping
     const newMappingSetting = new Setting(containerEl).setName(
       "New Tag Mapping"
     );
-    let newTag = "";
+    let newTag = "",
+      newSymbol = "●",
+      newColor = ALL_COLOR_OPTIONS["Theme Default"];
     newMappingSetting.addText((text) => {
       text.setPlaceholder("#your/tag").onChange((val) => (newTag = val));
-      new TagSuggest(this.app, text.inputEl); // Attach suggester
+      new TagSuggest(this.app, text.inputEl);
     });
-    let newColor = ALL_COLOR_OPTIONS["Theme Default"];
+    newMappingSetting.addText((text) => {
+      text
+        .setPlaceholder("●")
+        .onChange((val) => (newSymbol = val.trim() || "●"));
+    }); // Symbol input for new mapping
     newMappingSetting.addDropdown((dd) => {
       Object.keys(ALL_COLOR_OPTIONS).forEach((key) =>
         dd.addOption(ALL_COLOR_OPTIONS[key], key)
@@ -244,7 +247,10 @@ export class CalendarSettingTab extends PluginSettingTab {
             new Notice(`Mapping for "${newTag}" already exists`);
             return;
           }
-          this.plugin.settings.tagAppearance[newTag] = { color: newColor };
+          this.plugin.settings.tagAppearance[newTag] = {
+            color: newColor,
+            symbol: newSymbol,
+          }; // Save both
           await this.plugin.saveSettings();
           this.display();
           this.plugin.refreshCalendarView();
@@ -378,7 +384,7 @@ export class CalendarSettingTab extends PluginSettingTab {
                   this.plugin.holidayService.getHolidaySourceId(s) === id
               )
             ) {
-              new Notice("Source exists");
+              new Notice(`Source exists`);
               return;
             }
             newSource = { type: "custom", name: name };

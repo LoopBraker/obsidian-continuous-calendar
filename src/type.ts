@@ -5,9 +5,10 @@ export interface Holiday {
   color?: string;
 }
 
-// New type for defining tag-based appearance
+// Updated to include an optional symbol
 interface TagAppearance {
   color: string;
+  symbol?: string; // NEW
 }
 
 export interface MyCalendarPluginSettings {
@@ -21,7 +22,7 @@ export interface MyCalendarPluginSettings {
   defaultBirthdayColor: string;
   holidayStorageFolder: string;
   holidaySources: HolidaySource[];
-  tagAppearance: Record<string, TagAppearance>; // New setting
+  tagAppearance: Record<string, TagAppearance>;
 }
 
 export interface CountryHolidaySource {

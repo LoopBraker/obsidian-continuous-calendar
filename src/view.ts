@@ -60,7 +60,6 @@ export class CalendarView extends ItemView {
     const allDNs = getAllDailyNotes();
     const holidaysByDate =
       await this.plugin.holidayService.getAggregatedHolidays(year);
-
     const allFiles = this.app.vault.getMarkdownFiles();
     let pagesData: any[] = [];
     let birthdayData: any[] = [];
@@ -73,7 +72,6 @@ export class CalendarView extends ItemView {
       const fm = cache?.frontmatter;
       if (!fm) continue;
 
-      // --- Start of updated data processing block ---
       let hasDate = false,
         validDate: string | null = null,
         validDateStart: string | null = null,
@@ -82,6 +80,7 @@ export class CalendarView extends ItemView {
         ? fm.color.toString()
         : undefined;
       let defaultColorFromTag: string | undefined = undefined;
+      let defaultSymbolFromTag: string | undefined = undefined; // NEW
       let noteTags: string[] = [];
 
       if (fm.date) {
@@ -101,7 +100,6 @@ export class CalendarView extends ItemView {
         }
       }
 
-      // Determine default color from tags if no explicit color is set
       if (!explicitColor && fm.tags) {
         let rawTags: any[] = Array.isArray(fm.tags)
           ? fm.tags
@@ -115,8 +113,13 @@ export class CalendarView extends ItemView {
         for (const tag of noteTags) {
           const appearance = this.plugin.settings.tagAppearance[tag];
           if (appearance) {
-            defaultColorFromTag = appearance.color;
-            break; // Use the first match
+            if (!defaultColorFromTag) {
+              defaultColorFromTag = appearance.color;
+            }
+            if (!defaultSymbolFromTag && appearance.symbol) {
+              defaultSymbolFromTag = appearance.symbol;
+            } // Get symbol
+            if (defaultColorFromTag && defaultSymbolFromTag) break; // Optimization
           }
         }
       }
@@ -130,6 +133,7 @@ export class CalendarView extends ItemView {
           name: file.basename,
           color: explicitColor,
           defaultColorFromTag: defaultColorFromTag,
+          defaultSymbolFromTag: defaultSymbolFromTag,
         });
       }
       if (
@@ -148,7 +152,6 @@ export class CalendarView extends ItemView {
           });
         }
       }
-      // --- End of updated data processing block ---
     }
 
     const table = this.calendarContentEl.createEl("table", {
@@ -218,9 +221,12 @@ export class CalendarView extends ItemView {
           }
         }
 
-        // --- Apply prioritized coloring ---
+        // Use the custom symbol if available
         matchingNotes.forEach((note) => {
-          const dot = dotAreaDiv.createSpan({ cls: "dot note-dot", text: "●" });
+          const dot = dotAreaDiv.createSpan({
+            cls: "dot note-dot",
+            text: note.defaultSymbolFromTag || "●",
+          });
           dot.title = note.name;
           dot.style.color =
             note.color ||
