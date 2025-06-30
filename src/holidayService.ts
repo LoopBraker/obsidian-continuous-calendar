@@ -17,10 +17,9 @@ import {
 
 const HOLIDAY_FILE_PREFIX = " Holidays ";
 
-// Define a new type for the aggregated map value
 interface AggregatedHolidayInfo {
   name: string;
-  color?: string; // The CSS variable string assigned to the source
+  color?: string;
 }
 
 export class HolidayService {
@@ -112,30 +111,33 @@ export class HolidayService {
       if (!(await this.app.vault.adapter.exists(normalizePath(folder)))) {
         await this.app.vault.createFolder(folder);
       }
+
       let initialFrontMatter: HolidayFileFrontMatter;
       let fileContent = "";
+
       if (source.type === "country") {
         initialFrontMatter = {
           holidaySourceType: "country",
           countryCode: source.countryCode.toUpperCase(),
           year: year,
           holidays: [],
+          lastFetched: undefined,
         };
-        fileContent = `# ${year} Holidays for ${source.countryCode.toUpperCase()}`;
+        fileContent = `# ${year} Holidays for ${source.countryCode.toUpperCase()}\n\nThis file is automatically managed. Fetched data is stored in the frontmatter.`;
       } else {
+        // Custom type logic
         initialFrontMatter = {
           holidaySourceType: "custom",
           customName: source.name,
           year: year,
           holidays: [],
         };
-        fileContent = `# ${year} Custom Holidays: ${source.name}`;
+        fileContent = `# ${year} Custom Holidays: ${source.name}\n\nAdd your custom holidays to the 'holidays' list in the frontmatter below.\n\nExample:\n\`\`\`yaml\nholidays:\n  - date: ${year}-10-31\n    name: My Special Day\n\`\`\`\n`;
       }
+
       const fmString = `---\n${stringifyYaml(initialFrontMatter)}---`;
-      file = await this.app.vault.create(
-        filePath,
-        `${fmString}\n\n${fileContent}`
-      );
+      const fullContent = `${fmString}\n\n${fileContent}`;
+      file = await this.app.vault.create(filePath, fullContent);
       return file instanceof TFile ? file : null;
     } catch (err) {
       console.error(`Error creating holiday file ${filePath}:`, err);
@@ -196,16 +198,11 @@ export class HolidayService {
     year: number
   ): Promise<Map<string, AggregatedHolidayInfo[]>> {
     const aggregatedHolidays = new Map<string, AggregatedHolidayInfo[]>();
-    const activeSources = this.plugin.settings.holidaySources;
-
-    for (const source of activeSources) {
-      // Get the assigned color for this source
+    for (const source of this.plugin.settings.holidaySources) {
       const sourceColor = source.type === "country" ? source.color : undefined;
       const filePath = this.getHolidayFilePath(year, source);
       const file = this.app.vault.getAbstractFileByPath(filePath);
-
       if (!(file instanceof TFile)) continue;
-
       try {
         const cache = this.app.metadataCache.getFileCache(file);
         if (
@@ -216,15 +213,13 @@ export class HolidayService {
           const holidaysFromFile = cache.frontmatter.holidays as Holiday[];
           holidaysFromFile.forEach((holiday: Holiday) => {
             const dateStr = holiday.date;
-            if (!aggregatedHolidays.has(dateStr)) {
+            if (!aggregatedHolidays.has(dateStr))
               aggregatedHolidays.set(dateStr, []);
-            }
             if (
               !aggregatedHolidays
                 .get(dateStr)
                 ?.some((h) => h.name === holiday.name)
             ) {
-              // Push the holiday with its source's color
               aggregatedHolidays
                 .get(dateStr)
                 ?.push({ name: holiday.name, color: sourceColor });

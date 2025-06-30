@@ -73,7 +73,6 @@ export class CalendarSettingTab extends PluginSettingTab {
     this.renderAddHolidaySourceControls(containerEl);
 
     containerEl.createEl("h3", { text: "Event Display" });
-    // ... other settings ...
     const otherColorOptions = {
       "Theme Default": "currentColor",
       ...AVAILABLE_COLOR_OPTIONS,
@@ -81,7 +80,6 @@ export class CalendarSettingTab extends PluginSettingTab {
     };
     new Setting(containerEl)
       .setName("Default Event Dot Color")
-      .setDesc("Fallback color for notes with a date.")
       .addDropdown((d) => {
         Object.keys(otherColorOptions).forEach((n) =>
           d.addOption(otherColorOptions[n], n)
@@ -95,7 +93,6 @@ export class CalendarSettingTab extends PluginSettingTab {
       });
     new Setting(containerEl)
       .setName("Default Range Bar Color")
-      .setDesc("Fallback color for range bars.")
       .addDropdown((d) => {
         Object.keys(otherColorOptions).forEach((n) =>
           d.addOption(otherColorOptions[n], n)
@@ -110,7 +107,6 @@ export class CalendarSettingTab extends PluginSettingTab {
     containerEl.createEl("h3", { text: "Birthdays" });
     new Setting(containerEl)
       .setName("Birthdays Folder Path")
-      .setDesc("Path to folder with birthday notes.")
       .addText((text) => {
         text
           .setPlaceholder("e.g. People")
@@ -123,7 +119,6 @@ export class CalendarSettingTab extends PluginSettingTab {
       });
     new Setting(containerEl)
       .setName("Birthday symbol / emoji")
-      .setDesc("Single character for birthdays.")
       .addText((text) => {
         text
           .setPlaceholder("🎂")
@@ -136,7 +131,6 @@ export class CalendarSettingTab extends PluginSettingTab {
       });
     new Setting(containerEl)
       .setName("Default Birthday Color")
-      .setDesc("Fallback color for birthday notes.")
       .addDropdown((d) => {
         Object.keys(otherColorOptions).forEach((n) =>
           d.addOption(otherColorOptions[n], n)
@@ -151,7 +145,6 @@ export class CalendarSettingTab extends PluginSettingTab {
     containerEl.createEl("h3", { text: "Interaction" });
     new Setting(containerEl)
       .setName("Confirm before creating daily notes")
-      .setDesc("Show a confirmation dialog.")
       .addToggle((t) =>
         t
           .setValue(this.plugin.settings.shouldConfirmBeforeCreate)
@@ -162,14 +155,20 @@ export class CalendarSettingTab extends PluginSettingTab {
       );
   }
 
+  private getCountryName(code: string): string {
+    const country = this.availableCountries.find(
+      (c) => c.code.toUpperCase() === code.toUpperCase()
+    );
+    return country ? country.name : code;
+  }
+
   private renderHolidaySources(containerEl: HTMLElement): void {
     this.plugin.settings.holidaySources.forEach((source, index) => {
       const settingItem = new Setting(containerEl).setName(
         source.type === "country"
-          ? `Country: ${source.countryCode.toUpperCase()}`
+          ? `Country: ${this.getCountryName(source.countryCode)} (${source.countryCode})`
           : `Custom: ${source.name}`
       );
-
       if (source.type === "country") {
         settingItem.addDropdown((dropdown) => {
           Object.keys(AVAILABLE_COLOR_OPTIONS).forEach((key) =>
@@ -177,28 +176,21 @@ export class CalendarSettingTab extends PluginSettingTab {
           );
           dropdown.setValue(source.color || "var(--color-red-tint)");
           dropdown.onChange(async (value) => {
-            const sourceToUpdate = this.plugin.settings.holidaySources[
-              index
-            ] as CountryHolidaySource;
-            if (sourceToUpdate) {
-              sourceToUpdate.color = value;
-            }
+            (
+              this.plugin.settings.holidaySources[index] as CountryHolidaySource
+            ).color = value;
             await this.plugin.saveSettings();
             this.plugin.refreshCalendarView();
           });
         });
       }
-
       settingItem.addButton((button) =>
-        button
-          .setIcon("trash")
-          .setTooltip("Remove this source")
-          .onClick(async () => {
-            this.plugin.settings.holidaySources.splice(index, 1);
-            await this.plugin.saveSettings();
-            this.display();
-            this.plugin.refreshCalendarView();
-          })
+        button.setIcon("trash").onClick(async () => {
+          this.plugin.settings.holidaySources.splice(index, 1);
+          await this.plugin.saveSettings();
+          this.display();
+          this.plugin.refreshCalendarView();
+        })
       );
     });
   }
@@ -209,43 +201,73 @@ export class CalendarSettingTab extends PluginSettingTab {
         await this.plugin.holidayService.getAvailableCountries();
       this.availableCountries.sort((a, b) => a.name.localeCompare(b.name));
     } catch (error) {
-      console.error("Error fetching available countries:", error);
+      console.error("Error fetching countries:", error);
       this.availableCountries = [];
     }
   }
 
   private renderAddHolidaySourceControls(containerEl: HTMLElement): void {
+    let selectedType: "country" | "custom" = "country";
     let selectedCountryCode: string = "";
     let selectedColorVar: string = "var(--color-red-tint)";
+    let customName: string = "";
 
-    new Setting(containerEl)
-      .setName("Add Country Source")
+    const addControlsContainer = containerEl.createDiv(
+      "add-holiday-source-controls"
+    );
+    new Setting(addControlsContainer)
+      .setName("Source Type")
       .addDropdown((dropdown) => {
-        dropdown.addOption("", "Select a country...");
-        this.availableCountries.forEach((country) =>
-          dropdown.addOption(
-            country.code,
-            `${country.name} (${country.code.toUpperCase()})`
-          )
-        );
-        dropdown.onChange((value) => {
-          selectedCountryCode = value;
+        dropdown
+          .addOption("country", "Country")
+          .addOption("custom", "Custom")
+          .setValue(selectedType)
+          .onChange((value) => {
+            this.display();
+          }); // Simple refresh to show/hide controls
+      });
+
+    if (selectedType === "country") {
+      new Setting(addControlsContainer)
+        .setName("Country")
+        .addDropdown((dropdown) => {
+          dropdown.addOption("", "Select a country...");
+          this.availableCountries.forEach((c) =>
+            dropdown.addOption(c.code, `${c.name} (${c.code})`)
+          );
+          dropdown.onChange((value) => {
+            selectedCountryCode = value;
+          });
         });
-      })
-      .addDropdown((dropdown) => {
-        // Color picker
-        Object.keys(AVAILABLE_COLOR_OPTIONS).forEach((key) =>
-          dropdown.addOption(AVAILABLE_COLOR_OPTIONS[key], key)
-        );
-        dropdown.setValue(selectedColorVar).onChange((value) => {
-          selectedColorVar = value;
+      new Setting(addControlsContainer)
+        .setName("Assign Color")
+        .addDropdown((d) => {
+          Object.keys(AVAILABLE_COLOR_OPTIONS).forEach((k) =>
+            d.addOption(AVAILABLE_COLOR_OPTIONS[k], k)
+          );
+          d.setValue(selectedColorVar).onChange((v) => {
+            selectedColorVar = v;
+          });
         });
-      })
-      .addButton((button) =>
-        button
-          .setButtonText("Add")
-          .setCta()
-          .onClick(async () => {
+    } else {
+      // custom
+      new Setting(addControlsContainer)
+        .setName("Custom Set Name")
+        .setDesc('A short name (e.g., "Family", "ProjectX").')
+        .addText((text) =>
+          text.setPlaceholder("Enter custom name").onChange((value) => {
+            customName = value.trim();
+          })
+        );
+    }
+
+    new Setting(addControlsContainer).addButton((button) =>
+      button
+        .setButtonText("Add Source")
+        .setCta()
+        .onClick(async () => {
+          let newSource: HolidaySource | null = null;
+          if (selectedType === "country") {
             if (!selectedCountryCode) {
               new Notice("Please select a country.");
               return;
@@ -258,26 +280,48 @@ export class CalendarSettingTab extends PluginSettingTab {
                     selectedCountryCode.toUpperCase()
               )
             ) {
-              new Notice(
-                `Country source '${selectedCountryCode.toUpperCase()}' already exists.`
-              );
+              new Notice("Country source already exists.");
               return;
             }
-
-            const newSource: CountryHolidaySource = {
+            newSource = {
               type: "country",
               countryCode: selectedCountryCode,
               color: selectedColorVar,
             };
+          } else {
+            // custom
+            if (!customName) {
+              new Notice("Please enter a name for the custom set.");
+              return;
+            }
+            const sourceId = this.plugin.holidayService.getHolidaySourceId({
+              type: "custom",
+              name: customName,
+            });
+            if (
+              this.plugin.settings.holidaySources.some(
+                (s) =>
+                  s.type === "custom" &&
+                  this.plugin.holidayService.getHolidaySourceId(s) === sourceId
+              )
+            ) {
+              new Notice(`Custom source '${sourceId}' already exists.`);
+              return;
+            }
+            newSource = { type: "custom", name: customName };
+          }
+          if (newSource) {
             this.plugin.settings.holidaySources.push(newSource);
             await this.plugin.saveSettings();
             await this.plugin.holidayService.ensureHolidayFileExists(
               this.plugin.settings.year,
               newSource
             );
+            new Notice(`Added holiday source.`);
             this.display();
             this.plugin.refreshCalendarView();
-          })
-      );
+          }
+        })
+    );
   }
 }
