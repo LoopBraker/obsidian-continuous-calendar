@@ -27,12 +27,14 @@
     }
   },
   "focusedMonths": [
+    3,
     4,
-    7
+    2
   ],
   "opaqueMonths": [
+    3,
     4,
-    7
+    2
   ],
   "collapseDuplicateTagSymbols": true
 }

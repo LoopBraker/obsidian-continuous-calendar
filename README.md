@@ -43,7 +43,12 @@
 ## Say thanks 🙏
 If you like this plugin or want to support further development, you can!
 
-[<img src="https://img.shields.io/badge/paypal-LoopBreaker-yellow?style=social&logo=paypal" alt="BuyMeACoffee" width="100">](https://www.paypal.com/donate/?hosted_button_id=R24VP67KCPC88)
+[<img src="https://img.shields.io/badge/paypal-LoopBreaker-yellow?style=social&logo=paypal" alt="BuyMeACoffee" width="220">](https://www.paypal.com/donate/?hosted_button_id=R24VP67KCPC88)
+
+
+
+[<img src="https://img.shields.io/badge/buy_me_a_coffee-LoopBreaker-FFDD00?style=social&logo=buy-me-a-coffee&logoColor=black" width="300">](coff.ee/loopbraker)
+
 
 ## Work in progress
 This plugin is still in active development. If you have ideas, suggestions, or issues, please [open an issue](https://github.com/LoopBraker/continuous-calendar/issues). Here are some of the features I’m working on:
