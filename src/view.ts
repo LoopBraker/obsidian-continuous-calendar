@@ -57,38 +57,17 @@ export class CalendarView extends ItemView {
     const allDNs = getAllDailyNotes();
 
     // --- Data Fetching ---
+    const holidaysByDate =
+      await this.plugin.holidayService.getAggregatedHolidays(year);
+
     const allFiles = this.app.vault.getMarkdownFiles();
     let pagesData: any[] = [];
     let birthdayData: any[] = [];
-
-    // --- Updated Holiday Fetching ---
-    let holidaysByDate = new Map<string, Holiday[]>();
-    const countryCode = this.plugin.settings.holidayCountry;
-    if (countryCode) {
-      const holidayFilePath = this.plugin.holidayService.getHolidayFilePath(
-        year,
-        countryCode
-      );
-      const holidayFile = this.app.vault.getAbstractFileByPath(holidayFilePath);
-      if (holidayFile instanceof TFile) {
-        const cache = this.app.metadataCache.getFileCache(holidayFile);
-        if (cache?.frontmatter && Array.isArray(cache.frontmatter.holidays)) {
-          const holidaysFromFile = cache.frontmatter.holidays as Holiday[];
-          holidaysFromFile.forEach((h) => {
-            if (!holidaysByDate.has(h.date)) holidaysByDate.set(h.date, []);
-            holidaysByDate.get(h.date)?.push(h);
-          });
-        }
-      }
-    }
-    // ---
-
     const birthdayFolder = this.plugin.settings.birthdayFolder.toLowerCase();
     const hasBirthdayFolderSetting =
       this.plugin.settings.birthdayFolder.trim() !== "";
 
     for (const file of allFiles) {
-      /* ... data fetching for notes/birthdays is the same ... */
       const cache = this.app.metadataCache.getFileCache(file);
       const fm = cache?.frontmatter;
       if (!fm) continue;
@@ -245,7 +224,6 @@ export class CalendarView extends ItemView {
     date: moment.Moment,
     event: MouseEvent
   ): Promise<void> {
-    /* ... same as before ... */
     const { workspace } = this.app;
     const allDailyNotes = getAllDailyNotes();
     const existingFile = getDailyNote(date, allDailyNotes);

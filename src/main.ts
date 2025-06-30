@@ -2,7 +2,7 @@
 import { Plugin, WorkspaceLeaf, Notice } from 'obsidian';
 import { CalendarView, CALENDAR_VIEW_TYPE } from './view';
 import { CalendarSettingTab } from './settings';
-import { MyCalendarPluginSettings } from './types';
+import { MyCalendarPluginSettings, HolidaySource, CountryHolidaySource } from './types';
 import { HolidayService } from './holidayService'; 
 
 const DEFAULT_SETTINGS: MyCalendarPluginSettings = {
@@ -13,8 +13,8 @@ const DEFAULT_SETTINGS: MyCalendarPluginSettings = {
     birthdayFolder: '',
     defaultBirthdaySymbol: '🎂',
     defaultBirthdayColor: 'var(--color-red-tint)',
-    holidayCountry: '',
-    holidayStorageFolder: 'Calendar/Holidays', // A sensible default
+    holidayStorageFolder: 'Calendar/Holidays',
+    holidaySources: [], // Use an array of sources now
 };
 
 export default class MyCalendarPlugin extends Plugin {
@@ -27,7 +27,6 @@ export default class MyCalendarPlugin extends Plugin {
 
         await this.loadSettings();
         
-        // Pass the plugin instance to the service
         this.holidayService = new HolidayService(this.app, this);
 
         this.registerView(
@@ -38,22 +37,17 @@ export default class MyCalendarPlugin extends Plugin {
             }
         );
 
-        this.addRibbonIcon('calendar-days', 'Open Continuous Calendar', (evt: MouseEvent) => {
+        this.addRibbonIcon('calendar-days', 'Open Continuous Calendar', () => {
             this.activateView();
         });
 
-        // Add Command to Fetch/Update Holidays
+        // The command now updates ALL configured country sources
         this.addCommand({
             id: 'update-country-holidays',
             name: 'Update Country Holidays for Displayed Year',
             callback: async () => {
-                if (!this.settings.holidayCountry) {
-                    new Notice("Please set a country code in Calendar settings first.");
-                    return;
-                }
-                new Notice(`Updating holidays for ${this.settings.holidayCountry}...`);
-                await this.holidayService.updateCountryHolidayFile(this.settings.year, this.settings.holidayCountry);
-                this.refreshCalendarView(); // Refresh after updating
+                await this.holidayService.fetchAndUpdateAllCountryFilesForYear(this.settings.year);
+                // The service itself will now handle notices and refreshing the view
             },
         });
 
@@ -67,6 +61,10 @@ export default class MyCalendarPlugin extends Plugin {
 
     async loadSettings() {
         this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+        // Handle migration from old settings structure
+        if (!Array.isArray(this.settings.holidaySources)) {
+            this.settings.holidaySources = [];
+        }
     }
 
     async saveSettings() {

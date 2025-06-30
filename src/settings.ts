@@ -1,6 +1,7 @@
 // src/settings.ts
-import { App, PluginSettingTab, Setting } from "obsidian";
+import { App, PluginSettingTab, Setting, Notice } from "obsidian";
 import MyCalendarPlugin from "./main";
+import { HolidaySource } from "./types";
 
 const AVAILABLE_COLOR_OPTIONS: Record<string, string> = {
   "Default (Theme-based)": "currentColor",
@@ -16,11 +17,14 @@ const AVAILABLE_COLOR_OPTIONS: Record<string, string> = {
 
 export class CalendarSettingTab extends PluginSettingTab {
   plugin: MyCalendarPlugin;
+  private availableCountries: { code: string; name: string }[] = [];
+
   constructor(app: App, plugin: MyCalendarPlugin) {
     super(app, plugin);
     this.plugin = plugin;
   }
-  display(): void {
+
+  async display(): Promise<void> {
     const { containerEl } = this;
     containerEl.empty();
     containerEl.createEl("h2", { text: "Continuous Calendar Settings" });
@@ -42,19 +46,6 @@ export class CalendarSettingTab extends PluginSettingTab {
       );
 
     containerEl.createEl("h3", { text: "Holidays" });
-    new Setting(containerEl)
-      .setName("Country Code for Holidays")
-      .setDesc("Two-letter country code (e.g., US, GB, DE).")
-      .addText((text) =>
-        text
-          .setPlaceholder("e.g., US")
-          .setValue(this.plugin.settings.holidayCountry)
-          .onChange(async (value) => {
-            this.plugin.settings.holidayCountry = value.trim().toUpperCase();
-            await this.plugin.saveSettings();
-            this.plugin.refreshCalendarView();
-          })
-      );
 
     new Setting(containerEl)
       .setName("Holiday Definition Folder")
@@ -69,6 +60,23 @@ export class CalendarSettingTab extends PluginSettingTab {
             this.plugin.refreshCalendarView();
           })
       );
+
+    // --- New Holiday Source Management UI ---
+    containerEl.createEl("h4", { text: "Active Holiday Sources" });
+    const sourcesListEl = containerEl.createDiv("holiday-sources-list");
+    if (this.plugin.settings.holidaySources.length === 0) {
+      sourcesListEl.createEl("p", { text: "No holiday sources configured." });
+    } else {
+      this.renderHolidaySources(sourcesListEl);
+    }
+
+    containerEl.createEl("h4", { text: "Add New Holiday Source" });
+    // Fetch country list on demand
+    if (this.availableCountries.length === 0) {
+      await this.fetchAvailableCountries();
+    }
+    this.renderAddHolidaySourceControls(containerEl);
+    // --- End New UI ---
 
     containerEl.createEl("h3", { text: "Event Display" });
     new Setting(containerEl)
@@ -154,5 +162,95 @@ export class CalendarSettingTab extends PluginSettingTab {
             await this.plugin.saveSettings();
           })
       );
+  }
+
+  private renderHolidaySources(containerEl: HTMLElement): void {
+    this.plugin.settings.holidaySources.forEach((source, index) => {
+      new Setting(containerEl)
+        .setName(
+          source.type === "country"
+            ? `Country: ${source.countryCode.toUpperCase()}`
+            : `Custom: ${source.name}`
+        )
+        .addButton((button) =>
+          button
+            .setIcon("trash")
+            .setTooltip("Remove this source")
+            .onClick(async () => {
+              this.plugin.settings.holidaySources.splice(index, 1);
+              await this.plugin.saveSettings();
+              this.display(); // Re-render the settings tab
+              this.plugin.refreshCalendarView();
+            })
+        );
+    });
+  }
+
+  private async fetchAvailableCountries(): Promise<void> {
+    try {
+      this.availableCountries =
+        await this.plugin.holidayService.getAvailableCountries();
+      this.availableCountries.sort((a, b) => a.name.localeCompare(b.name));
+    } catch (error) {
+      console.error("Error fetching available countries:", error);
+      this.availableCountries = [];
+    }
+  }
+
+  private renderAddHolidaySourceControls(containerEl: HTMLElement): void {
+    let selectedCountryCode: string =
+      this.availableCountries.length > 0 ? this.availableCountries[0].code : "";
+
+    const countrySetting = new Setting(containerEl)
+      .setName("Select Country")
+      .addDropdown((dropdown) => {
+        this.availableCountries.forEach((country) => {
+          dropdown.addOption(
+            country.code,
+            `${country.name} (${country.code.toUpperCase()})`
+          );
+        });
+        dropdown.onChange((value) => {
+          selectedCountryCode = value;
+        });
+      });
+
+    countrySetting.addButton((button) =>
+      button
+        .setButtonText("Add Country Source")
+        .setCta()
+        .onClick(async () => {
+          if (!selectedCountryCode) {
+            new Notice("Please select a country.");
+            return;
+          }
+          if (
+            this.plugin.settings.holidaySources.some(
+              (s) =>
+                s.type === "country" &&
+                s.countryCode.toUpperCase() ===
+                  selectedCountryCode.toUpperCase()
+            )
+          ) {
+            new Notice(
+              `Country source '${selectedCountryCode.toUpperCase()}' already exists.`
+            );
+            return;
+          }
+          const newSource: HolidaySource = {
+            type: "country",
+            countryCode: selectedCountryCode,
+          };
+          this.plugin.settings.holidaySources.push(newSource);
+          await this.plugin.saveSettings();
+          await this.plugin.holidayService.ensureHolidayFileExists(
+            this.plugin.settings.year,
+            newSource
+          );
+          new Notice(`Added holiday source.`);
+          this.display();
+          this.plugin.refreshCalendarView();
+        })
+    );
   }
 }
