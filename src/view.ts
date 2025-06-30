@@ -13,7 +13,7 @@ export const CALENDAR_VIEW_TYPE = 'yearly-calendar-view';
 
 export class CalendarView extends ItemView {
     plugin: MyCalendarPlugin;
-    calendarContentEl: HTMLElement; // To register DOM events on
+    calendarContentEl: HTMLElement;
 
     constructor(leaf: WorkspaceLeaf, plugin: MyCalendarPlugin) {
         super(leaf);
@@ -36,18 +36,14 @@ export class CalendarView extends ItemView {
         const container = this.containerEl.children[1];
         container.empty();
         
-        // Create a dedicated content element to attach listeners to
         this.calendarContentEl = container.createDiv({ cls: 'continuous-calendar-content' });
         
         await this.renderCalendar();
 
-        // Register the main click handler
         this.registerDomEvent(this.calendarContentEl, 'click', this.handleClick.bind(this));
     }
 
-    async onClose() {
-        // Future cleanup
-    }
+    async onClose() { }
 
     async refresh() {
         this.leaf.updateHeader();
@@ -55,20 +51,27 @@ export class CalendarView extends ItemView {
     }
     
     async renderCalendar() {
-        this.calendarContentEl.empty(); // Clear previous render
+        this.calendarContentEl.empty();
 
         const year = this.plugin.settings.year;
         const today = moment().format("YYYY-MM-DD");
 
-        const allDNs = getAllDailyNotes(); // Get all daily notes once for efficiency
+        const allDNs = getAllDailyNotes();
 
+        // --- Data Fetching ---
         const allFiles = this.app.vault.getMarkdownFiles();
         let pagesData: any[] = [];
+        let birthdayData: any[] = [];
+
+        const birthdayFolder = this.plugin.settings.birthdayFolder.toLowerCase();
+        const hasBirthdayFolderSetting = this.plugin.settings.birthdayFolder.trim() !== '';
+
         for (const file of allFiles) {
             const cache = this.app.metadataCache.getFileCache(file);
             const fm = cache?.frontmatter;
             if (!fm) continue;
-            // ... (data fetching logic remains the same for now)
+
+            // Handle regular events
             let hasDate = false;
             let validDate: string | null = null;
             let validDateStart: string | null = null;
@@ -92,7 +95,20 @@ export class CalendarView extends ItemView {
             if (hasDate) {
                 pagesData.push({ date: validDate, dateStart: validDateStart, dateEnd: validDateEnd, name: file.basename, color: fm.color });
             }
+
+            // Handle birthdays
+            if (fm.birthday && (!hasBirthdayFolderSetting || file.path.toLowerCase().startsWith(birthdayFolder))) {
+				const mBday = moment(fm.birthday.toString(), "YYYY-MM-DD", true);
+				if (mBday.isValid()) {
+					birthdayData.push({
+						birthday: mBday.format("YYYY-MM-DD"),
+						name: file.basename,
+                        color: fm.color // A birthday note can also have a custom color
+					});
+				}
+			}
         }
+        // --- End Data Fetching ---
 
         const table = this.calendarContentEl.createEl('table', { cls: 'my-calendar-table' });
         const thead = table.createEl('thead');
@@ -114,10 +130,9 @@ export class CalendarView extends ItemView {
                 const dayMoment = currentDay;
                 const dateStr = dayMoment.format("YYYY-MM-DD");
                 const cell = weekRow.createEl('td');
-                cell.dataset.date = dateStr; // Add data-date for the click handler
+                cell.dataset.date = dateStr;
                 
                 const cellClasses = ['calendar-cell'];
-                // ... (styling logic is the same)
                 const isOddMonth = dayMoment.month() % 2 === 1;
                 cellClasses.push(isOddMonth ? 'odd-month' : 'even-month');
                 if (dayMoment.year() !== year) cellClasses.push('other-year');
@@ -135,17 +150,32 @@ export class CalendarView extends ItemView {
                     dayNumSpan.setText(dayMoment.date().toString());
                     const dailyNoteFile = getDailyNote(dayMoment, allDNs);
                     if (dailyNoteFile) {
-                        dayNumSpan.addClass('has-daily-note'); // Add class for styling
+                        dayNumSpan.addClass('has-daily-note');
                     }
                 }
 
+                // Render single-day event dots
                 const matchingNotes = pagesData.filter(p => p.date === dateStr);
                 matchingNotes.forEach(note => {
-                    const dot = dotAreaDiv.createSpan({ cls: 'dot', text: '●' });
+                    const dot = dotAreaDiv.createSpan({ cls: 'dot note-dot', text: '●' });
                     dot.title = note.name;
                     dot.style.color = note.color || this.plugin.settings.defaultDotColor;
                 });
 
+                // Render birthday dots
+                const matchingBirthdays = birthdayData.filter(b => {
+                    const bdayMoment = moment(b.birthday, "YYYY-MM-DD");
+                    return bdayMoment.month() === dayMoment.month() && bdayMoment.date() === dayMoment.date();
+                });
+                if (matchingBirthdays.length > 0) {
+                    const dot = dotAreaDiv.createSpan({ cls: 'dot birthday-dot' });
+                    dot.textContent = this.plugin.settings.defaultBirthdaySymbol;
+                    dot.title = matchingBirthdays.map(b => b.name).join('\n');
+                    // Use the color from the first birthday note, or the default birthday color
+                    dot.style.color = matchingBirthdays[0].color || this.plugin.settings.defaultBirthdayColor;
+                }
+
+                // Render range bars
                 const matchingRanges = pagesData.filter(p => p.dateStart && p.dateEnd && dayMoment.isBetween(p.dateStart, p.dateEnd, 'day', '[]'));
                 matchingRanges.forEach(p => {
                     const bar = rangeBarAreaDiv.createDiv({ cls: 'range-bar', title: p.name });
@@ -161,8 +191,6 @@ export class CalendarView extends ItemView {
 
     handleClick(event: MouseEvent) {
 		const target = event.target as HTMLElement;
-
-		// Check if a day number was clicked
 		const dayNumberEl = target.closest('.day-number');
 		if (dayNumberEl) {
 			const cellEl = target.closest('td.calendar-cell');

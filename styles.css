@@ -32,7 +32,7 @@
   opacity: 0.3;
 }
 
-.calendar-cell.today .day-number { /* Target day-number inside today cell */
+.calendar-cell.today .day-number {
   background-color: var(--interactive-accent) !important;
   color: var(--text-on-accent);
   font-weight: bold;
@@ -68,8 +68,17 @@
 .dot {
   display: inline-block;
   margin: 0 1px;
-  font-size: 0.8em;
-  font-weight: bold;
+}
+
+/* --- New/Updated Styles for V9 --- */
+
+.dot.note-dot {
+   font-size: 0.8em;
+   font-weight: bold;
+}
+
+.dot.birthday-dot {
+    font-size: 1em; /* Make birthday symbol a bit larger */
 }
 
 .range-bar-area {
@@ -100,8 +109,6 @@
   border-bottom-right-radius: 3px;
 }
 
-/* --- New Styles for V8 --- */
-
 .day-number {
   cursor: pointer;
   display: inline-block;
@@ -119,7 +126,6 @@
   text-underline-offset: 2px;
 }
 
-/* Style for the modal buttons */
 .modal-button-container {
     display: flex;
     justify-content: flex-end;

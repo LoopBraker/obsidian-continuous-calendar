@@ -8,7 +8,10 @@ const DEFAULT_SETTINGS: MyCalendarPluginSettings = {
     year: new Date().getFullYear(),
     defaultDotColor: 'currentColor',
     defaultBarColor: 'var(--interactive-accent)',
-    shouldConfirmBeforeCreate: true, // Default to asking the user
+    shouldConfirmBeforeCreate: true,
+    birthdayFolder: '', // Default to scanning all notes
+    defaultBirthdaySymbol: '🎂',
+    defaultBirthdayColor: 'var(--color-red-tint)',
 };
 
 export default class MyCalendarPlugin extends Plugin {

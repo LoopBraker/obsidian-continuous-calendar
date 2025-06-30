@@ -44,6 +44,8 @@ export class CalendarSettingTab extends PluginSettingTab {
 						}
 					}));
         
+        containerEl.createEl('h3', { text: 'Event Display' });
+
         new Setting(containerEl)
 			.setName('Default Event Dot Color')
 			.setDesc('Fallback color if a note has a date but no `color` frontmatter specified.')
@@ -73,8 +75,53 @@ export class CalendarSettingTab extends PluginSettingTab {
 					this.plugin.refreshCalendarView();
 				});
 			});
+        
+        containerEl.createEl('h3', { text: 'Birthdays' });
 
-        // --- New Setting for Confirmation ---
+        new Setting(containerEl)
+			.setName('Birthdays Folder Path')
+			.setDesc('Path to folder with birthday notes. Leave empty to scan the entire vault.')
+			.addText(text => {
+				text.setPlaceholder('e.g. People/Birthdays')
+					.setValue(this.plugin.settings.birthdayFolder)
+					.onChange(async (value) => {
+						this.plugin.settings.birthdayFolder = value.trim();
+						await this.plugin.saveSettings();
+						this.plugin.refreshCalendarView();
+					});
+			});
+
+		new Setting(containerEl)
+            .setName('Birthday symbol / emoji')
+            .setDesc('Single character shown for birthdays (e.g. 🎂, ✱, ★).')
+            .addText(text => {
+                text
+                    .setPlaceholder('🎂')
+                    .setValue(this.plugin.settings.defaultBirthdaySymbol)
+                    .onChange(async value => {
+                        this.plugin.settings.defaultBirthdaySymbol = value.trim() || '🎂';
+                        await this.plugin.saveSettings();
+                        this.plugin.refreshCalendarView();
+                    });
+            });
+
+        new Setting(containerEl)
+			.setName('Default Birthday Color')
+			.setDesc('Fallback color if a birthday note has no `color` frontmatter.')
+			.addDropdown(dropdown => {
+				Object.keys(AVAILABLE_COLOR_OPTIONS).forEach((friendlyName) => {
+					dropdown.addOption(AVAILABLE_COLOR_OPTIONS[friendlyName], friendlyName);
+				});
+				dropdown.setValue(this.plugin.settings.defaultBirthdayColor);
+				dropdown.onChange(async (value: string) => {
+					this.plugin.settings.defaultBirthdayColor = value;
+					await this.plugin.saveSettings();
+					this.plugin.refreshCalendarView();
+				});
+			});
+
+        containerEl.createEl('h3', { text: 'Interaction' });
+        
         new Setting(containerEl)
             .setName('Confirm before creating daily notes')
             .setDesc('Show a confirmation dialog asking if you want to create a missing daily note.')
