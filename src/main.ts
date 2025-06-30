@@ -16,7 +16,8 @@ const DEFAULT_SETTINGS: MyCalendarPluginSettings = {
   defaultBirthdayColor: "var(--color-red-tint)",
   holidayStorageFolder: "Calendar/Holidays",
   holidaySources: [],
-  tagAppearance: {}, // New setting default
+  tagAppearance: {},
+  collapseDuplicateTagSymbols: false, // Default to showing all
 };
 
 export default class MyCalendarPlugin extends Plugin {
@@ -27,15 +28,12 @@ export default class MyCalendarPlugin extends Plugin {
   async onload() {
     console.log("Loading Continuous Calendar Plugin");
     await this.loadSettings();
-
-    // Safety check for the new setting
     if (
       typeof this.settings.tagAppearance !== "object" ||
       this.settings.tagAppearance === null
     ) {
       this.settings.tagAppearance = DEFAULT_SETTINGS.tagAppearance;
     }
-
     this.holidayService = new HolidayService(this.app, this);
     this.registerView(CALENDAR_VIEW_TYPE, (leaf) => {
       this.calendarView = new CalendarView(leaf, this);
@@ -66,7 +64,6 @@ export default class MyCalendarPlugin extends Plugin {
       this.settings.holidaySources = [];
     }
   }
-
   async saveSettings() {
     await this.saveData(this.settings);
   }

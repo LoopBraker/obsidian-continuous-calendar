@@ -1,434 +1,492 @@
-// src/settings.ts
+// src/view.ts
+import { ItemView, WorkspaceLeaf, moment, TFile, Notice } from "obsidian";
 import {
-  App,
-  PluginSettingTab,
-  Setting,
-  Notice,
-  AbstractInputSuggest,
-  TFolder,
-} from "obsidian";
+  createDailyNote,
+  getAllDailyNotes,
+  getDailyNote,
+} from "obsidian-daily-notes-interface";
 import MyCalendarPlugin from "./main";
-import { HolidaySource, CountryHolidaySource } from "./types";
-function getAllFolderPaths(app: App): string[] {
-  const folders: string[] = ["/"];
-  app.vault.getAllLoadedFiles().forEach((file) => {
-    if (file instanceof TFolder && file.path !== "/") {
-      folders.push(file.path);
-    }
-  });
-  return folders.sort();
-}
-class FolderSuggest extends AbstractInputSuggest<string> {
-  private allFolders: string[];
-  constructor(
-    app: App,
-    private inputEl: HTMLInputElement
-  ) {
-    super(app, inputEl);
-    this.allFolders = getAllFolderPaths(app);
-  }
-  getSuggestions(query: string): string[] {
-    return this.allFolders.filter((folder) =>
-      folder.toLowerCase().includes(query.toLowerCase())
-    );
-  }
-  renderSuggestion(folder: string, el: HTMLElement): void {
-    el.setText(folder);
-  }
-  selectSuggestion(folder: string): void {
-    this.inputEl.value = folder;
-    this.inputEl.dispatchEvent(new Event("input"));
-    this.close();
-  }
-}
-class TagSuggest extends AbstractInputSuggest<string> {
-  private allTags: string[];
-  constructor(
-    app: App,
-    private inputEl: HTMLInputElement
-  ) {
-    super(app, inputEl);
-    this.allTags = Object.keys(app.metadataCache.getTags() || {});
-  }
-  getSuggestions(query: string): string[] {
-    return this.allTags.filter((tag) =>
-      tag.toLowerCase().includes(query.toLowerCase())
-    );
-  }
-  renderSuggestion(tag: string, el: HTMLElement): void {
-    el.setText(tag);
-  }
-  selectSuggestion(tag: string): void {
-    this.inputEl.value = tag;
-    this.inputEl.dispatchEvent(new Event("input"));
-    this.close();
-  }
-}
-const ALL_COLOR_OPTIONS: Record<string, string> = {
-  "Default (Red Tint)": "var(--color-red-tint)",
-  "Orange Tint": "var(--color-orange-tint)",
-  "Yellow Tint": "var(--color-yellow-tint)",
-  "Green Tint": "var(--color-green-tint)",
-  "Cyan Tint": "var(--color-cyan-tint)",
-  "Blue Tint": "var(--color-blue-tint)",
-  "Purple Tint": "var(--color-purple-tint)",
-  "Theme Default": "currentColor",
-  "Accent Color": "var(--interactive-accent)",
+import { createConfirmationDialog } from "./modal";
+import { AggregatedHolidayInfo } from "./holidayService";
+
+export const CALENDAR_VIEW_TYPE = "yearly-calendar-view";
+const MAX_VISIBLE_RANGE_SLOTS = 4;
+const BORDER_COLOR_MAP: Record<string, string> = {
+  "var(--color-red-tint)": "var(--color-red-text)",
+  "var(--color-orange-tint)": "var(--color-orange-text)",
+  "var(--color-yellow-tint)": "var(--color-yellow-text)",
+  "var(--color-green-tint)": "var(--color-green-text)",
+  "var(--color-cyan-tint)": "var(--color-cyan-text)",
+  "var(--color-blue-tint)": "var(--color-blue-text)",
+  "var(--color-purple-tint)": "var(--color-purple-text)",
 };
-export class CalendarSettingTab extends PluginSettingTab {
+const DEFAULT_BORDER_COLOR = "var(--color-red-text)";
+
+export class CalendarView extends ItemView {
   plugin: MyCalendarPlugin;
-  private availableCountries: { code: string; name: string }[] = [];
-  constructor(app: App, plugin: MyCalendarPlugin) {
-    super(app, plugin);
+  calendarContentEl: HTMLElement;
+  private startRangeDate: moment.Moment | null = null;
+  private engagedStartRangeEl: HTMLElement | null = null;
+  constructor(leaf: WorkspaceLeaf, plugin: MyCalendarPlugin) {
+    super(leaf);
     this.plugin = plugin;
   }
-  async display(): Promise<void> {
-    const { containerEl } = this;
-    containerEl.empty();
-    containerEl.createEl("h2", { text: "Continuous Calendar Settings" });
-    new Setting(containerEl).setName("Year").addText((t) =>
-      t.setValue(this.plugin.settings.year.toString()).onChange(async (v) => {
-        const y = parseInt(v);
-        if (!isNaN(y)) {
-          this.plugin.settings.year = y;
-          await this.plugin.saveSettings();
-          this.plugin.refreshCalendarView();
+  getViewType(): string {
+    return CALENDAR_VIEW_TYPE;
+  }
+  getDisplayText(): string {
+    return `Year Calendar - ${this.plugin.settings.year}`;
+  }
+  getIcon(): string {
+    return "calendar-days";
+  }
+  async onOpen() {
+    const c = this.containerEl.children[1];
+    c.empty();
+    this.calendarContentEl = c.createDiv({
+      cls: "continuous-calendar-content",
+    });
+    await this.renderCalendar();
+    this.registerDomEvent(
+      this.calendarContentEl,
+      "click",
+      this.handleClick.bind(this)
+    );
+  }
+  async onClose() {
+    this.clearDayNumberEngagement();
+  }
+  async refresh() {
+    this.leaf.updateHeader();
+    await this.renderCalendar();
+  }
+
+  async renderCalendar() {
+    this.calendarContentEl.empty();
+    const year = this.plugin.settings.year;
+    const today = moment().format("YYYY-MM-DD");
+    const allDNs = getAllDailyNotes();
+    const holidaysByDate =
+      await this.plugin.holidayService.getAggregatedHolidays(year);
+    const allFiles = this.app.vault.getMarkdownFiles();
+    let pagesData: any[] = [];
+    let birthdayData: any[] = [];
+    const birthdayFolder = this.plugin.settings.birthdayFolder.toLowerCase();
+    const hasBirthdayFolderSetting =
+      this.plugin.settings.birthdayFolder.trim() !== "";
+    for (const file of allFiles) {
+      const cache = this.app.metadataCache.getFileCache(file);
+      const fm = cache?.frontmatter;
+      if (!fm) continue;
+      let hasDate = false,
+        validDate: string | null = null,
+        validDateStart: string | null = null,
+        validDateEnd: string | null = null;
+      let explicitColor: string | undefined = fm.color?.toString();
+      let defaultColorFromTag: string | undefined;
+      let defaultSymbolFromTag: string | undefined;
+      if (fm.date) {
+        const mDate = moment(fm.date.toString(), "YYYY-MM-DD", true);
+        if (mDate.isValid()) {
+          validDate = mDate.format("YYYY-MM-DD");
+          hasDate = true;
         }
-      })
-    );
-    containerEl.createEl("h3", { text: "Event Display" });
-    new Setting(containerEl)
-      .setName("Default Event Dot Color")
-      .addDropdown((d) => {
-        Object.keys(ALL_COLOR_OPTIONS).forEach((n) =>
-          d.addOption(ALL_COLOR_OPTIONS[n], n)
-        );
-        d.setValue(this.plugin.settings.defaultDotColor);
-        d.onChange(async (v) => {
-          this.plugin.settings.defaultDotColor = v;
-          await this.plugin.saveSettings();
-          this.plugin.refreshCalendarView();
-        });
-      });
-    new Setting(containerEl)
-      .setName("Default Range Bar Color")
-      .addDropdown((d) => {
-        Object.keys(ALL_COLOR_OPTIONS).forEach((n) =>
-          d.addOption(ALL_COLOR_OPTIONS[n], n)
-        );
-        d.setValue(this.plugin.settings.defaultBarColor);
-        d.onChange(async (v) => {
-          this.plugin.settings.defaultBarColor = v;
-          await this.plugin.saveSettings();
-          this.plugin.refreshCalendarView();
-        });
-      });
-    this.renderTagAppearanceSettings(containerEl);
-    containerEl.createEl("h3", { text: "Data Sources" });
-    new Setting(containerEl)
-      .setName("Birthdays Folder")
-      .setDesc("Path to folder. Type to search.")
-      .addText((t) => {
-        t.setPlaceholder("e.g. People")
-          .setValue(this.plugin.settings.birthdayFolder)
-          .onChange(async (v) => {
-            this.plugin.settings.birthdayFolder = v.trim();
-            await this.plugin.saveSettings();
-            this.plugin.refreshCalendarView();
-          });
-        new FolderSuggest(this.app, t.inputEl);
-      });
-    new Setting(containerEl).setName("Birthday Symbol").addText((t) => {
-      t.setPlaceholder("🎂")
-        .setValue(this.plugin.settings.defaultBirthdaySymbol)
-        .onChange(async (v) => {
-          this.plugin.settings.defaultBirthdaySymbol = v.trim() || "🎂";
-          await this.plugin.saveSettings();
-          this.plugin.refreshCalendarView();
-        });
-    });
-    new Setting(containerEl)
-      .setName("Default Birthday Color")
-      .addDropdown((d) => {
-        Object.keys(ALL_COLOR_OPTIONS).forEach((n) =>
-          d.addOption(ALL_COLOR_OPTIONS[n], n)
-        );
-        d.setValue(this.plugin.settings.defaultBirthdayColor);
-        d.onChange(async (v) => {
-          this.plugin.settings.defaultBirthdayColor = v;
-          await this.plugin.saveSettings();
-          this.plugin.refreshCalendarView();
-        });
-      });
-    new Setting(containerEl)
-      .setName("Holiday Storage Folder")
-      .setDesc("Path to folder. Type to search.")
-      .addText((t) => {
-        t.setValue(this.plugin.settings.holidayStorageFolder).onChange(
-          async (v) => {
-            this.plugin.settings.holidayStorageFolder = v.trim();
-            await this.plugin.saveSettings();
-            this.plugin.refreshCalendarView();
+      }
+      if (fm.dateStart && fm.dateEnd) {
+        const mStart = moment(fm.dateStart.toString(), "YYYY-MM-DD", true);
+        const mEnd = moment(fm.dateEnd.toString(), "YYYY-MM-DD", true);
+        if (mStart.isValid() && mEnd.isValid()) {
+          validDateStart = mStart.format("YYYY-MM-DD");
+          validDateEnd = mEnd.format("YYYY-MM-DD");
+          hasDate = true;
+        }
+      }
+      if (!explicitColor && fm.tags) {
+        let rawTags: any[] = Array.isArray(fm.tags)
+          ? fm.tags
+          : String(fm.tags)
+              .split(",")
+              .map((t) => t.trim());
+        const noteTags = rawTags
+          .map((tag) => String(tag).trim())
+          .filter((t) => t)
+          .map((tag) => (tag.startsWith("#") ? tag : `#${tag}`));
+        for (const tag of noteTags) {
+          const appearance = this.plugin.settings.tagAppearance[tag];
+          if (appearance) {
+            if (!defaultColorFromTag) {
+              defaultColorFromTag = appearance.color;
+            }
+            if (!defaultSymbolFromTag && appearance.symbol) {
+              defaultSymbolFromTag = appearance.symbol;
+            }
+            if (defaultColorFromTag && defaultSymbolFromTag) break;
           }
-        );
-        new FolderSuggest(this.app, t.inputEl);
-      });
-    containerEl.createEl("h4", { text: "Holiday Sources" });
-    const sourcesListEl = containerEl.createDiv();
-    if (this.plugin.settings.holidaySources.length === 0) {
-      sourcesListEl.createEl("p", { text: "No sources." });
-    } else {
-      this.renderHolidaySources(sourcesListEl);
-    }
-    if (this.availableCountries.length === 0) {
-      await this.fetchAvailableCountries();
-    }
-    this.renderAddHolidaySourceControls(containerEl);
-    containerEl.createEl("h3", { text: "Interaction" });
-    new Setting(containerEl).setName("Confirm Daily Note").addToggle((t) =>
-      t
-        .setValue(this.plugin.settings.shouldConfirmBeforeCreate)
-        .onChange(async (v) => {
-          this.plugin.settings.shouldConfirmBeforeCreate = v;
-          await this.plugin.saveSettings();
-        })
-    );
-    new Setting(containerEl).setName("Confirm Range Note").addToggle((t) =>
-      t
-        .setValue(this.plugin.settings.shouldConfirmBeforeCreateRange)
-        .onChange(async (v) => {
-          this.plugin.settings.shouldConfirmBeforeCreateRange = v;
-          await this.plugin.saveSettings();
-        })
-    );
-  }
-  private renderTagAppearanceSettings(containerEl: HTMLElement): void {
-    containerEl.createEl("h4", { text: "Tag-Based Appearance" });
-    Object.keys(this.plugin.settings.tagAppearance)
-      .sort()
-      .forEach((tag) => {
-        const setting = new Setting(containerEl).setName(tag);
-        const appearance = this.plugin.settings.tagAppearance[tag];
-        setting.addDropdown((dd) => {
-          Object.keys(ALL_COLOR_OPTIONS).forEach((key) =>
-            dd.addOption(ALL_COLOR_OPTIONS[key], key)
-          );
-          dd.setValue(appearance.color).onChange(async (newVar) => {
-            appearance.color = newVar;
-            await this.plugin.saveSettings();
-            this.plugin.refreshCalendarView();
-          });
-        });
-        setting.addText((text) => {
-          text
-            .setPlaceholder("●")
-            .setValue(appearance.symbol || "")
-            .onChange(async (val) => {
-              appearance.symbol = val.trim() || undefined;
-              await this.plugin.saveSettings();
-              this.plugin.refreshCalendarView();
-            });
-        });
-        setting.addButton((btn) =>
-          btn
-            .setIcon("trash")
-            .setWarning()
-            .onClick(async () => {
-              delete this.plugin.settings.tagAppearance[tag];
-              await this.plugin.saveSettings();
-              this.display();
-              this.plugin.refreshCalendarView();
-            })
-        );
-      });
-    const newMappingSetting = new Setting(containerEl).setName(
-      "New Tag Mapping"
-    );
-    let newTag = "",
-      newSymbol = "●",
-      newColor = ALL_COLOR_OPTIONS["Theme Default"];
-    newMappingSetting.addText((text) => {
-      text.setPlaceholder("#your/tag").onChange((val) => (newTag = val));
-      new TagSuggest(this.app, text.inputEl);
-    });
-    newMappingSetting.addText((text) => {
-      text
-        .setPlaceholder("●")
-        .onChange((val) => (newSymbol = val.trim() || "●"));
-    });
-    newMappingSetting.addDropdown((dd) => {
-      Object.keys(ALL_COLOR_OPTIONS).forEach((key) =>
-        dd.addOption(ALL_COLOR_OPTIONS[key], key)
-      );
-      dd.setValue(newColor).onChange((val) => (newColor = val));
-    });
-    newMappingSetting.addButton((btn) =>
-      btn
-        .setButtonText("Add")
-        .setCta()
-        .onClick(async () => {
-          if (!newTag || !newTag.startsWith("#")) {
-            new Notice("Tag must start with '#'");
-            return;
-          }
-          if (this.plugin.settings.tagAppearance[newTag]) {
-            new Notice(`Mapping for "${newTag}" already exists`);
-            return;
-          }
-          this.plugin.settings.tagAppearance[newTag] = {
-            color: newColor,
-            symbol: newSymbol,
-          };
-          await this.plugin.saveSettings();
-          this.display();
-          this.plugin.refreshCalendarView();
-        })
-    );
-  }
-  private getCountryName(c: string) {
-    return (
-      this.availableCountries.find(
-        (x) => x.code.toUpperCase() === c.toUpperCase()
-      )?.name || c
-    );
-  }
-  private renderHolidaySources(el: HTMLElement) {
-    this.plugin.settings.holidaySources.forEach((s, i) => {
-      const item = new Setting(el).setName(
-        s.type === "country"
-          ? `Country: ${this.getCountryName(s.countryCode)} (${s.countryCode})`
-          : `Custom: ${s.name}`
-      );
-      if (s.type === "country") {
-        item.addDropdown((d) => {
-          Object.keys(ALL_COLOR_OPTIONS).forEach((k) =>
-            d.addOption(ALL_COLOR_OPTIONS[k], k)
-          );
-          d.setValue(s.color || "var(--color-red-tint)");
-          d.onChange(async (v) => {
-            (
-              this.plugin.settings.holidaySources[i] as CountryHolidaySource
-            ).color = v;
-            await this.plugin.saveSettings();
-            this.plugin.refreshCalendarView();
-          });
+        }
+      }
+      if (hasDate) {
+        pagesData.push({
+          path: file.path,
+          date: validDate,
+          dateStart: validDateStart,
+          dateEnd: validDateEnd,
+          name: file.basename,
+          color: explicitColor,
+          defaultColorFromTag: defaultColorFromTag,
+          defaultSymbolFromTag: defaultSymbolFromTag,
         });
       }
-      item.addButton((b) =>
-        b.setIcon("trash").onClick(async () => {
-          this.plugin.settings.holidaySources.splice(i, 1);
-          await this.plugin.saveSettings();
-          this.display();
-          this.plugin.refreshCalendarView();
-        })
-      );
+      if (
+        fm.birthday &&
+        (!hasBirthdayFolderSetting ||
+          file.path.toLowerCase().startsWith(birthdayFolder))
+      ) {
+        const mBday = moment(fm.birthday.toString(), "YYYY-MM-DD", true);
+        if (mBday.isValid()) {
+          birthdayData.push({
+            path: file.path,
+            birthday: mBday.format("YYYY-MM-DD"),
+            name: file.basename,
+            color: explicitColor,
+            defaultColorFromTag: defaultColorFromTag,
+          });
+        }
+      }
+    }
+    const table = this.calendarContentEl.createEl("table", {
+      cls: "my-calendar-table",
     });
-  }
-  private async fetchAvailableCountries() {
-    try {
-      this.availableCountries =
-        await this.plugin.holidayService.getAvailableCountries();
-      this.availableCountries.sort((a, b) => a.name.localeCompare(b.name));
-    } catch (e) {
-      console.error("Error fetching countries:", e);
-      this.availableCountries = [];
+    const thead = table.createEl("thead");
+    const headerRow = thead.createEl("tr");
+    headerRow.createEl("th", { text: "W" });
+    "Mon Tue Wed Thu Fri Sat Sun"
+      .split(" ")
+      .forEach((day) => headerRow.createEl("th", { text: day }));
+    const tbody = table.createEl("tbody");
+    const startDate = moment(`${year}-01-01`).startOf("isoWeek");
+    const endDate = moment(`${year}-12-31`).endOf("isoWeek");
+    let currentWeek = startDate.clone();
+    while (currentWeek.isBefore(endDate)) {
+      const weekRow = tbody.createEl("tr");
+      weekRow.createEl("td", {
+        cls: "week-number",
+        text: currentWeek.isoWeek().toString(),
+      });
+      const weeklyRanges = new Map<string, any>();
+      const weeklySlotAssignments = new Map<string, number>();
+      for (let d = 0; d < 7; d++) {
+        const dayMoment = currentWeek.clone().add(d, "days");
+        pagesData.forEach((p) => {
+          if (p.dateStart && p.dateEnd && !weeklyRanges.has(p.path)) {
+            const mStart = moment(p.dateStart);
+            const mEnd = moment(p.dateEnd);
+            if (dayMoment.isBetween(mStart, mEnd, "day", "[]")) {
+              weeklyRanges.set(p.path, p);
+            }
+          }
+        });
+      }
+      let slotIndex = 0;
+      for (const path of weeklyRanges.keys()) {
+        if (slotIndex < MAX_VISIBLE_RANGE_SLOTS) {
+          weeklySlotAssignments.set(path, slotIndex++);
+        }
+      }
+      for (let i = 0; i < 7; i++) {
+        const dayMoment = currentWeek.clone().add(i, "days");
+        const dateStr = dayMoment.format("YYYY-MM-DD");
+        const cell = weekRow.createEl("td");
+        cell.dataset.date = dateStr;
+        const holidaysOnDay = holidaysByDate.get(dateStr) || [];
+        const isHoliday = holidaysOnDay.length > 0;
+        const matchingNotes = pagesData.filter((p) => p.date === dateStr);
+        const matchingRanges = pagesData.filter(
+          (p) =>
+            p.dateStart &&
+            p.dateEnd &&
+            dayMoment.isBetween(p.dateStart, p.dateEnd, "day", "[]")
+        );
+        const matchingBirthdays = birthdayData.filter(
+          (b) =>
+            moment(b.birthday).format("MM-DD") === dayMoment.format("MM-DD")
+        );
+        const cellClasses = ["calendar-cell"];
+        cellClasses.push(
+          dayMoment.month() % 2 === 1 ? "odd-month" : "even-month"
+        );
+        if (dayMoment.year() !== year) cellClasses.push("other-year");
+        if (dateStr === today) cellClasses.push("today");
+        if (isHoliday) {
+          cellClasses.push("holiday-colored");
+          const holidayColorVar =
+            holidaysOnDay[0].color || "var(--color-red-tint)";
+          cell.style.setProperty("--holiday-background-color", holidayColorVar);
+        }
+        cell.addClass(...cellClasses);
+        const cellContentWrapper = cell.createDiv({ cls: "cell-content" });
+        const topContentDiv = cellContentWrapper.createDiv({
+          cls: "top-content",
+        });
+        const dotAreaDiv = cellContentWrapper.createDiv({ cls: "dot-area" });
+        const rangeBarAreaDiv = cellContentWrapper.createDiv({
+          cls: "range-bar-area",
+        });
+        const dayNumSpan = topContentDiv.createSpan({ cls: "day-number" });
+        if (dayMoment.year() === year) {
+          dayNumSpan.setText(dayMoment.date().toString());
+          if (getDailyNote(dayMoment, allDNs)) {
+            dayNumSpan.addClass("has-daily-note");
+          }
+        }
+
+        // --- New De-duplication Logic ---
+        const emittedSymbols = new Set<string>();
+        matchingNotes.forEach((note) => {
+          const symbol = note.defaultSymbolFromTag || "●";
+          const fromTag = !!note.defaultSymbolFromTag;
+          if (
+            this.plugin.settings.collapseDuplicateTagSymbols &&
+            fromTag &&
+            emittedSymbols.has(symbol)
+          ) {
+            return; // Skip duplicate symbol
+          }
+          const dot = dotAreaDiv.createSpan({
+            cls: "dot note-dot",
+            text: symbol,
+          });
+          dot.title = note.name;
+          dot.style.color =
+            note.color ||
+            note.defaultColorFromTag ||
+            this.plugin.settings.defaultDotColor;
+          if (fromTag) {
+            emittedSymbols.add(symbol);
+          }
+        });
+
+        if (matchingBirthdays.length > 0) {
+          const dot = dotAreaDiv.createSpan({ cls: "dot birthday-dot" });
+          dot.textContent = this.plugin.settings.defaultBirthdaySymbol;
+          dot.title = matchingBirthdays.map((b) => b.name).join("\n");
+          dot.style.color =
+            matchingBirthdays[0].color ||
+            matchingBirthdays[0].defaultColorFromTag ||
+            this.plugin.settings.defaultBirthdayColor;
+        }
+        for (let s = 0; s < MAX_VISIBLE_RANGE_SLOTS; s++) {
+          rangeBarAreaDiv.createDiv({ cls: `range-slot slot-${s}` });
+        }
+        matchingRanges.forEach((p) => {
+          const slot = weeklySlotAssignments.get(p.path);
+          if (slot !== undefined) {
+            const slotEl = rangeBarAreaDiv.querySelector(`.slot-${slot}`);
+            if (slotEl) {
+              const bar = slotEl.createDiv({ cls: "range-bar", title: p.name });
+              const bgVar =
+                p.color ||
+                p.defaultColorFromTag ||
+                this.plugin.settings.defaultBarColor;
+              bar.style.backgroundColor = bgVar;
+              const borderVar = BORDER_COLOR_MAP[bgVar] || DEFAULT_BORDER_COLOR;
+              const isStart = dayMoment.isSame(p.dateStart, "day");
+              const isEnd = dayMoment.isSame(p.dateEnd, "day");
+              if (isStart) bar.style.borderLeft = `2px solid ${borderVar}`;
+              if (isEnd) bar.style.borderRight = `2px solid ${borderVar}`;
+              if (isStart) bar.addClass("range-start");
+              if (isEnd) bar.addClass("range-end");
+            }
+          }
+        });
+
+        let expandedHTML = `<div class="expanded-content"><button class="close-button">×</button><strong>${dayMoment.format("dddd, MMMM Do")}</strong>`; /* ... expandedHTML same as before ... */
+        if (isHoliday) {
+          expandedHTML += `<ul>${holidaysOnDay.map((h) => `<li>${h.name}</li>`).join("")}</ul>`;
+        }
+        if (matchingBirthdays.length > 0) {
+          expandedHTML += `<ul>${matchingBirthdays.map((b) => `<li><a class="internal-link" data-href="${b.path}" href="${b.path}">${b.name}</a></li>`).join("")}</ul>`;
+        }
+        if (matchingNotes.length > 0) {
+          expandedHTML += `<ul>${matchingNotes.map((p) => `<li><a class="internal-link" data-href="${p.path}" href="${p.path}">${p.name}</a></li>`).join("")}</ul>`;
+        }
+        if (matchingRanges.length > 0) {
+          expandedHTML += `<ul>${matchingRanges.map((p) => `<li><a class="internal-link" data-href="${p.path}" href="${p.path}">${p.name}</a></li>`).join("")}</ul>`;
+        }
+        if (
+          !isHoliday &&
+          !matchingBirthdays.length &&
+          !matchingNotes.length &&
+          !matchingRanges.length
+        ) {
+          expandedHTML += `<p>No events.</p>`;
+        }
+        expandedHTML += `</div>`;
+        cell.dataset.cellContent = expandedHTML;
+      }
+      currentWeek.add(7, "days");
     }
   }
-  private renderAddHolidaySourceControls(el: HTMLElement) {
-    let type: "country" | "custom" = "country",
-      code: string = "",
-      color: string = "var(--color-red-tint)",
-      name: string = "";
-    const addControls = el.createDiv();
-    new Setting(addControls).setName("Source Type").addDropdown((d) => {
-      d.addOption("country", "Country")
-        .addOption("custom", "Custom")
-        .setValue(type)
-        .onChange((v) => {
-          type = v as any;
-          this.display();
-        });
-    });
-    if (type === "country") {
-      new Setting(addControls).setName("Country").addDropdown((d) => {
-        d.addOption("", "Select...");
-        this.availableCountries.forEach((c) =>
-          d.addOption(c.code, `${c.name} (${c.code})`)
+  handleClick(event: MouseEvent) {
+    const target = event.target as HTMLElement;
+    const dayNumberEl = target.closest(".day-number");
+    if (dayNumberEl) {
+      this.handleDayNumberClick(event, dayNumberEl);
+      return;
+    }
+    const closeButton = target.closest(".close-button");
+    if (closeButton) {
+      const expandedRow = closeButton.closest("tr.expanded-row");
+      if (expandedRow) {
+        this.closeExpandedRow(expandedRow);
+      }
+      return;
+    }
+    const internalLink = target.closest("a.internal-link");
+    if (internalLink) {
+      event.preventDefault();
+      const path = internalLink.dataset.href;
+      if (path) {
+        this.app.workspace.openLinkText(
+          path,
+          "",
+          event.ctrlKey || event.metaKey
         );
-        d.onChange((v) => {
-          code = v;
-        });
+      }
+      return;
+    }
+    const cellEl = target.closest("td.calendar-cell");
+    if (cellEl) {
+      this.handleCellClick(cellEl);
+    }
+  }
+  handleDayNumberClick(event: MouseEvent, dayNumberEl: Element) {
+    const isCmdClick = event.metaKey || event.ctrlKey;
+    const cellEl = dayNumberEl.closest("td.calendar-cell");
+    if (!cellEl || !cellEl.dataset.date) {
+      this.clearDayNumberEngagement();
+      return;
+    }
+    const dateMoment = moment(cellEl.dataset.date);
+    if (isCmdClick) {
+      if (this.startRangeDate) {
+        const endRangeDate = dateMoment;
+        const finalStartDate = this.startRangeDate.isBefore(endRangeDate)
+          ? this.startRangeDate
+          : endRangeDate;
+        const finalEndDate = this.startRangeDate.isBefore(endRangeDate)
+          ? endRangeDate
+          : this.startRangeDate;
+        this.createRangeNote(finalStartDate, finalEndDate);
+        this.clearDayNumberEngagement();
+      } else {
+        new Notice("Click a start date first.");
+      }
+    } else {
+      if (this.engagedStartRangeEl === dayNumberEl) {
+        this.openOrCreateDailyNote(dateMoment, event);
+        this.clearDayNumberEngagement();
+      } else {
+        this.clearDayNumberEngagement();
+        this.startRangeDate = dateMoment;
+        this.engagedStartRangeEl = dayNumberEl as HTMLElement;
+        this.engagedStartRangeEl.addClass("range-start-engaged");
+      }
+    }
+  }
+  handleCellClick(cellEl: HTMLElement) {
+    const currentRow = cellEl.parentElement as HTMLTableRowElement;
+    if (!currentRow) return;
+    const tbody = currentRow.parentElement as HTMLTableSectionElement;
+    const existingExpanded = tbody.querySelector("tr.expanded-row");
+    const wasThisCellExpanded = cellEl.classList.contains("expanded");
+    if (existingExpanded) {
+      const previouslyExpandedCell = tbody.querySelector(
+        "td.calendar-cell.expanded"
+      );
+      previouslyExpandedCell?.removeClass("expanded");
+      existingExpanded.remove();
+    }
+    if (!wasThisCellExpanded) {
+      const contentHtml = cellEl.dataset.cellContent;
+      if (!contentHtml) return;
+      cellEl.addClass("expanded");
+      const expandedRow = document.createElement("tr");
+      expandedRow.className = "expanded-row";
+      const expandedCell = expandedRow.createEl("td", {
+        attr: { colspan: "8" },
       });
-      new Setting(addControls).setName("Color").addDropdown((d) => {
-        Object.keys(ALL_COLOR_OPTIONS).forEach((k) =>
-          d.addOption(ALL_COLOR_OPTIONS[k], k)
-        );
-        d.setValue(color).onChange((v) => {
-          color = v;
+      expandedCell.innerHTML = contentHtml;
+      currentRow.after(expandedRow);
+    }
+  }
+  closeExpandedRow(expandedRow: Element) {
+    const tbody = expandedRow.parentElement;
+    tbody?.querySelector("td.calendar-cell.expanded")?.removeClass("expanded");
+    expandedRow.remove();
+  }
+  clearDayNumberEngagement() {
+    if (this.engagedStartRangeEl) {
+      this.engagedStartRangeEl.removeClass("range-start-engaged");
+      this.engagedStartRangeEl = null;
+    }
+    this.startRangeDate = null;
+  }
+  async openOrCreateDailyNote(
+    date: moment.Moment,
+    event: MouseEvent
+  ): Promise<void> {
+    const { workspace } = this.app;
+    const allDailyNotes = getAllDailyNotes();
+    const existingFile = getDailyNote(date, allDailyNotes);
+    const openInNewPane = event.ctrlKey || event.metaKey;
+    const performCreateAndOpen = async () => {
+      try {
+        const newFile = await createDailyNote(date);
+        await workspace.openLinkText(newFile.path, "", openInNewPane);
+      } catch (err) {
+        console.error(`Failed to create daily note`, err);
+      }
+    };
+    if (existingFile) {
+      await workspace.openLinkText(existingFile.path, "", openInNewPane);
+    } else {
+      if (this.plugin.settings.shouldConfirmBeforeCreate) {
+        createConfirmationDialog(this.app, {
+          title: "Create Daily Note?",
+          text: `Daily note for ${date.format("YYYY-MM-DD")} does not exist. Create it?`,
+          cta: "Create",
+          onAccept: performCreateAndOpen,
         });
+      } else {
+        await performCreateAndOpen();
+      }
+    }
+  }
+  async createRangeNote(
+    startDate: moment.Moment,
+    endDate: moment.Moment
+  ): Promise<void> {
+    const performCreateAndOpen = async () => {
+      const noteContent = `---\ndateStart: ${startDate.format("YYYY-MM-DD")}\ndateEnd: ${endDate.format("YYYY-MM-DD")}\ncolor: ${this.plugin.settings.defaultBarColor}\n---\n\n# New Event\n`;
+      try {
+        const fileName = `Range ${startDate.format("YYMMDD")}-${endDate.format("YYMMDD")}.md`;
+        const newFile = await this.app.vault.create(fileName, noteContent);
+        new Notice(`Created: ${newFile.basename}`);
+        await this.app.workspace.getLeaf("tab").openFile(newFile);
+      } catch (err) {
+        console.error("Error creating range note:", err);
+        new Notice("Error creating file.");
+      }
+    };
+    if (this.plugin.settings.shouldConfirmBeforeCreateRange) {
+      createConfirmationDialog(this.app, {
+        title: "Create Range Note?",
+        text: `Create note for ${startDate.format("YYYY-MM-DD")} to ${endDate.format("YYYY-MM-DD")}?`,
+        cta: "Create",
+        onAccept: performCreateAndOpen,
       });
     } else {
-      new Setting(addControls).setName("Custom Set Name").addText((t) =>
-        t.setPlaceholder("Enter name").onChange((v) => {
-          name = v.trim();
-        })
-      );
+      await performCreateAndOpen();
     }
-    new Setting(addControls).addButton((b) =>
-      b
-        .setButtonText("Add Source")
-        .setCta()
-        .onClick(async () => {
-          let newSource: HolidaySource | null = null;
-          if (type === "country") {
-            if (!code) {
-              new Notice("Select country");
-              return;
-            }
-            if (
-              this.plugin.settings.holidaySources.some(
-                (s) =>
-                  s.type === "country" &&
-                  s.countryCode.toUpperCase() === code.toUpperCase()
-              )
-            ) {
-              new Notice("Source exists");
-              return;
-            }
-            newSource = { type: "country", countryCode: code, color: color };
-          } else {
-            if (!name) {
-              new Notice("Enter name");
-              return;
-            }
-            const id = this.plugin.holidayService.getHolidaySourceId({
-              type: "custom",
-              name: name,
-            });
-            if (
-              this.plugin.settings.holidaySources.some(
-                (s) =>
-                  s.type === "custom" &&
-                  this.plugin.holidayService.getHolidaySourceId(s) === id
-              )
-            ) {
-              new Notice(`Source exists`);
-              return;
-            }
-            newSource = { type: "custom", name: name };
-          }
-          if (newSource) {
-            this.plugin.settings.holidaySources.push(newSource);
-            await this.plugin.saveSettings();
-            await this.plugin.holidayService.ensureHolidayFileExists(
-              this.plugin.settings.year,
-              newSource
-            );
-            new Notice(`Added source.`);
-            this.display();
-            this.plugin.refreshCalendarView();
-          }
-        })
-    );
   }
 }

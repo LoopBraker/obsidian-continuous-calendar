@@ -1,16 +1,13 @@
 // src/types.ts
 export interface Holiday {
-  date: string; // YYYY-MM-DD
+  date: string;
   name: string;
   color?: string;
 }
-
-// Updated to include an optional symbol
 interface TagAppearance {
   color: string;
-  symbol?: string; // NEW
+  symbol?: string;
 }
-
 export interface MyCalendarPluginSettings {
   year: number;
   defaultDotColor: string;
@@ -23,21 +20,18 @@ export interface MyCalendarPluginSettings {
   holidayStorageFolder: string;
   holidaySources: HolidaySource[];
   tagAppearance: Record<string, TagAppearance>;
+  collapseDuplicateTagSymbols: boolean; // New setting
 }
-
 export interface CountryHolidaySource {
   type: "country";
   countryCode: string;
   color?: string;
 }
-
 export interface CustomHolidaySource {
   type: "custom";
   name: string;
 }
-
 export type HolidaySource = CountryHolidaySource | CustomHolidaySource;
-
 export interface HolidayFileFrontMatter {
   holidaySourceType: "country" | "custom";
   countryCode?: string;

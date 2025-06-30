@@ -9,11 +9,8 @@ import {
 } from "obsidian";
 import MyCalendarPlugin from "./main";
 import { HolidaySource, CountryHolidaySource } from "./types";
-
-// --- Suggester Classes and Helpers ---
-
 function getAllFolderPaths(app: App): string[] {
-  const folders: string[] = ["/"]; // Add root folder explicitly
+  const folders: string[] = ["/"];
   app.vault.getAllLoadedFiles().forEach((file) => {
     if (file instanceof TFolder && file.path !== "/") {
       folders.push(file.path);
@@ -21,7 +18,6 @@ function getAllFolderPaths(app: App): string[] {
   });
   return folders.sort();
 }
-
 class FolderSuggest extends AbstractInputSuggest<string> {
   private allFolders: string[];
   constructor(
@@ -32,9 +28,8 @@ class FolderSuggest extends AbstractInputSuggest<string> {
     this.allFolders = getAllFolderPaths(app);
   }
   getSuggestions(query: string): string[] {
-    const lowerCaseQuery = query.toLowerCase();
     return this.allFolders.filter((folder) =>
-      folder.toLowerCase().includes(lowerCaseQuery)
+      folder.toLowerCase().includes(query.toLowerCase())
     );
   }
   renderSuggestion(folder: string, el: HTMLElement): void {
@@ -46,7 +41,6 @@ class FolderSuggest extends AbstractInputSuggest<string> {
     this.close();
   }
 }
-
 class TagSuggest extends AbstractInputSuggest<string> {
   private allTags: string[];
   constructor(
@@ -70,7 +64,6 @@ class TagSuggest extends AbstractInputSuggest<string> {
     this.close();
   }
 }
-
 const ALL_COLOR_OPTIONS: Record<string, string> = {
   "Default (Red Tint)": "var(--color-red-tint)",
   "Orange Tint": "var(--color-orange-tint)",
@@ -82,7 +75,6 @@ const ALL_COLOR_OPTIONS: Record<string, string> = {
   "Theme Default": "currentColor",
   "Accent Color": "var(--interactive-accent)",
 };
-
 export class CalendarSettingTab extends PluginSettingTab {
   plugin: MyCalendarPlugin;
   private availableCountries: { code: string; name: string }[] = [];
@@ -131,6 +123,7 @@ export class CalendarSettingTab extends PluginSettingTab {
           this.plugin.refreshCalendarView();
         });
       });
+
     this.renderTagAppearanceSettings(containerEl);
 
     containerEl.createEl("h3", { text: "Data Sources" });
@@ -294,6 +287,22 @@ export class CalendarSettingTab extends PluginSettingTab {
           this.plugin.refreshCalendarView();
         })
     );
+
+    // New Toggle Setting
+    new Setting(containerEl)
+      .setName("Collapse duplicate tag icons")
+      .setDesc(
+        "Show just one icon per tag per day, even if several notes share that tag."
+      )
+      .addToggle((t) =>
+        t
+          .setValue(this.plugin.settings.collapseDuplicateTagSymbols)
+          .onChange(async (v) => {
+            this.plugin.settings.collapseDuplicateTagSymbols = v;
+            await this.plugin.saveSettings();
+            this.plugin.refreshCalendarView();
+          })
+      );
   }
   private getCountryName(c: string) {
     return (
