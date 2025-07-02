@@ -1,5 +1,5 @@
 {
-  "year": 2025,
+  "year": 2027,
   "birthdayFolder": "05-People",
   "defaultBirthdaySymbol": "🎂",
   "defaultBirthdayColor": "var(--color-red-tint)",
@@ -29,12 +29,14 @@
   "focusedMonths": [
     3,
     4,
-    2
+    2,
+    5
   ],
   "opaqueMonths": [
     3,
     4,
-    2
+    2,
+    5
   ],
   "collapseDuplicateTagSymbols": true
 }

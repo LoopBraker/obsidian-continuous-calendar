@@ -187,12 +187,12 @@ export class HolidayService {
         try {
             await this.app.fileManager.processFrontMatter(file, (fm) => {
                 const data: HolidayFileFrontMatter = {
+                  ...fm,
                     holidaySourceType: 'country',
                     countryCode: source.countryCode.toUpperCase(),
                     year: year,
                     holidays: fetchedHolidays,
                     lastFetched: new Date().toISOString(),
-                    ...fm,
                 };
                 for (const key in fm) {
                     delete fm[key];
