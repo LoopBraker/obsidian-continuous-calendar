@@ -31,8 +31,8 @@
   position: relative;
   text-align: center;
   vertical-align: top;
-  border: 0.5px dotted var(--background-modifier-border);
-  /* border: none; */
+  /* border: 0.5px dotted var(--background-modifier-border); */
+  border: none;
   padding: 2px;
   font-size: var(--font-adaptive-small);
   line-height: 1.2;
@@ -76,11 +76,11 @@
   cursor: pointer;
 }
 
-.continuous-calendar .week-number:hover {
+/* .continuous-calendar .week-number:hover {
   transform: scale(1.3);
   transition: all 0.1s ease-in-out;
   opacity: 1;
-}
+} */
 
 .continuous-calendar .calendar-cell:hover {
   background-color: var(--background-modifier-hover);
@@ -105,7 +105,7 @@
 
 /* 1. Top Content (Day Number) */
 .continuous-calendar .top-content {
-  flex-shrink:;
+  flex-shrink: 0;
   padding-bottom: 2px;
   text-align: center;
 }
@@ -298,6 +298,13 @@ background-color: color-mix(in srgb, var(--color-red-tint), transparent 60%);
   border-radius: 2px !important;
   padding: 2px 6px !important;
   display: inline-block;
+}
+
+.continuous-calendar .week-number .week-number-text:hover {
+  transform: scale(1.3);
+  transition: all 0.1s ease-in-out;
+  opacity: 1 ;
+  color: var(--text-accent) !important;
 }
 
 /* --- Month Column & Icons (Vertical Stack) --- */

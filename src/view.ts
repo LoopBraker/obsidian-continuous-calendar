@@ -611,10 +611,14 @@ export class CalendarView extends ItemView {
           expandedHTML += `<strong>Events/Notes:</strong><ul class="expanded-notes">${matchingNotes
             .map((p) => {
               const noteColor =
-                p.color || p.defaultColorFromTag || DEFAULT_DOT_COLOR;
+            p.color || p.defaultColorFromTag || DEFAULT_DOT_COLOR;
               const linkStyleColor =
-                noteColor === "currentColor" ? "inherit" : noteColor;
-              return `<li><a class="internal-link" data-href="${p.path}" href="${p.path}" style="color: ${linkStyleColor};">${p.name}</a></li>`;
+            noteColor === "currentColor" ? "inherit" : noteColor;
+              // Determine symbol: use p.symbol if exists, else p.defaultSymbolFromTag, else empty
+              const symbol =
+            (p.symbol && p.symbol !== "") ? p.symbol :
+            (p.defaultSymbolFromTag && p.defaultSymbolFromTag !== "") ? p.defaultSymbolFromTag : "";
+              return `<li><a class="internal-link" data-href="${p.path}" href="${p.path}" style="color: ${linkStyleColor};">${symbol ? symbol + " " : ""}${p.name}</a></li>`;
             })
             .join("")}</ul>`;
         }
