@@ -97,10 +97,76 @@ export class CalendarDataService {
         data.allRanges = data.allRanges.filter((r) => r.path !== filePath);
     }
 
-    private indexFile(file: TFile, data: IndexedCalendarData) {
+    /**
+     * Checks if the file's relevant data has changed compared to the current index.
+     * Returns true if an update is required, false otherwise.
+     */
+    checkIfUpdateRequired(file: TFile): boolean {
         const cache = this.app.metadataCache.getFileCache(file);
+        // If no cache, but we have data for it, we need to update (to remove it).
+        // If no cache and no data, no update needed.
+        // But usually cache is null only if file is deleted, which is handled by 'delete' event.
+        // If cache exists but no frontmatter, it might have lost its metadata.
+
+        const newEntries = this.generateFileEntries(file, cache);
+        const oldEntries = this.getEntriesForFile(file, this.currentData);
+
+        return !this.areEntriesEqual(newEntries, oldEntries);
+    }
+
+    private getEntriesForFile(file: TFile, data: IndexedCalendarData) {
+        const filePath = file.path;
+        const notes: any[] = [];
+        const birthdays: any[] = [];
+        const ranges: any[] = [];
+
+        // Find in notesByDate
+        for (const [date, noteList] of data.notesByDate.entries()) {
+            const found = noteList.find((n) => n.path === filePath);
+            if (found) notes.push(found);
+        }
+
+        // Find in birthdaysByDate
+        for (const [date, birthdayList] of data.birthdaysByDate.entries()) {
+            const found = birthdayList.find((n) => n.path === filePath);
+            if (found) birthdays.push(found);
+        }
+
+        // Find in allRanges
+        const foundRanges = data.allRanges.filter((r) => r.path === filePath);
+        ranges.push(...foundRanges);
+
+        return { notes, birthdays, ranges };
+    }
+
+    private areEntriesEqual(a: any, b: any): boolean {
+        // Helper to strip 'file' property which contains circular references (TFile)
+        const stripFile = (obj: any): any => {
+            if (Array.isArray(obj)) {
+                return obj.map(stripFile);
+            } else if (obj && typeof obj === 'object') {
+                const { file, ...rest } = obj;
+                // Recursively strip properties of the remaining object
+                const newObj: any = {};
+                for (const key in rest) {
+                    newObj[key] = stripFile(rest[key]);
+                }
+                return newObj;
+            }
+            return obj;
+        };
+
+        // Compare the stripped objects
+        return JSON.stringify(stripFile(a)) === JSON.stringify(stripFile(b));
+    }
+
+    private generateFileEntries(file: TFile, cache: any) {
+        const notes: any[] = [];
+        const birthdays: any[] = [];
+        const ranges: any[] = [];
+
         const fm = cache?.frontmatter;
-        if (!fm) return;
+        if (!fm) return { notes, birthdays, ranges };
 
         const birthdayFolder =
             this.plugin.settings.birthdayFolder.toLowerCase() + "/";
@@ -158,10 +224,7 @@ export class CalendarDataService {
             const mDate = moment(fm.date.toString(), "YYYY-MM-DD", true);
             if (mDate.isValid()) {
                 const dateStr = mDate.format("YYYY-MM-DD");
-                if (!data.notesByDate.has(dateStr)) {
-                    data.notesByDate.set(dateStr, []);
-                }
-                data.notesByDate.get(dateStr)?.push({ ...baseNoteData, date: dateStr });
+                notes.push({ ...baseNoteData, date: dateStr });
             }
         }
 
@@ -170,7 +233,7 @@ export class CalendarDataService {
             const mStart = moment(fm.dateStart.toString(), "YYYY-MM-DD", true);
             const mEnd = moment(fm.dateEnd.toString(), "YYYY-MM-DD", true);
             if (mStart.isValid() && mEnd.isValid()) {
-                data.allRanges.push({
+                ranges.push({
                     ...baseNoteData,
                     dateStart: mStart.format("YYYY-MM-DD"),
                     dateEnd: mEnd.format("YYYY-MM-DD"),
@@ -187,12 +250,38 @@ export class CalendarDataService {
             const mBday = moment(fm.birthday.toString(), "YYYY-MM-DD", true);
             if (mBday.isValid()) {
                 const monthDayStr = mBday.format("MM-DD");
+                birthdays.push({ ...baseNoteData, birthday: mBday.format("YYYY-MM-DD") });
+            }
+        }
+
+        return { notes, birthdays, ranges };
+    }
+
+    private indexFile(file: TFile, data: IndexedCalendarData) {
+        const cache = this.app.metadataCache.getFileCache(file);
+        const { notes, birthdays, ranges } = this.generateFileEntries(file, cache);
+
+        // Add to notesByDate
+        for (const note of notes) {
+            if (!data.notesByDate.has(note.date)) {
+                data.notesByDate.set(note.date, []);
+            }
+            data.notesByDate.get(note.date)?.push(note);
+        }
+
+        // Add to allRanges
+        data.allRanges.push(...ranges);
+
+        // Add to birthdaysByDate
+        for (const birthday of birthdays) {
+            // Extract month-day from the full date string we stored
+            const mBday = moment(birthday.birthday, "YYYY-MM-DD", true);
+            if (mBday.isValid()) {
+                const monthDayStr = mBday.format("MM-DD");
                 if (!data.birthdaysByDate.has(monthDayStr)) {
                     data.birthdaysByDate.set(monthDayStr, []);
                 }
-                data.birthdaysByDate
-                    .get(monthDayStr)
-                    ?.push({ ...baseNoteData, birthday: mBday.format("YYYY-MM-DD") });
+                data.birthdaysByDate.get(monthDayStr)?.push(birthday);
             }
         }
     }

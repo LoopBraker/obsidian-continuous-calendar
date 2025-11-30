@@ -163,13 +163,14 @@ export default class MyCalendarPlugin extends Plugin {
     this.debouncedRefresh = debounce(
       (file: TFile) => {
         if (this.calendarView && this.calendarView.dataService) {
-          if (this.calendarView.dataService.isFileRelevant(file)) {
+          // Use smart update check: only update if calendar data actually changed
+          if (this.calendarView.dataService.checkIfUpdateRequired(file)) {
             console.log(
-              `Relevant file changed: ${file.path}. Refreshing calendar...`
+              `Relevant data changed in: ${file.path}. Refreshing calendar...`
             );
             this.refreshCalendarView(file);
           } else {
-            // console.log(`Ignored irrelevant file change: ${file.path}`);
+            // console.log(`Ignored content-only change: ${file.path}`);
           }
         }
       },
