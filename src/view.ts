@@ -132,12 +132,31 @@ export class CalendarView extends ItemView implements CalendarController {
     const year = this.plugin.settings.year;
 
     let data;
+    let focusDate: moment.Moment | undefined;
+
     if (file) {
       // --- Incremental Update ---
       console.log(`Incremental update for file: ${file.path}`);
       console.time("CalendarDataService:updateFile");
       data = await this.dataService.updateFile(file);
       console.timeEnd("CalendarDataService:updateFile");
+
+      // Determine focus date from the file
+      const cache = this.app.metadataCache.getFileCache(file);
+      if (cache?.frontmatter) {
+        const fm = cache.frontmatter;
+        if (fm.date) {
+          focusDate = moment(fm.date.toString(), "YYYY-MM-DD", true);
+        } else if (fm.dateStart) {
+          focusDate = moment(fm.dateStart.toString(), "YYYY-MM-DD", true);
+        } else if (fm.birthday) {
+          // For birthdays, we want to focus on the birthday in the CURRENT displayed year
+          const bday = moment(fm.birthday.toString(), "YYYY-MM-DD", true);
+          if (bday.isValid()) {
+            focusDate = bday.clone().year(year);
+          }
+        }
+      }
     } else {
       // --- Full Re-index ---
       console.time("CalendarDataService:collectAndIndex");
@@ -155,7 +174,8 @@ export class CalendarView extends ItemView implements CalendarController {
       data,
       this.currentYearHolidays,
       this.forceFocusMonths,
-      this.forceOpaqueMonths
+      this.forceOpaqueMonths,
+      focusDate // Pass the focus date
     );
     console.timeEnd("CalendarRenderer:render");
 

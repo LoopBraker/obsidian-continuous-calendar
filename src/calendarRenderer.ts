@@ -32,7 +32,8 @@ export class CalendarRenderer {
         data: IndexedCalendarData,
         holidays: Map<string, Holiday[]>,
         forceFocusMonths: Set<number>,
-        forceOpaqueMonths: Set<number>
+        forceOpaqueMonths: Set<number>,
+        focusDate?: moment.Moment // Optional date to scroll to
     ) {
         this.containerEl.empty();
         const scrollContainer = this.containerEl.createDiv({
@@ -528,7 +529,9 @@ export class CalendarRenderer {
 
         const currentMonthIndex = now.month();
         this.applyOutlineStyles(tbody, year, currentMonthIndex, forceFocusMonths);
-        this.scrollToCurrent(tbody, now, year);
+
+        // Scroll to focusDate if provided, otherwise scroll to today
+        this.scrollToDate(tbody, focusDate || now, year);
     }
 
     private addYearSelectorControls(
@@ -562,13 +565,13 @@ export class CalendarRenderer {
         setIcon(refreshButton, "refresh-cw");
     }
 
-    scrollToCurrent(
+    scrollToDate(
         tbody: HTMLTableSectionElement,
-        now: moment.Moment,
+        date: moment.Moment,
         displayYear: number
     ) {
-        if (now.year() !== displayYear) return;
-        const currentWeekStartStr = now
+        if (date.year() !== displayYear) return;
+        const currentWeekStartStr = date
             .clone()
             .startOf("isoWeek")
             .format("YYYY-MM-DD");

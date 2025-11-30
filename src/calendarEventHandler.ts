@@ -419,7 +419,7 @@ export class CalendarEventHandler {
                 const now = moment();
                 const currentTbody = this.controller.calendarContentEl.querySelector("tbody");
                 if (currentTbody) {
-                    this.controller.renderer.scrollToCurrent(currentTbody, now, this.controller.settings.year);
+                    this.controller.renderer.scrollToDate(currentTbody, now, this.controller.settings.year);
                     new Notice("Relocated to current week.");
                 } else {
                     console.error("Could not find tbody to relocate.");
