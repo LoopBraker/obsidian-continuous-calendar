@@ -129,8 +129,8 @@ export class CalendarRenderer {
                 }
             }
 
-            let cursor = moment(`${year}-01-01`);
-            const last = moment(`${year}-12-31`);
+            let cursor = startDate.clone();
+            const last = endDate.clone();
 
             while (cursor.isSameOrBefore(last, "day")) {
                 const todayStr = cursor.format("YYYY-MM-DD");
