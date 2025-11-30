@@ -1,8 +1,8 @@
 // src/main.ts
-import { Plugin, WorkspaceLeaf, TFile } from "obsidian";
+import { Plugin, WorkspaceLeaf, TFile, debounce, Notice } from "obsidian";
 import { CalendarView, CALENDAR_VIEW_TYPE } from "./view";
 import { CalendarSettingTab } from "./settings";
-import { HolidaySource } from "./types";
+import { HolidaySource, TagAppearance } from "./type";
 import { HolidayService } from "./holidayService";
 // Settings Interface and Defaults
 interface MyCalendarSettings {
@@ -27,6 +27,7 @@ const DEFAULT_SETTINGS: MyCalendarSettings = {
   year: new Date().getFullYear(),
   birthdayFolder: "05-People",
   defaultBirthdaySymbol: "🎂",
+  defaultDailyNoteSymbol: "📍",
   defaultBirthdayColor: "var(--color-red-tint)",
   defaultDotColor: "currentColor",
   defaultBarColor: "var(--interactive-accent)",
@@ -44,6 +45,18 @@ export default class MyCalendarPlugin extends Plugin {
   settings: MyCalendarSettings;
   calendarView: CalendarView | null = null;
   holidayService!: HolidayService;
+  // We don't need to store dataService here as it's instantiated in CalendarView,
+  // BUT to use isFileRelevant we might need access to it or instantiate it here too.
+  // Actually, CalendarView instantiates it. We can access it via calendarView.
+  // Or better, instantiate it here and pass it to CalendarView.
+  // Let's check view.ts again. view.ts instantiates it in onOpen.
+  // So we can't rely on it being there if view is not open.
+  // But if view is not open, we don't need to refresh.
+  // So accessing via calendarView is fine.
+
+  // Wait, I need to define the property if I want to access it type-safely?
+  // CalendarView has it public.
+
 
   async onload() {
     console.log("Loading Continuous Calendar Plugin");
@@ -145,25 +158,54 @@ export default class MyCalendarPlugin extends Plugin {
     // Add Settings Tab
     this.addSettingTab(new CalendarSettingTab(this.app, this));
 
-    // TODO: Add event listeners for vault changes to auto-refresh
-    // Example (can be performance intensive, refine later):
-    /*
-         this.registerEvent(this.app.metadataCache.on('changed', (file, data, cache) => {
-             // Crude check: if any file changes, refresh the calendar
-             // More refined: check if the changed file *could* affect the calendar
-             console.log("Metadata changed, refreshing calendar (potentially)");
-             this.refreshCalendarView();
-         }));
-         this.registerEvent(this.app.vault.on('rename', (file, oldPath) => {
-             console.log("File renamed, refreshing calendar");
-             this.refreshCalendarView();
-         }));
-          this.registerEvent(this.app.vault.on('delete', (file) => {
-             console.log("File deleted, refreshing calendar");
-             this.refreshCalendarView();
-         }));
-        */
+    // --- Automatic Updates ---
+    // Debounce the refresh to avoid excessive updates during rapid changes
+    this.debouncedRefresh = debounce(
+      (file: TFile) => {
+        if (this.calendarView && this.calendarView.dataService) {
+          if (this.calendarView.dataService.isFileRelevant(file)) {
+            console.log(
+              `Relevant file changed: ${file.path}. Refreshing calendar...`
+            );
+            this.refreshCalendarView();
+          } else {
+            // console.log(`Ignored irrelevant file change: ${file.path}`);
+          }
+        }
+      },
+      2000, // 2 seconds delay
+      true // Run on trailing edge
+    );
+
+    this.registerEvent(
+      this.app.metadataCache.on("changed", (file) => {
+        this.debouncedRefresh(file);
+      })
+    );
+
+    this.registerEvent(
+      this.app.vault.on("delete", (file) => {
+        if (file instanceof TFile) {
+          // For delete, we might not be able to check content easily if it's gone,
+          // but we can just refresh to be safe, or check if it WAS relevant (harder).
+          // Simpler to just refresh for deletes as they are less frequent than edits.
+          console.log(`File deleted: ${file.path}. Refreshing calendar...`);
+          this.refreshCalendarView();
+        }
+      })
+    );
+
+    this.registerEvent(
+      this.app.vault.on("rename", (file, oldPath) => {
+        if (file instanceof TFile) {
+          console.log(`File renamed: ${file.path}. Refreshing calendar...`);
+          this.refreshCalendarView();
+        }
+      })
+    );
   }
+
+  debouncedRefresh: (file: TFile) => void;
 
   onunload() {
     console.log("Unloading Continuous Calendar Plugin");

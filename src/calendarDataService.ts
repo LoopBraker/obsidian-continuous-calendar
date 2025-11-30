@@ -129,4 +129,44 @@ export class CalendarDataService {
 
         return { notesByDate, birthdaysByDate, allRanges };
     }
+
+    /**
+     * Checks if a file is relevant to the calendar (has dates, birthdays, or specific tags).
+     * Used to filter updates.
+     */
+    isFileRelevant(file: TFile): boolean {
+        const cache = this.app.metadataCache.getFileCache(file);
+        if (!cache) return false;
+
+        const fm = cache.frontmatter;
+        if (!fm) return false;
+
+        // Check for direct date properties
+        if (fm.date || fm.dateStart || fm.dateEnd || fm.birthday) {
+            return true;
+        }
+
+        // Check for tags that have appearance settings
+        if (fm.tags) {
+            let rawTags: string[] = [];
+            if (typeof fm.tags === "string") {
+                rawTags = fm.tags
+                    .split(",")
+                    .map((t: string) => t.trim())
+                    .filter((t: string) => t);
+            } else if (Array.isArray(fm.tags)) {
+                rawTags = fm.tags.map((t: any) => String(t).trim()).filter((t: any) => t);
+            }
+
+            const tagAppearanceSettings = this.plugin.settings.tagAppearance;
+            for (const tag of rawTags) {
+                const normalizedTag = tag.startsWith("#") ? tag : `#${tag}`;
+                if (tagAppearanceSettings[normalizedTag]) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
 }

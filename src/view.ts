@@ -121,31 +121,38 @@ export class CalendarView extends ItemView implements CalendarController {
   }
 
   async renderCalendar() {
+    console.time("CalendarView:renderCalendar");
     if (!this.plugin.holidayService) {
       console.error("Holiday service not available in CalendarView.");
       this.calendarContentEl.setText("Error: Holiday service failed to load.");
+      console.timeEnd("CalendarView:renderCalendar");
       return;
     }
 
     const year = this.plugin.settings.year;
 
     // --- Perform the expensive data collection and indexing ONCE ---
+    console.time("CalendarDataService:collectAndIndex");
     const data = await this.dataService.collectAndIndexCalendarData();
+    console.timeEnd("CalendarDataService:collectAndIndex");
 
     console.log("Fetching aggregated holidays for year:", year);
     this.currentYearHolidays =
       await this.plugin.holidayService.getAggregatedHolidays(year);
     console.log("Fetched holidays map:", this.currentYearHolidays);
 
+    console.time("CalendarRenderer:render");
     await this.renderer.render(
       data,
       this.currentYearHolidays,
       this.forceFocusMonths,
       this.forceOpaqueMonths
     );
+    console.timeEnd("CalendarRenderer:render");
 
     // Attach listeners for controls that were created by renderer
     this.eventHandler.attachControlsListeners();
+    console.timeEnd("CalendarView:renderCalendar");
   }
 
   async saveSettings() {
