@@ -2,9 +2,10 @@
 export interface Holiday {
   date: string; // YYYY-MM-DD
   name: string;
+  color?: string;
 }
 
-interface TagAppearance {
+export interface TagAppearance {
   color: string; // existing
   symbol?: string; // NEW – optional
 }

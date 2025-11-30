@@ -1,14 +1,14 @@
 // src/holidayService.ts
 import { App, TFile, Notice, normalizePath, stringifyYaml, parseYaml, moment } from 'obsidian';
 import MyCalendarPlugin from './main';
-import { HolidaySource, Holiday, HolidayFileFrontMatter, CountryHolidaySource, CustomHolidaySource } from './types';
+import { HolidaySource, Holiday, HolidayFileFrontMatter, CountryHolidaySource, CustomHolidaySource } from './type';
 
 
 const HOLIDAY_FILE_PREFIX = " Holidays ";
 
 
 // Define a new type for the aggregated map value
-interface AggregatedHolidayInfo {
+export interface AggregatedHolidayInfo {
     name: string;
     color?: string; // The CSS variable string assigned to the source country
 }
@@ -187,7 +187,7 @@ export class HolidayService {
         try {
             await this.app.fileManager.processFrontMatter(file, (fm) => {
                 const data: HolidayFileFrontMatter = {
-                  ...fm,
+                    ...fm,
                     holidaySourceType: 'country',
                     countryCode: source.countryCode.toUpperCase(),
                     year: year,
