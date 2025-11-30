@@ -167,7 +167,7 @@ export default class MyCalendarPlugin extends Plugin {
             console.log(
               `Relevant file changed: ${file.path}. Refreshing calendar...`
             );
-            this.refreshCalendarView();
+            this.refreshCalendarView(file);
           } else {
             // console.log(`Ignored irrelevant file change: ${file.path}`);
           }
@@ -252,10 +252,10 @@ export default class MyCalendarPlugin extends Plugin {
   }
 
   // Helper function to refresh the calendar view if it's open
-  refreshCalendarView() {
+  refreshCalendarView(file?: TFile) {
     const leaf = this.app.workspace.getLeavesOfType(CALENDAR_VIEW_TYPE)[0];
     if (leaf && leaf.view instanceof CalendarView) {
-      (leaf.view as CalendarView).refresh();
+      (leaf.view as CalendarView).refresh(file);
       console.log("Calendar view refreshed.");
     } else {
       console.log("Calendar view not found or not a CalendarView instance.");

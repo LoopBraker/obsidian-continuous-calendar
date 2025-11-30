@@ -88,9 +88,9 @@ export class CalendarView extends ItemView implements CalendarController {
     // Clear event handler state if needed, though it's recreated on open
   }
 
-  async refresh() {
+  async refresh(file?: TFile) {
     this.updateTitle();
-    await this.renderCalendar();
+    await this.renderCalendar(file);
   }
 
   async updateTitle() {
@@ -120,7 +120,7 @@ export class CalendarView extends ItemView implements CalendarController {
     }
   }
 
-  async renderCalendar() {
+  async renderCalendar(file?: TFile) {
     console.time("CalendarView:renderCalendar");
     if (!this.plugin.holidayService) {
       console.error("Holiday service not available in CalendarView.");
@@ -131,10 +131,19 @@ export class CalendarView extends ItemView implements CalendarController {
 
     const year = this.plugin.settings.year;
 
-    // --- Perform the expensive data collection and indexing ONCE ---
-    console.time("CalendarDataService:collectAndIndex");
-    const data = await this.dataService.collectAndIndexCalendarData();
-    console.timeEnd("CalendarDataService:collectAndIndex");
+    let data;
+    if (file) {
+      // --- Incremental Update ---
+      console.log(`Incremental update for file: ${file.path}`);
+      console.time("CalendarDataService:updateFile");
+      data = await this.dataService.updateFile(file);
+      console.timeEnd("CalendarDataService:updateFile");
+    } else {
+      // --- Full Re-index ---
+      console.time("CalendarDataService:collectAndIndex");
+      data = await this.dataService.collectAndIndexCalendarData();
+      console.timeEnd("CalendarDataService:collectAndIndex");
+    }
 
     console.log("Fetching aggregated holidays for year:", year);
     this.currentYearHolidays =
