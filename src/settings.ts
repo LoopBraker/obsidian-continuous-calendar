@@ -249,23 +249,6 @@ export class CalendarSettingTab extends PluginSettingTab {
 
     // --- Basic Settings ---
     new Setting(containerEl)
-      .setName("Year to Display")
-      .setDesc("Which year the calendar should show.")
-      .addText((text) =>
-        text
-          .setPlaceholder("e.g., 2024")
-          .setValue(this.plugin.settings.year.toString())
-          .onChange(async (value) => {
-            const year = parseInt(value);
-            if (!isNaN(year)) {
-              this.plugin.settings.year = year;
-              await this.plugin.saveSettings();
-              this.plugin.refreshCalendarView(); // Refresh needed
-            }
-          })
-      );
-
-    new Setting(containerEl)
       .setName("Birthdays Folder Path")
       .setDesc(
         'Path to folder with birthday notes. Type to search. "/" for root.'
@@ -479,7 +462,7 @@ export class CalendarSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName("Update Country Holidays Now")
       .setDesc(
-        `Manually fetch and update holiday data for configured country sources for the currently displayed year (${this.plugin.settings.year}).`
+        `Manually fetch and update holiday data for configured country sources for the year shown in the calendar view.`
       )
       .addButton((button) =>
         button
@@ -924,7 +907,7 @@ export class CalendarSettingTab extends PluginSettingTab {
                 (s) =>
                   s.type === "country" &&
                   s.countryCode.toUpperCase() ===
-                    selectedCountryCode.toUpperCase()
+                  selectedCountryCode.toUpperCase()
               )
             ) {
               new Notice(
