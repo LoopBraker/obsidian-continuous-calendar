@@ -35,6 +35,7 @@ export class CalendarView extends ItemView implements CalendarController {
   forceOpaqueMonths: Set<number> = new Set();
   forceFocusMonths: Set<number> = new Set();
   private currentYearHolidays: Map<string, Holiday[]> = new Map();
+  private currentHolidaysYear: number = -1;
 
   constructor(leaf: WorkspaceLeaf, plugin: MyCalendarPlugin) {
     super(leaf);
@@ -174,10 +175,16 @@ export class CalendarView extends ItemView implements CalendarController {
       console.timeEnd("CalendarDataService:collectAndIndex");
     }
 
-    console.log("Fetching aggregated holidays for year:", year);
-    this.currentYearHolidays =
-      await this.plugin.holidayService.getAggregatedHolidays(year);
-    console.log("Fetched holidays map:", this.currentYearHolidays);
+    // Only fetch holidays if it's a full refresh, or we don't have them, or the year changed
+    if (!file || this.currentYearHolidays.size === 0 || this.currentHolidaysYear !== year) {
+      console.log("Fetching aggregated holidays for year:", year);
+      this.currentYearHolidays =
+        await this.plugin.holidayService.getAggregatedHolidays(year);
+      this.currentHolidaysYear = year;
+      console.log("Fetched holidays map:", this.currentYearHolidays);
+    } else {
+      console.log("Using cached holidays for year:", year);
+    }
 
     console.time("CalendarRenderer:render");
     await this.renderer.render(
