@@ -149,11 +149,21 @@ export class CalendarView extends ItemView implements CalendarController {
           focusDate = moment(fm.date.toString(), "YYYY-MM-DD", true);
         } else if (fm.dateStart) {
           focusDate = moment(fm.dateStart.toString(), "YYYY-MM-DD", true);
-        } else if (fm.birthday) {
-          // For birthdays, we want to focus on the birthday in the CURRENT displayed year
-          const bday = moment(fm.birthday.toString(), "YYYY-MM-DD", true);
-          if (bday.isValid()) {
-            focusDate = bday.clone().year(year);
+        } else {
+          // Check custom date sources
+          const customDateSources = this.plugin.settings.customDateSources || [];
+          for (const source of customDateSources) {
+            if (fm[source.key]) {
+              const mDate = moment(fm[source.key].toString(), "YYYY-MM-DD", true);
+              if (mDate.isValid()) {
+                if (source.isRecurring) {
+                  focusDate = mDate.clone().year(year);
+                } else {
+                  focusDate = mDate;
+                }
+                break; // Found a valid date, stop searching
+              }
+            }
           }
         }
       }

@@ -16,7 +16,7 @@ import {
   HolidaySource,
   CountryHolidaySource,
   CustomHolidaySource,
-} from "./types";
+} from "./type";
 
 export function getAllFolderPaths(app: App): string[] {
   const folders: string[] = [];
@@ -247,78 +247,8 @@ export class CalendarSettingTab extends PluginSettingTab {
 
     containerEl.createEl("h1", { text: "Continuous Calendar Settings" });
 
-    // --- Basic Settings ---
-    new Setting(containerEl)
-      .setName("Birthdays Folder Path")
-      .setDesc(
-        'Path to folder with birthday notes. Type to search. "/" for root.'
-      )
-      .addText((text) => {
-        const displayValue =
-          this.plugin.settings.birthdayFolder === ""
-            ? "/"
-            : this.plugin.settings.birthdayFolder;
-        text
-          .setPlaceholder("/")
-          .setValue(displayValue)
-          .onChange(async (value) => {
-            // Convert '/' back to '' for storage, trim others
-            const storageValue = value.trim() === "/" ? "" : value.trim();
-            this.plugin.settings.birthdayFolder = storageValue;
-            await this.plugin.saveSettings();
-            this.plugin.refreshCalendarView(); // Refresh if path change affects view
-          });
-
-        // Attach the suggester
-        new FolderSuggest(this.app, text.inputEl);
-      });
-
-    //
-    new Setting(containerEl)
-      .setName("Birthday symbol / emoji")
-      .setDesc("Single character shown for birthdays (e.g. 🎂, ✱, ★).")
-      .addText((text) => {
-        text
-          .setPlaceholder("🎂")
-          .setValue(this.plugin.settings.defaultBirthdaySymbol)
-          .onChange(async (value) => {
-            this.plugin.settings.defaultBirthdaySymbol = value.trim() || "🎂";
-            await this.plugin.saveSettings();
-            this.plugin.refreshCalendarView();
-          });
-      });
-    new Setting(containerEl)
-      .setName("Default Birthday text Color")
-      .setDesc("Fallback color if no `color` frontmatter is specified.")
-      .addDropdown((dropdown) => {
-        let colorPreview: HTMLDivElement; // Define reference to store preview element
-
-        Object.keys(AVAILABLE_COLOR_OPTIONS).forEach((friendlyName) => {
-          const cssVar = AVAILABLE_COLOR_OPTIONS[friendlyName];
-          dropdown.addOption(cssVar, friendlyName);
-        });
-
-        dropdown.setValue(this.plugin.settings.defaultBirthdayColor);
-
-        dropdown.onChange(async (value: string) => {
-          this.plugin.settings.defaultBirthdayColor = value;
-          await this.plugin.saveSettings();
-          this.plugin.refreshCalendarView();
-          if (colorPreview) {
-            // Update preview immediately
-            colorPreview.style.backgroundColor = value;
-          }
-        });
-
-        // Create preview dot after dropdown setup
-        colorPreview = dropdown.selectEl.parentElement?.createEl("div", {
-          attr: {
-            style:
-              "display: inline-block; width: 15px; height: 15px; border-radius: 50%; margin-left: 8px; vertical-align: middle; background-color: " +
-              this.plugin.settings.defaultBirthdayColor,
-          },
-        });
-      });
+    // --- Custom Date Sources ---
+    this.renderCustomDateSources(containerEl);
 
     new Setting(containerEl)
       .setName("Default Event Dot Color")
@@ -787,6 +717,149 @@ export class CalendarSettingTab extends PluginSettingTab {
       new Notice("Could not load list of countries for holiday settings.");
       this.availableCountries = [];
     }
+  }
+
+  /**
+   * Renders the settings for Custom Date Sources.
+   */
+  private renderCustomDateSources(containerEl: HTMLElement): void {
+    containerEl.createEl("h3", { text: "Custom Date Sources" });
+    containerEl.createEl("p", {
+      text: "Define custom YAML properties to be used as date sources (e.g., 'birthday', 'deadline', 'anniversary').",
+      cls: "setting-item-description",
+    });
+
+    const listEl = containerEl.createDiv("custom-date-sources-list");
+
+    if (!this.plugin.settings.customDateSources || this.plugin.settings.customDateSources.length === 0) {
+      listEl.createEl("p", { text: "No custom date sources defined." });
+    } else {
+      this.plugin.settings.customDateSources.forEach((source, index) => {
+        const settingItem = new Setting(listEl)
+          .setName(source.key)
+          .setDesc(source.isRecurring ? "Recurring (Yearly)" : "One-time");
+
+        // Symbol
+        settingItem.addText((text) => {
+          text
+            .setPlaceholder("Symbol")
+            .setValue(source.symbol)
+            .onChange(async (value) => {
+              source.symbol = value.trim();
+              await this.plugin.saveSettings();
+              this.plugin.refreshCalendarView();
+            });
+        });
+
+        // Color
+        settingItem.addDropdown((dropdown) => {
+          Object.keys(AVAILABLE_COLOR_OPTIONS).forEach((key) => {
+            dropdown.addOption(AVAILABLE_COLOR_OPTIONS[key], key);
+          });
+          dropdown.setValue(source.color);
+          dropdown.onChange(async (value) => {
+            source.color = value;
+            await this.plugin.saveSettings();
+            this.plugin.refreshCalendarView();
+          });
+        });
+
+        // Recurring Toggle
+        settingItem.addToggle((toggle) => {
+          toggle
+            .setTooltip("Is Recurring?")
+            .setValue(source.isRecurring)
+            .onChange(async (value) => {
+              source.isRecurring = value;
+              await this.plugin.saveSettings();
+              this.plugin.refreshCalendarView();
+              this.display(); // Re-render to update description
+            });
+        });
+
+        // Remove Button
+        settingItem.addButton((button) => {
+          button
+            .setIcon("trash")
+            .setTooltip("Remove source")
+            .onClick(async () => {
+              this.plugin.settings.customDateSources.splice(index, 1);
+              await this.plugin.saveSettings();
+              this.display();
+              this.plugin.refreshCalendarView();
+            });
+        });
+      });
+    }
+
+    // Add New Source Controls
+    containerEl.createEl("h4", { text: "Add New Date Source" });
+    this.renderAddCustomDateSourceControls(containerEl);
+  }
+
+  private renderAddCustomDateSourceControls(containerEl: HTMLElement): void {
+    let newKey = "";
+    let newSymbol = "★";
+    let newColor = AVAILABLE_COLOR_OPTIONS["Default (Red Tint)"];
+    let newIsRecurring = false;
+
+    const wrapper = containerEl.createDiv("add-custom-source-controls");
+    const row = new Setting(wrapper).setName("New Source");
+
+    row.addText((text) => {
+      text.setPlaceholder("Property Name (e.g. deadline)").onChange((v) => {
+        newKey = v.trim();
+      });
+    });
+
+    row.addText((text) => {
+      text.setPlaceholder("Symbol").setValue(newSymbol).onChange((v) => {
+        newSymbol = v.trim();
+      });
+    });
+
+    row.addDropdown((dropdown) => {
+      Object.keys(AVAILABLE_COLOR_OPTIONS).forEach((key) => {
+        dropdown.addOption(AVAILABLE_COLOR_OPTIONS[key], key);
+      });
+      dropdown.setValue(newColor);
+      dropdown.onChange((v) => {
+        newColor = v;
+      });
+    });
+
+    row.addToggle((toggle) => {
+      toggle.setTooltip("Recurring?").setValue(newIsRecurring).onChange((v) => {
+        newIsRecurring = v;
+      });
+    });
+
+    row.addButton((button) => {
+      button
+        .setButtonText("Add")
+        .setCta()
+        .onClick(async () => {
+          if (!newKey) {
+            new Notice("Please enter a property name.");
+            return;
+          }
+          if (this.plugin.settings.customDateSources.some(s => s.key === newKey)) {
+            new Notice("Source with this key already exists.");
+            return;
+          }
+
+          this.plugin.settings.customDateSources.push({
+            key: newKey,
+            symbol: newSymbol,
+            color: newColor,
+            isRecurring: newIsRecurring
+          });
+
+          await this.plugin.saveSettings();
+          this.display();
+          this.plugin.refreshCalendarView();
+        });
+    });
   }
 
   /**

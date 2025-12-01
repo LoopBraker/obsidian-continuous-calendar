@@ -2,13 +2,11 @@
 import { Plugin, WorkspaceLeaf, TFile, debounce, Notice } from "obsidian";
 import { CalendarView, CALENDAR_VIEW_TYPE } from "./view";
 import { CalendarSettingTab } from "./settings";
-import { HolidaySource, TagAppearance } from "./type";
+import { HolidaySource, TagAppearance, CustomDateSource } from "./type";
 import { HolidayService } from "./holidayService";
 // Settings Interface and Defaults
 interface MyCalendarSettings {
   year: number;
-  birthdayFolder: string;
-  defaultBirthdaySymbol: string;
   defaultDailyNoteSymbol: string;
   defaultDotColor: string;
   defaultBarColor: string;
@@ -17,18 +15,15 @@ interface MyCalendarSettings {
   holidayStorageFolder: string;
   holidaySources: HolidaySource[];
   tagAppearance: Record<string, TagAppearance>;
+  customDateSources: CustomDateSource[];
   focusedMonths: number[];
   opaqueMonths: number[];
-  defaultBirthdayColor: string;
   collapseDuplicateTagSymbols: boolean; // New setting for collapsing duplicate tag symbols
 }
 
 const DEFAULT_SETTINGS: MyCalendarSettings = {
   year: new Date().getFullYear(),
-  birthdayFolder: "05-People",
-  defaultBirthdaySymbol: "🎂",
   defaultDailyNoteSymbol: "📍",
-  defaultBirthdayColor: "var(--color-red-tint)",
   defaultDotColor: "currentColor",
   defaultBarColor: "var(--interactive-accent)",
   shouldConfirmBeforeCreate: true,
@@ -36,6 +31,7 @@ const DEFAULT_SETTINGS: MyCalendarSettings = {
   holidayStorageFolder: "02-Calendar/Holidays",
   holidaySources: [],
   tagAppearance: {},
+  customDateSources: [],
   focusedMonths: [],
   opaqueMonths: [],
   collapseDuplicateTagSymbols: false,
@@ -62,6 +58,28 @@ export default class MyCalendarPlugin extends Plugin {
     console.log("Loading Continuous Calendar Plugin");
 
     await this.loadSettings();
+
+    // --- Migration: Convert old birthday settings to new CustomDateSource ---
+    const loadedData = await this.loadData();
+    if (loadedData) {
+      const hasOldBirthdaySettings = loadedData.defaultBirthdaySymbol || loadedData.defaultBirthdayColor;
+      const hasNoCustomSources = !this.settings.customDateSources || this.settings.customDateSources.length === 0;
+
+      if (hasOldBirthdaySettings && hasNoCustomSources) {
+        console.log("Migrating old birthday settings to Custom Date Sources...");
+        this.settings.customDateSources = [
+          {
+            key: "birthday",
+            symbol: loadedData.defaultBirthdaySymbol || "🎂",
+            color: loadedData.defaultBirthdayColor || "var(--color-red-tint)",
+            isRecurring: true
+          }
+        ];
+        // We don't delete the old keys from disk immediately to be safe, 
+        // but they are removed from the interface so they won't be used.
+        await this.saveSettings();
+      }
+    }
 
     // Make sure tagAppearance is an object after loading
     if (

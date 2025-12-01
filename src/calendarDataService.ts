@@ -4,7 +4,7 @@ import { TagAppearance } from "./type";
 
 export type IndexedCalendarData = {
     notesByDate: Map<string, any[]>;
-    birthdaysByDate: Map<string, any[]>;
+    recurringEventsByDate: Map<string, any[]>; // Replaces birthdaysByDate
     allRanges: any[];
 };
 
@@ -23,7 +23,7 @@ export class CalendarDataService {
      */
     private currentData: IndexedCalendarData = {
         notesByDate: new Map(),
-        birthdaysByDate: new Map(),
+        recurringEventsByDate: new Map(),
         allRanges: [],
     };
 
@@ -36,7 +36,7 @@ export class CalendarDataService {
         // Reset data
         this.currentData = {
             notesByDate: new Map(),
-            birthdaysByDate: new Map(),
+            recurringEventsByDate: new Map(),
             allRanges: [],
         };
 
@@ -80,14 +80,14 @@ export class CalendarDataService {
             }
         }
 
-        // Remove from birthdaysByDate
-        for (const [date, birthdays] of data.birthdaysByDate.entries()) {
-            const filteredBirthdays = birthdays.filter((b) => b.path !== filePath);
-            if (filteredBirthdays.length !== birthdays.length) {
-                if (filteredBirthdays.length === 0) {
-                    data.birthdaysByDate.delete(date);
+        // Remove from recurringEventsByDate
+        for (const [date, events] of data.recurringEventsByDate.entries()) {
+            const filteredEvents = events.filter((b) => b.path !== filePath);
+            if (filteredEvents.length !== events.length) {
+                if (filteredEvents.length === 0) {
+                    data.recurringEventsByDate.delete(date);
                 } else {
-                    data.birthdaysByDate.set(date, filteredBirthdays);
+                    data.recurringEventsByDate.set(date, filteredEvents);
                 }
             }
         }
@@ -117,7 +117,7 @@ export class CalendarDataService {
     private getEntriesForFile(file: TFile, data: IndexedCalendarData) {
         const filePath = file.path;
         const notes: any[] = [];
-        const birthdays: any[] = [];
+        const recurringEvents: any[] = [];
         const ranges: any[] = [];
 
         // Find in notesByDate
@@ -126,17 +126,17 @@ export class CalendarDataService {
             if (found) notes.push(found);
         }
 
-        // Find in birthdaysByDate
-        for (const [date, birthdayList] of data.birthdaysByDate.entries()) {
-            const found = birthdayList.find((n) => n.path === filePath);
-            if (found) birthdays.push(found);
+        // Find in recurringEventsByDate
+        for (const [date, eventList] of data.recurringEventsByDate.entries()) {
+            const found = eventList.find((n) => n.path === filePath);
+            if (found) recurringEvents.push(found);
         }
 
         // Find in allRanges
         const foundRanges = data.allRanges.filter((r) => r.path === filePath);
         ranges.push(...foundRanges);
 
-        return { notes, birthdays, ranges };
+        return { notes, recurringEvents, ranges };
     }
 
     private areEntriesEqual(a: any, b: any): boolean {
@@ -162,18 +162,15 @@ export class CalendarDataService {
 
     private generateFileEntries(file: TFile, cache: any) {
         const notes: any[] = [];
-        const birthdays: any[] = [];
+        const recurringEvents: any[] = [];
         const ranges: any[] = [];
 
         const fm = cache?.frontmatter;
-        if (!fm) return { notes, birthdays, ranges };
+        if (!fm) return { notes, recurringEvents, ranges };
 
-        const birthdayFolder =
-            this.plugin.settings.birthdayFolder.toLowerCase() + "/";
-        const hasBirthdayFolderSetting =
-            this.plugin.settings.birthdayFolder.trim() !== "";
         const tagAppearanceSettings: Record<string, TagAppearance> =
             this.plugin.settings.tagAppearance;
+        const customDateSources = this.plugin.settings.customDateSources || [];
 
         // --- Collect Base Information ---
         const explicitColor = fm.color ? fm.color.toString() : undefined;
@@ -241,25 +238,43 @@ export class CalendarDataService {
             }
         }
 
-        // --- Index Birthdays ---
-        if (
-            fm.birthday &&
-            (!hasBirthdayFolderSetting ||
-                file.path.toLowerCase().startsWith(birthdayFolder))
-        ) {
-            const mBday = moment(fm.birthday.toString(), "YYYY-MM-DD", true);
-            if (mBday.isValid()) {
-                const monthDayStr = mBday.format("MM-DD");
-                birthdays.push({ ...baseNoteData, birthday: mBday.format("YYYY-MM-DD") });
+        // --- Index Custom Date Sources ---
+        for (const source of customDateSources) {
+            if (fm[source.key]) {
+                const dateVal = fm[source.key];
+                const mDate = moment(dateVal.toString(), "YYYY-MM-DD", true);
+
+                if (mDate.isValid()) {
+                    const eventData = {
+                        ...baseNoteData,
+                        date: mDate.format("YYYY-MM-DD"),
+                        sourceLabel: source.key,
+                        symbol: source.symbol,
+                        color: source.color
+                    };
+
+                    if (source.isRecurring) {
+                        // For recurring events, we store the full date but index by MM-DD later
+                        recurringEvents.push(eventData);
+                    } else {
+                        // Treat as a regular note event with specific styling
+                        // We override the default symbol/color with the source's settings
+                        notes.push({
+                            ...eventData,
+                            symbol: source.symbol, // Override
+                            color: source.color    // Override
+                        });
+                    }
+                }
             }
         }
 
-        return { notes, birthdays, ranges };
+        return { notes, recurringEvents, ranges };
     }
 
     private indexFile(file: TFile, data: IndexedCalendarData) {
         const cache = this.app.metadataCache.getFileCache(file);
-        const { notes, birthdays, ranges } = this.generateFileEntries(file, cache);
+        const { notes, recurringEvents, ranges } = this.generateFileEntries(file, cache);
 
         // Add to notesByDate
         for (const note of notes) {
@@ -272,16 +287,16 @@ export class CalendarDataService {
         // Add to allRanges
         data.allRanges.push(...ranges);
 
-        // Add to birthdaysByDate
-        for (const birthday of birthdays) {
+        // Add to recurringEventsByDate
+        for (const event of recurringEvents) {
             // Extract month-day from the full date string we stored
-            const mBday = moment(birthday.birthday, "YYYY-MM-DD", true);
-            if (mBday.isValid()) {
-                const monthDayStr = mBday.format("MM-DD");
-                if (!data.birthdaysByDate.has(monthDayStr)) {
-                    data.birthdaysByDate.set(monthDayStr, []);
+            const mDate = moment(event.date, "YYYY-MM-DD", true);
+            if (mDate.isValid()) {
+                const monthDayStr = mDate.format("MM-DD");
+                if (!data.recurringEventsByDate.has(monthDayStr)) {
+                    data.recurringEventsByDate.set(monthDayStr, []);
                 }
-                data.birthdaysByDate.get(monthDayStr)?.push(birthday);
+                data.recurringEventsByDate.get(monthDayStr)?.push(event);
             }
         }
     }
@@ -298,8 +313,14 @@ export class CalendarDataService {
         if (!fm) return false;
 
         // Check for direct date properties
-        if (fm.date || fm.dateStart || fm.dateEnd || fm.birthday) {
+        if (fm.date || fm.dateStart || fm.dateEnd) {
             return true;
+        }
+
+        // Check for custom date sources
+        const customDateSources = this.plugin.settings.customDateSources || [];
+        for (const source of customDateSources) {
+            if (fm[source.key]) return true;
         }
 
         // Check for tags that have appearance settings

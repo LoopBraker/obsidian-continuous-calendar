@@ -45,11 +45,10 @@ export class CalendarRenderer {
         const DEFAULT_HOLIDAY_COLOR_VAR = "var(--color-red-tint)";
         const DEFAULT_DOT_COLOR = this.plugin.settings.defaultDotColor;
         const DEFAULT_BAR_COLOR = this.plugin.settings.defaultBarColor;
-        const DEFAULT_BIRTHDAY_COLOR = this.plugin.settings.defaultBirthdayColor;
         const DEFAULT_DAILY_NOTE_SYMBOL =
             this.plugin.settings.defaultDailyNoteSymbol || "";
 
-        const { notesByDate, birthdaysByDate, allRanges } = data;
+        const { notesByDate, recurringEventsByDate, allRanges } = data;
         const allDNs = getAllDailyNotes();
 
         const table = scrollContainer.createEl("table", {
@@ -194,8 +193,8 @@ export class CalendarRenderer {
                 const isForcedFocus = forceFocusMonths.has(monthIndex);
 
                 const matchingNotes = notesByDate.get(dateStr) || [];
-                const matchingBirthdays =
-                    birthdaysByDate.get(day.format("MM-DD")) || [];
+                const matchingRecurringEvents =
+                    recurringEventsByDate.get(day.format("MM-DD")) || [];
                 const matchingRanges = allRanges.filter(
                     (p) =>
                         moment(p.dateStart).isSameOrBefore(day, "day") &&
@@ -264,7 +263,7 @@ export class CalendarRenderer {
 
                 const dailyNoteRegex = /^\d{4}-\d{2}-\d{2}$/;
                 const dailyNoteDots: HTMLElement[] = [];
-                const birthdayDots: HTMLElement[] = [];
+                const recurringEventDots: HTMLElement[] = [];
                 const otherNoteDots: HTMLElement[] = [];
 
                 const doc = this.containerEl.doc;
@@ -300,21 +299,18 @@ export class CalendarRenderer {
                     (isDailyNote ? dailyNoteDots : otherNoteDots).push(dot);
                 });
 
-                if (matchingBirthdays.length > 0) {
-                    const dot = doc.createElement("span");
-                    dot.addClass("dot", "birthday-dot");
-                    const birthdaySymbol =
-                        this.plugin.settings.defaultBirthdaySymbol || "🎂";
-                    dot.textContent = birthdaySymbol;
-                    dot.title = `${matchingBirthdays.length} birthday${matchingBirthdays.length > 1 ? "s" : ""}`;
-                    dot.style.color =
-                        matchingBirthdays[0].color ||
-                        matchingBirthdays[0].defaultColorFromTag ||
-                        DEFAULT_BIRTHDAY_COLOR;
-                    birthdayDots.push(dot);
+                if (matchingRecurringEvents.length > 0) {
+                    matchingRecurringEvents.forEach((event) => {
+                        const dot = doc.createElement("span");
+                        dot.addClass("dot", "recurring-event-dot");
+                        dot.textContent = event.symbol || "★";
+                        dot.title = event.name;
+                        dot.style.color = event.color || DEFAULT_DOT_COLOR;
+                        recurringEventDots.push(dot);
+                    });
                 }
 
-                birthdayDots.forEach((dot) => dotAreaDiv.appendChild(dot));
+                recurringEventDots.forEach((dot) => dotAreaDiv.appendChild(dot));
                 otherNoteDots.forEach((dot) => dotAreaDiv.appendChild(dot));
 
                 if (matchingRanges.length > 0) {
@@ -365,14 +361,13 @@ export class CalendarRenderer {
                 if (isHoliday) {
                     expandedHTML += `<strong>Holidays:</strong><ul class="expanded-holidays">${holidaysInfo.map((h) => `<li>${h.name}</li>`).join("")}</ul>`;
                 }
-                if (matchingBirthdays.length > 0) {
-                    expandedHTML += `<strong>Birthdays:</strong><ul class="expanded-birthdays">${matchingBirthdays
+                if (matchingRecurringEvents.length > 0) {
+                    expandedHTML += `<strong>Recurring Events:</strong><ul class="expanded-birthdays">${matchingRecurringEvents
                         .map((b) => {
-                            const birthdayColor =
-                                b.color || b.defaultColorFromTag || DEFAULT_BIRTHDAY_COLOR;
+                            const eventColor = b.color || DEFAULT_DOT_COLOR;
                             const linkStyleColor =
-                                birthdayColor === "currentColor" ? "inherit" : birthdayColor;
-                            return `<li><a class="internal-link birthday-link" data-href="${b.path}" href="${b.path}" style="color: ${linkStyleColor};">${b.name}</a></li>`;
+                                eventColor === "currentColor" ? "inherit" : eventColor;
+                            return `<li><span style="margin-right: 5px;">${b.symbol || ""}</span><a class="internal-link birthday-link" data-href="${b.path}" href="${b.path}" style="color: ${linkStyleColor};">${b.name}</a></li>`;
                         })
                         .join("")}</ul>`;
                 }
@@ -403,7 +398,7 @@ export class CalendarRenderer {
                 }
                 if (
                     !isHoliday &&
-                    matchingBirthdays.length === 0 &&
+                    matchingRecurringEvents.length === 0 &&
                     matchingNotes.length === 0 &&
                     matchingRanges.length === 0
                 ) {

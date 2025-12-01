@@ -10,18 +10,23 @@ export interface TagAppearance {
   symbol?: string; // NEW – optional
 }
 
+export interface CustomDateSource {
+  key: string; // YAML property name
+  symbol: string;
+  color: string;
+  isRecurring: boolean; // true for MM-DD, false for YYYY-MM-DD
+}
+
 export interface MyCalendarPluginSettings {
   year: number;
-  defaultBirthdayColor: string;
-  defaultBirthdaySymbol: string;
   defaultDailyNoteSymbol: string;
   defaultDotColor: string;
   defaultBarColor: string;
-  birthdayFolder: string;
   shouldConfirmBeforeCreate: boolean;
   shouldConfirmBeforeCreateRange: boolean; // Optional, for future use
   holidaySources: HolidaySource[];
   tagAppearance: Record<string, TagAppearance>;
+  customDateSources: CustomDateSource[]; // NEW
 
   focusedMonths: number[];
   opaqueMonths: number[];
