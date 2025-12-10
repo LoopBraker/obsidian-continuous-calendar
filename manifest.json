@@ -1,9 +1,9 @@
 {
-    "id": "obsidian-continuous-calendar",
+    "id": "obsidian-Continuous-calendar",
     "name": "Continuous Calendar",
     "version": "1.0.0",
     "minAppVersion": "0.15.0",
-    "description": "Infinite scrolling calendar view.",
+    "description": "Continuous scrolling calendar view.",
     "author": "You",
     "authorUrl": "",
     "isDesktopOnly": false

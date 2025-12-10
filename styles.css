@@ -1,4 +1,5 @@
-:root {
+.Continuous-calendar-plugin {
+    /* Colors */
     --c-white: #ffffff;
     --c-slate-900: #0f172a;
     --c-slate-800: #1e293b;
@@ -21,683 +22,690 @@
     --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
     --shadow-footer: 0 -4px 6px -1px rgba(0, 0, 0, 0.02);
     --shadow-2xl: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
-}
 
-/* --- Layout Containers --- */
-.calendar-container {
-    height: 100%;
-    width: 100%;
-    background-color: var(--c-white);
-    display: flex;
-    flex-direction: column;
-    max-width: 31rem;
-    /* max-w-3xl */
-    margin: 0 auto;
-    box-shadow: var(--shadow-2xl);
-    border-left: 1px solid var(--c-gray-100);
-    border-right: 1px solid var(--c-gray-100);
-    overflow: hidden;
-    font-family: sans-serif;
-}
-
-/* --- Header --- */
-.calendar-header {
-    background-color: var(--c-white);
-    z-index: 50;
-    border-bottom: 1px solid var(--c-gray-200);
-    box-shadow: var(--shadow-sm);
-    flex-shrink: 0;
-    padding-right: 15px;
-}
-
-.header-row {
-    display: flex;
-    width: 100%;
-}
-
-.header-spacer-left {
-    width: 3rem;
-    /* same as .week-num-col */
-    flex-shrink: 0;
-}
-
-.header-spacer-right {
-    width: 4rem;
-    /* w-20 */
-    margin-left: 1rem;
-    flex-shrink: 0;
-}
-
-.header-days-grid {
-    flex: 1;
-    display: grid;
-    grid-template-columns: repeat(7, 1fr);
-    padding-top: 0.75rem;
-    padding-bottom: 0.75rem;
-}
-
-.header-day-label {
-    text-align: center;
-    font-weight: 700;
-    color: var(--c-gray-400);
-    font-size: 0.875rem;
-}
-
-/* --- List Area --- */
-.calendar-list {
-    flex: 1;
-    /* Virtuoso handles scrolling, but flex:1 ensures it fills space */
-    /* This prevents the grid from expanding/jumping when the scrollbar vanishes */
-    position: relative;
-    overflow: hidden;
-}
-
-/* When pinned, we disable scrolling, but 'scrollbar-gutter' keeps the alignment! */
-.calendar-list .is-pinned {
-    overflow-y: hidden !important;
-}
-
-/* --- Week Row Component --- */
-.week-row {
-    display: flex;
-    width: 100%;
-    height: 3rem;
-    /* h-24 */
-}
-
-/* 1. Week Number Column */
-.week-num-col {
-    width: 3rem;
-    /* w-10 */
-    flex-shrink: 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    border-right: 1px solid transparent;
-    cursor: pointer;
-    transition: background-color 0.2s;
-}
-
-.week-num-col:hover {
-    background-color: var(--c-gray-50);
-}
-
-.week-num-col.selected {
-    background-color: rgba(239, 246, 255, 0.5);
-    /* blue-50/50 */
-}
-
-.week-num-text {
-    font-weight: 500;
-    font-size: 0.7rem;
-    color: var(--c-gray-400);
-    transition: all 0.2s;
-}
-
-.week-num-text.is-today {
-    color: var(--c-slate-800);
-    font-weight: 900;
-    font-size: 0.8rem;
-}
-
-.week-num-text.is-active {
-    color: var(--c-slate-500);
-}
-
-.week-num-text.is-inactive {
-    color: var(--c-gray-300);
-    font-weight: 500;
-}
-
-.week-num-col.selected .week-num-text {
-    color: var(--c-blue-600);
-    transform: scale(1.25);
-}
-
-/* 2. Grid Area */
-.day-grid-container {
-    flex: 1;
-    position: relative;
-}
-
-.grid-layer {
-    display: grid;
-    grid-template-columns: repeat(7, 1fr);
-    height: 100%;
-    width: 100%;
-    position: absolute;
-    top: 0;
-    left: 0;
-}
-
-/* Background Layer (Lines & Weekend tint) */
-.grid-layer.background {
-    z-index: 0;
-}
-
-.day-cell-bg {
-    width: 100%;
-    height: 100%;
-    border-right: 1px solid rgba(243, 244, 246, 0.5);
-    /* gray-100/50 */
-    border-bottom: 1px solid rgba(243, 244, 246, 0.5);
-    box-sizing: border-box;
-}
-
-.day-cell-bg.weekend {
-    background-color: rgba(249, 250, 251, 0.5);
-    /* gray-50/50 */
-}
-
-/* Foreground Layer (Numbers) */
-.grid-layer.foreground {
-    z-index: 20;
-    pointer-events: none;
-}
-
-.day-cell-fg {
-    display: grid;
-    flex-direction: column;
-    align-items: start;
-    justify-content: center;
-    position: relative;
-}
-
-.day-number {
-    font-size: 0.8rem;
-    font-weight: 700;
-    transition: color 0.3s;
-    padding-top: 0.2rem;
-}
-
-.day-number.is-today {
-    color: var(--c-slate-800);
-    font-weight: 900;
-    font-size: 0.8rem;
-    padding-top: 0.0rem;
-}
-
-.day-number.is-active {
-    color: var(--c-slate-500);
-}
-
-.day-number.is-inactive {
-    color: var(--c-gray-300);
-    font-weight: 500;
-}
-
-.today-marker {
-    position: absolute;
-    inset: 0;
-    margin: 0.1rem;
-    /* border: 3px solid var(--c-blue-500); */
-    border-radius: 0.5rem;
-    ;
-}
-
-/* SVG Layer */
-.svg-layer {
-    position: absolute;
-    inset: 0;
-    z-index: 30;
-    pointer-events: none;
-    transition: all 0.5s ease-out;
-}
-
-.svg-content {
-    width: 100%;
-    height: 100%;
-    overflow: visible;
-}
-
-/* 3. Sidebar Column */
-.sidebar-col {
-    width: 4rem;
-    /* w-20 */
-    flex-shrink: 0;
-    border-left: 2px dashed var(--c-gray-200);
-    margin-left: 1rem;
-    position: relative;
-    display: flex;
-    flex-direction: column;
-    justify-content: flex-start;
-    padding-top: 1rem;
-    padding-left: 0.5rem;
-}
-
-.month-label {
-    display: flex;
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 0.25rem;
-}
-
-.month-name {
-    font-size: 0.7rem;
-    font-weight: 900;
-    color: var(--c-slate-800);
-    text-transform: uppercase;
-    letter-spacing: 0.025em;
-    line-height: 1;
-    padding-right: 0.1rem;
-}
-
-.month-name.clickable:hover {
-    cursor: pointer;
-}
-
-.month-name.clickable:hover {
-    color: var(--c-blue-600);
-    transform: scale(1.05);
-    transition: all 0.1s;
-}
-
-.month-name.clickable:active {
-    color: var(--c-blue-600);
-}
-
-.month-name.is-active {
-    color: var(--c-blue-600);
-}
-
-.btn-focus {
-    font-size: 0.6rem;
-    /* 0.625rem = 10px */
-    font-weight: 500;
-    padding: 0.125rem 0.125rem;
-    border-radius: 0.25rem;
-    border: 1px solid;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    cursor: pointer;
-    transition: all 0.2s;
-}
-
-/* Reset Button Style */
-.btn-focus.reset {
-    display: flex;
-    align-items: center;
-    gap: 0.25rem;
-    border-color: var(--c-slate-200);
-    background-color: var(--c-white);
-    color: var(--c-slate-500);
-}
-
-.btn-focus.reset:hover {
-    color: var(--c-blue-600);
-    border-color: var(--c-blue-300);
-}
-
-/* Focus Button States */
-.btn-focus.active {
-    background-color: var(--c-slate-800);
-    color: var(--c-white);
-    border-color: var(--c-slate-800);
-}
-
-.btn-focus.inactive {
-    background-color: var(--c-white);
-    color: var(--c-slate-400);
-    border-color: var(--c-slate-200);
-}
-
-.btn-focus.inactive:hover {
-    border-color: var(--c-blue-500);
-    color: var(--c-blue-500);
-}
-
-/* --- Footer --- */
-.calendar-footer {
-    background-color: var(--c-white);
-    border-top: 1px solid var(--c-gray-100);
-    padding: 1rem;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    z-index: 50;
-    box-shadow: var(--shadow-footer);
-}
-
-.footer-btn-text {
-    font-size: 0.75rem;
-    font-weight: 700;
-    color: var(--c-slate-400);
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    padding: 0.25rem 0.5rem;
-    background: none;
-    border: none;
-    cursor: pointer;
-    transition: color 0.2s;
-}
-
-.footer-btn-text:hover {
-    color: var(--c-blue-600);
-}
-
-.footer-controls {
-    display: flex;
-    align-items: center;
-    gap: 1.5rem;
-}
-
-.footer-arrow {
-    color: var(--c-slate-300);
-    background: none;
-    border: none;
-    cursor: pointer;
-    transition: color 0.2s;
-    display: flex;
-    /* alignment */
-}
-
-.footer-arrow:hover {
-    color: var(--c-slate-800);
-}
-
-.arrow-icon {
-    font-size: 1.25rem;
-    font-weight: 700;
-}
-
-.year-display {
-    font-size: 1.5rem;
-    font-weight: 900;
-    color: var(--c-slate-800);
-}
-
-/* --- SIDEBAR & PIN --- */
-.month-label-group {
-    display: flex;
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 0.25rem;
-    width: 100%;
-}
-
-.month-header-row {
-    display: flex;
-    align-items: center;
-    width: 100%;
-}
-
-.pin-btn {
-    background: none;
-    border: none;
-    cursor: pointer;
-    padding: 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    color: var(--c-slate-300);
-    transition: all 0.2s;
-}
-
-.pin-btn:hover {
-    color: var(--c-slate-800);
-    transform: scale(1.1) rotate(15deg);
-}
-
-.pin-icon-svg {
-    width: 14px;
-    height: 14px;
-}
-
-.pin-btn:active {
-    transform: scale(0.95) rotate(-15deg);
-}
-
-/* --- PINNED / CLICKED STATE --- */
-.pin-btn.pinned {
-    opacity: 1;
-    /* Use theme blue instead of harsh red */
-    color: var(--c-blue-600);
-    background-color: var(--c-blue-50);
-}
-
-.pin-btn.pinned .pin-icon-svg {
-    /* Rotate the icon inside to look "stuck in" */
-    transform: rotate(90deg);
-}
-
-/* Hovering while pinned (Indicates you can remove it) */
-.pin-btn.pinned:hover {
-    background-color: var(--c-blue-50-50);
-    color: var(--c-blue-500);
-    transform: scale(1.1);
-}
-
-.pin-btn.pinned:active {
-    transform: scale(0.9);
-}
-
-/* --- TRADITIONAL MONTH VIEW CONTAINER --- */
-.month-view-container {
-    height: 100%;
-    display: flex;
-    flex-direction: column;
-    background-color: var(--c-white);
-    /* Animation for smooth switching */
-    animation: fadeIn 0.3s ease-out;
-}
-
-@keyframes fadeIn {
-    from {
-        opacity: 0;
-        transform: translateY(5px);
+    /* Reset button styles */
+    button {
+        all: unset;
+        cursor: pointer;
+        font-family: inherit;
     }
 
-    to {
+    /* --- Layout Containers --- */
+    .calendar-container {
+        height: 100%;
+        width: 100%;
+        background-color: var(--c-white);
+        display: flex;
+        flex-direction: column;
+        max-width: 31rem;
+        /* max-w-3xl */
+        margin: 0 auto;
+        box-shadow: var(--shadow-2xl);
+        border-left: 1px solid var(--c-gray-100);
+        border-right: 1px solid var(--c-gray-100);
+        overflow: hidden;
+        font-family: sans-serif;
+    }
+
+    /* --- Header --- */
+    .calendar-header {
+        background-color: var(--c-white);
+        z-index: 50;
+        border-bottom: 1px solid var(--c-gray-200);
+        box-shadow: var(--shadow-sm);
+        flex-shrink: 0;
+        padding-right: 15px;
+    }
+
+    .header-row {
+        display: flex;
+        width: 100%;
+    }
+
+    .header-spacer-left {
+        width: 3rem;
+        /* same as .week-num-col */
+        flex-shrink: 0;
+    }
+
+    .header-spacer-right {
+        width: 4rem;
+        /* w-20 */
+        margin-left: 1rem;
+        flex-shrink: 0;
+    }
+
+    .header-days-grid {
+        flex: 1;
+        display: grid;
+        grid-template-columns: repeat(7, 1fr);
+        padding-top: 0.75rem;
+        padding-bottom: 0.75rem;
+    }
+
+    .header-day-label {
+        text-align: center;
+        font-weight: 700;
+        color: var(--c-gray-400);
+        font-size: 0.875rem;
+    }
+
+    /* --- List Area --- */
+    .calendar-list {
+        flex: 1;
+        /* Virtuoso handles scrolling, but flex:1 ensures it fills space */
+        /* This prevents the grid from expanding/jumping when the scrollbar vanishes */
+        position: relative;
+        overflow: hidden;
+    }
+
+    /* When pinned, we disable scrolling, but 'scrollbar-gutter' keeps the alignment! */
+    .calendar-list .is-pinned {
+        overflow-y: hidden !important;
+    }
+
+    /* --- Week Row Component --- */
+    .week-row {
+        display: flex;
+        width: 100%;
+        height: 3rem;
+        /* h-24 */
+    }
+
+    /* 1. Week Number Column */
+    .week-num-col {
+        width: 3rem;
+        /* w-10 */
+        flex-shrink: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border-right: 1px solid transparent;
+        cursor: pointer;
+        transition: background-color 0.2s;
+    }
+
+    .week-num-col:hover {
+        background-color: var(--c-gray-50);
+    }
+
+    .week-num-col.selected {
+        background-color: rgba(239, 246, 255, 0.5);
+        /* blue-50/50 */
+    }
+
+    .week-num-text {
+        font-weight: 500;
+        font-size: 0.7rem;
+        color: var(--c-gray-400);
+        transition: all 0.2s;
+    }
+
+    .week-num-text.is-today {
+        color: var(--c-slate-800);
+        font-weight: 900;
+        font-size: 0.8rem;
+    }
+
+    .week-num-text.is-active {
+        color: var(--c-slate-500);
+    }
+
+    .week-num-text.is-inactive {
+        color: var(--c-gray-300);
+        font-weight: 500;
+    }
+
+    .week-num-col.selected .week-num-text {
+        color: var(--c-blue-600);
+        transform: scale(1.25);
+    }
+
+    /* 2. Grid Area */
+    .day-grid-container {
+        flex: 1;
+        position: relative;
+    }
+
+    .grid-layer {
+        display: grid;
+        grid-template-columns: repeat(7, 1fr);
+        height: 100%;
+        width: 100%;
+        position: absolute;
+        top: 0;
+        left: 0;
+    }
+
+    /* Background Layer (Lines & Weekend tint) */
+    .grid-layer.background {
+        z-index: 0;
+    }
+
+    .day-cell-bg {
+        width: 100%;
+        height: 100%;
+        border-right: 1px solid rgba(243, 244, 246, 0.5);
+        /* gray-100/50 */
+        border-bottom: 1px solid rgba(243, 244, 246, 0.5);
+        box-sizing: border-box;
+    }
+
+    .day-cell-bg.weekend {
+        background-color: rgba(249, 250, 251, 0.5);
+        /* gray-50/50 */
+    }
+
+    /* Foreground Layer (Numbers) */
+    .grid-layer.foreground {
+        z-index: 20;
+        pointer-events: none;
+    }
+
+    .day-cell-fg {
+        display: grid;
+        flex-direction: column;
+        align-items: start;
+        justify-content: center;
+        position: relative;
+    }
+
+    .day-number {
+        font-size: 0.8rem;
+        font-weight: 700;
+        transition: color 0.3s;
+        padding-top: 0.2rem;
+    }
+
+    .day-number.is-today {
+        color: var(--c-slate-800);
+        font-weight: 900;
+        font-size: 0.8rem;
+        padding-top: 0.0rem;
+    }
+
+    .day-number.is-active {
+        color: var(--c-slate-500);
+    }
+
+    .day-number.is-inactive {
+        color: var(--c-gray-300);
+        font-weight: 500;
+    }
+
+    .today-marker {
+        position: absolute;
+        inset: 0;
+        margin: 0.1rem;
+        /* border: 3px solid var(--c-blue-500); */
+        border-radius: 0.5rem;
+        ;
+    }
+
+    /* SVG Layer */
+    .svg-layer {
+        position: absolute;
+        inset: 0;
+        z-index: 30;
+        pointer-events: none;
+        transition: all 0.5s ease-out;
+    }
+
+    .svg-content {
+        width: 100%;
+        height: 100%;
+        overflow: visible;
+    }
+
+    /* 3. Sidebar Column */
+    .sidebar-col {
+        width: 4rem;
+        /* w-20 */
+        flex-shrink: 0;
+        border-left: 2px dashed var(--c-gray-200);
+        margin-left: 1rem;
+        position: relative;
+        display: flex;
+        flex-direction: column;
+        justify-content: flex-start;
+        padding-top: 1rem;
+        padding-left: 0.5rem;
+    }
+
+    .month-label {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 0.25rem;
+    }
+
+    .month-name {
+        font-size: 0.7rem;
+        font-weight: 900;
+        color: var(--c-slate-800);
+        text-transform: uppercase;
+        letter-spacing: 0.025em;
+        line-height: 1;
+        padding-right: 0.1rem;
+    }
+
+    .month-name.clickable:hover {
+        cursor: pointer;
+    }
+
+    .month-name.clickable:hover {
+        color: var(--c-blue-600);
+        transform: scale(1.05);
+        transition: all 0.1s;
+    }
+
+    .month-name.clickable:active {
+        color: var(--c-blue-600);
+    }
+
+    .month-name.is-active {
+        color: var(--c-blue-600);
+    }
+
+    .btn-focus {
+        font-size: 0.6rem;
+        /* 0.625rem = 10px */
+        font-weight: 500;
+        padding: 0.125rem 0.125rem;
+        border-radius: 0.25rem;
+        border: 1px solid;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        cursor: pointer;
+        transition: all 0.2s;
+    }
+
+    /* Reset Button Style */
+    .btn-focus.reset {
+        display: flex;
+        align-items: center;
+        gap: 0.25rem;
+        border-color: var(--c-slate-200);
+        background-color: var(--c-white);
+        color: var(--c-slate-500);
+    }
+
+    .btn-focus.reset:hover {
+        color: var(--c-blue-600);
+        border-color: var(--c-blue-300);
+    }
+
+    /* Focus Button States */
+    .btn-focus.active {
+        background-color: var(--c-slate-800);
+        color: var(--c-white);
+        border-color: var(--c-slate-800);
+    }
+
+    .btn-focus.inactive {
+        background-color: var(--c-white);
+        color: var(--c-slate-400);
+        border-color: var(--c-slate-200);
+    }
+
+    .btn-focus.inactive:hover {
+        border-color: var(--c-blue-500);
+        color: var(--c-blue-500);
+    }
+
+    /* --- Footer --- */
+    .calendar-footer {
+        background-color: var(--c-white);
+        border-top: 1px solid var(--c-gray-100);
+        padding: 1rem;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        z-index: 50;
+        box-shadow: var(--shadow-footer);
+    }
+
+    .footer-btn-text {
+        font-size: 0.75rem;
+        font-weight: 700;
+        color: var(--c-slate-400);
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        padding: 0.25rem 0.5rem;
+        background: none;
+        border: none;
+        cursor: pointer;
+        transition: color 0.2s;
+    }
+
+    .footer-btn-text:hover {
+        color: var(--c-blue-600);
+    }
+
+    .footer-controls {
+        display: flex;
+        align-items: center;
+        gap: 1.5rem;
+    }
+
+    .footer-arrow {
+        color: var(--c-slate-300);
+        background: none;
+        border: none;
+        cursor: pointer;
+        transition: color 0.2s;
+        display: flex;
+        /* alignment */
+    }
+
+    .footer-arrow:hover {
+        color: var(--c-slate-800);
+    }
+
+    .arrow-icon {
+        font-size: 1.25rem;
+        font-weight: 700;
+    }
+
+    .year-display {
+        font-size: 1.5rem;
+        font-weight: 900;
+        color: var(--c-slate-800);
+    }
+
+    /* --- SIDEBAR & PIN --- */
+    .month-label-group {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 0.25rem;
+        width: 100%;
+    }
+
+    .month-header-row {
+        display: flex;
+        align-items: center;
+        width: 100%;
+    }
+
+    .pin-btn {
+        background: none;
+        border: none;
+        cursor: pointer;
+        padding: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: var(--c-slate-300);
+        transition: all 0.2s;
+    }
+
+    .pin-btn:hover {
+        color: var(--c-slate-800);
+        transform: scale(1.1) rotate(15deg);
+    }
+
+    .pin-icon-svg {
+        width: 14px;
+        height: 14px;
+    }
+
+    .pin-btn:active {
+        transform: scale(0.95) rotate(-15deg);
+    }
+
+    /* --- PINNED / CLICKED STATE --- */
+    .pin-btn.pinned {
         opacity: 1;
-        transform: translateY(0);
+        /* Use theme blue instead of harsh red */
+        color: var(--c-blue-600);
+        background-color: var(--c-blue-50);
     }
-}
 
-/* Header Area (Arrows, Back btn) */
-.month-view-header {
-    display: grid;
-    grid-template-columns: 2fr 1fr 2fr;
-    gap: 2rem;
-    align-items: center;
-    justify-content: space-between;
-    padding: 1rem 1.0rem;
-    /* Match sidebar/header spacing visually */
-    border-bottom: 1px solid var(--c-gray-100);
-}
+    .pin-btn.pinned .pin-icon-svg {
+        /* Rotate the icon inside to look "stuck in" */
+        transform: rotate(90deg);
+    }
 
-.back-btn {
-    font-size: 0.85rem;
-    color: var(--c-slate-400);
-    background: none;
-    border: none;
-    cursor: pointer;
-    font-weight: 600;
-    text-transform: uppercase;
-}
+    /* Hovering while pinned (Indicates you can remove it) */
+    .pin-btn.pinned:hover {
+        background-color: var(--c-blue-50-50);
+        color: var(--c-blue-500);
+        transform: scale(1.1);
+    }
 
-.back-btn:hover {
-    color: var(--c-blue-600);
-}
+    .pin-btn.pinned:active {
+        transform: scale(0.9);
+    }
 
-.month-view-title {
-    /* Reset margins */
-    margin: 0;
+    /* --- TRADITIONAL MONTH VIEW CONTAINER --- */
+    .month-view-container {
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        background-color: var(--c-white);
+        /* Animation for smooth switching */
+        animation: fadeIn 0.3s ease-out;
+    }
 
-    /* Flexbox for perfect stacking */
-    display: flex;
-    flex-direction: column;
-    justify-content: center;
+    @keyframes fadeIn {
+        from {
+            opacity: 0;
+            transform: translateY(5px);
+        }
 
-    /* Align text to the right side to balance the "Back" button */
-    align-items: flex-end;
-    text-align: right;
+        to {
+            opacity: 1;
+            transform: translateY(0);
+        }
+    }
 
-    /* Ensure it doesn't wrap awkwardly */
-    white-space: nowrap;
-}
+    /* Header Area (Arrows, Back btn) */
+    .month-view-header {
+        display: grid;
+        grid-template-columns: 2fr 1fr 2fr;
+        gap: 2rem;
+        align-items: center;
+        justify-content: space-between;
+        padding: 1rem 1.0rem;
+        /* Match sidebar/header spacing visually */
+        border-bottom: 1px solid var(--c-gray-100);
+    }
 
-.title-month {
-    font-size: 1.125rem;
-    /* 18px */
-    font-weight: 900;
-    color: var(--c-slate-900);
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    line-height: 1;
-    /* Tight spacing */
-}
+    .back-btn {
+        font-size: 0.85rem;
+        color: var(--c-slate-400);
+        background: none;
+        border: none;
+        cursor: pointer;
+        font-weight: 600;
+        text-transform: uppercase;
+    }
 
-.title-year {
-    font-size: 1.1rem;
-    /* 12px */
-    font-weight: 600;
-    color: var(--c-slate-400);
-    letter-spacing: 0.1em;
-    margin-top: 2px;
-    /* Tiny gap between month and year */
-}
+    .back-btn:hover {
+        color: var(--c-blue-600);
+    }
 
-/* --- NAVIGATION CONTROLS --- */
-.month-nav-controls {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    background-color: var(--c-gray-50);
-    padding: 0.25rem;
-    border-radius: 9999px;
-    border: 1px solid var(--c-gray-200);
-}
+    .month-view-title {
+        /* Reset margins */
+        margin: 0;
 
-.nav-arrow {
-    background: none;
-    border: none;
-    cursor: pointer;
-    font-weight: bold;
-    font-size: 1rem;
-    color: var(--c-slate-400);
-    width: 2rem;
-    height: 2rem;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    border-radius: 50%;
-    transition: all 0.2s;
-}
+        /* Flexbox for perfect stacking */
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
 
-.nav-arrow:hover {
-    background-color: var(--c-white);
-    color: var(--c-blue-600);
-    box-shadow: var(--shadow-sm);
-}
+        /* Align text to the right side to balance the "Back" button */
+        align-items: flex-end;
+        text-align: right;
 
-.nav-dot {
-    background: none;
-    border: none;
-    cursor: pointer;
-    width: 2rem;
-    height: 2rem;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-}
+        /* Ensure it doesn't wrap awkwardly */
+        white-space: nowrap;
+    }
 
-.dot-inner {
-    width: 6px;
-    height: 6px;
-    background-color: var(--c-slate-400);
-    border-radius: 50%;
-    transition: all 0.2s;
-}
+    .title-month {
+        font-size: 1.125rem;
+        /* 18px */
+        font-weight: 900;
+        color: var(--c-slate-900);
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        line-height: 1;
+        /* Tight spacing */
+    }
 
-.nav-dot:hover .dot-inner {
-    background-color: var(--c-blue-600);
-    transform: scale(1.5);
-}
+    .title-year {
+        font-size: 1.1rem;
+        /* 12px */
+        font-weight: 600;
+        color: var(--c-slate-400);
+        letter-spacing: 0.1em;
+        margin-top: 2px;
+        /* Tiny gap between month and year */
+    }
 
-/* Wrapper for the reuseable rows */
-.month-view-list-wrapper {
-    flex: 1;
-    overflow-y: auto;
-    /* Allow scrolling if 6 weeks doesn't fit exactly */
-    /* Remove top border since header has bottom border */
-    padding-top: 4px;
-    scrollbar-gutter: stable;
-}
+    /* --- NAVIGATION CONTROLS --- */
+    .month-nav-controls {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        background-color: var(--c-gray-50);
+        padding: 0.25rem;
+        border-radius: 9999px;
+        border: 1px solid var(--c-gray-200);
+    }
 
-/* --- INTERACTIVE STYLES FOR DAY CELLS & NUMBERS --- */
-/* 1. Day Cell Background Interactions */
-.day-cell-bg {
-    cursor: pointer;
-    /* Show clickable cursor */
-    transition: background-color 0.2s;
-}
+    .nav-arrow {
+        background: none;
+        border: none;
+        cursor: pointer;
+        font-weight: bold;
+        font-size: 1rem;
+        color: var(--c-slate-400);
+        width: 2rem;
+        height: 2rem;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 50%;
+        transition: all 0.2s;
+    }
 
-/* Hover style for the cell */
-.day-cell-bg:hover {
-    background-color: var(--c-blue-50-50);
-    /* Light blue tint on hover */
-}
+    .nav-arrow:hover {
+        background-color: var(--c-white);
+        color: var(--c-blue-600);
+        box-shadow: var(--shadow-sm);
+    }
 
-/* Clicked/Selected style for the cell */
-.day-cell-bg.is-selected-cell {
-    background-color: var(--c-blue-50-50);
-    /* Dark blue background */
-    border: 1px solid var(--c-blue-500);
-    border-radius: 4px;
-    margin: 1px;
-    /* Compensate for border increase */
-}
+    .nav-dot {
+        background: none;
+        border: none;
+        cursor: pointer;
+        width: 2rem;
+        height: 2rem;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    }
 
-/* 2. Day Number Interactions */
-.day-cell-fg {
-    /* IMPORTANT: Enable clicks on the foreground wrapper */
-    pointer-events: none;
-}
+    .dot-inner {
+        width: 6px;
+        height: 6px;
+        background-color: var(--c-slate-400);
+        border-radius: 50%;
+        transition: all 0.2s;
+    }
 
-.day-number {
-    cursor: pointer;
-    pointer-events: auto;
-    /* Re-enable pointer events on the number itself */
-    padding: 2px 4px;
-    /* Give it a bit of hit area */
-    border-radius: 4px;
-    transition: all 0.2s;
-}
+    .nav-dot:hover .dot-inner {
+        background-color: var(--c-blue-600);
+        transform: scale(1.5);
+    }
 
-/* Hover style for the number specifically */
-.day-number:hover {
-    background-color: var(--c-slate-200);
-    transform: scale(1.2);
-    color: var(--c-blue-600);
-}
+    /* Wrapper for the reuseable rows */
+    .month-view-list-wrapper {
+        flex: 1;
+        overflow-y: auto;
+        /* Allow scrolling if 6 weeks doesn't fit exactly */
+        /* Remove top border since header has bottom border */
+        padding-top: 4px;
+        scrollbar-gutter: stable;
+    }
 
-/* Clicked/Selected style for the number */
-.day-number.is-selected-number {
-    color: var(--c-slate-800);
-    /* White text on blue background */
-    font-weight: 900;
-    background-color: var(--c-slate-200);
-    transform: scale(1.2);
-}
+    /* --- INTERACTIVE STYLES FOR DAY CELLS & NUMBERS --- */
+    /* 1. Day Cell Background Interactions */
+    .day-cell-bg {
+        cursor: pointer;
+        /* Show clickable cursor */
+        transition: background-color 0.2s;
+    }
 
-/* --- Floating Today Button --- */
-.floating-today-btn {
-    position: absolute;
-    top: 0.5rem;
-    left: 50%;
-    transform: translateX(-50%);
-    z-index: 40;
-    background-color: var(--c-blue-600);
-    color: var(--c-white);
-    padding: 0.5rem 1.5rem;
-    border-radius: 9999px;
-    border: none;
-    font-weight: 600;
-    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
-    cursor: pointer;
-    transition: background-color 0.2s;
-}
+    /* Hover style for the cell */
+    .day-cell-bg:hover {
+        background-color: var(--c-blue-50-50);
+        /* Light blue tint on hover */
+    }
 
-.floating-today-btn:hover {
-    background-color: var(--c-blue-500);
+    /* Clicked/Selected style for the cell */
+    .day-cell-bg.is-selected-cell {
+        background-color: var(--c-blue-50-50);
+        /* Dark blue background */
+        border: 1px solid var(--c-blue-500);
+        border-radius: 4px;
+        margin: 1px;
+        /* Compensate for border increase */
+    }
+
+    /* 2. Day Number Interactions */
+    .day-cell-fg {
+        /* IMPORTANT: Enable clicks on the foreground wrapper */
+        pointer-events: none;
+    }
+
+    .day-number {
+        cursor: pointer;
+        pointer-events: auto;
+        /* Re-enable pointer events on the number itself */
+        padding: 2px 4px;
+        /* Give it a bit of hit area */
+        border-radius: 4px;
+        transition: all 0.2s;
+    }
+
+    /* Hover style for the number specifically */
+    .day-number:hover {
+        background-color: var(--c-slate-200);
+        transform: scale(1.2);
+        color: var(--c-blue-600);
+    }
+
+    /* Clicked/Selected style for the number */
+    .day-number.is-selected-number {
+        color: var(--c-slate-800);
+        /* White text on blue background */
+        font-weight: 900;
+        background-color: var(--c-slate-200);
+        transform: scale(1.2);
+    }
+
+    /* --- Floating Today Button --- */
+    .floating-today-btn {
+        position: absolute;
+        top: 0.5rem;
+        left: 50%;
+        transform: translateX(-50%);
+        z-index: 40;
+        background-color: var(--c-blue-600);
+        color: var(--c-white);
+        padding: 0.5rem 1.5rem;
+        border-radius: 9999px;
+        border: none;
+        font-weight: 600;
+        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+        cursor: pointer;
+        transition: background-color 0.2s;
+    }
+
+    .floating-today-btn:hover {
+        background-color: var(--c-blue-500);
+    }
 }

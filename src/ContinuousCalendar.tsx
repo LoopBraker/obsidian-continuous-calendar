@@ -69,7 +69,7 @@ const getWeeksForSingleMonth = (date: Date): WeekData[] => {
         if ((isNextMonth || isWayPast) && weeks.length > 0) {
             // If the *previous* week contained the last day, and this week is fully next month, discard and break
             // Actually, just pushing 6 weeks is the standard UI pattern to prevent jumping height
-            // But for "Infinite style", dynamic height is fine.
+            // But for "Continuous style", dynamic height is fine.
             break;
         }
 
@@ -218,7 +218,7 @@ const getBorderSegment = (
 
 interface CalendarFooterProps {
     year: number;
-    viewMode: 'infinite' | 'month';
+    viewMode: 'Continuous' | 'month';
     onYearChange: (year: number) => void;
     onFocusAction: () => void;
     onGoToToday: () => void;
@@ -269,7 +269,7 @@ interface WeekRowProps {
     onMonthNameClick?: (date: Date) => void;
     // Custom active logic for Month View to force borders around specific month
     customIsActiveFn?: (date: Date) => boolean;
-    viewMode: 'infinite' | 'month';
+    viewMode: 'Continuous' | 'month';
     displayedMonth?: number;
     selection: SelectionState | null;
     onCellClick: (date: Date) => void;
@@ -298,7 +298,7 @@ const WeekRow: React.FC<WeekRowProps> = ({
 
 }) => {
     // --- Active Logic ---
-    // If custom logic is provided (Month View), use it. Otherwise use Infinite View logic.
+    // If custom logic is provided (Month View), use it. Otherwise use Continuous View logic.
     const checkIsActive = (date: Date) => {
         if (customIsActiveFn) {
             return customIsActiveFn(date);
@@ -319,7 +319,7 @@ const WeekRow: React.FC<WeekRowProps> = ({
     const monthNames = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
 
     const shouldShowLabel = firstDayOfMonth && (
-        viewMode === 'infinite' ||
+        viewMode === 'Continuous' ||
         (viewMode === 'month' && firstDayOfMonth.date.getMonth() === displayedMonth)
     );
 
@@ -444,9 +444,9 @@ const WeekRow: React.FC<WeekRowProps> = ({
                     <div className="month-label-group">
                         <div className="month-header-row">
                             <span
-                                className={`month-name ${viewMode === 'infinite' ? 'clickable' : ''}`}
+                                className={`month-name ${viewMode === 'Continuous' ? 'clickable' : ''}`}
                                 onClick={() => {
-                                    if (viewMode === 'infinite' && onMonthNameClick) {
+                                    if (viewMode === 'Continuous' && onMonthNameClick) {
                                         onMonthNameClick(firstDayOfMonth.date);
                                     }
                                 }}
@@ -454,8 +454,8 @@ const WeekRow: React.FC<WeekRowProps> = ({
                                 {monthNames[firstDayOfMonth.date.getMonth()]}
                             </span>
 
-                            {/* Only show Pin Button in Infinite Mode */}
-                            {viewMode === 'infinite' && onPinClick && firstDayOfMonth.date.getFullYear() <= (currentYear ?? today.getFullYear()) && (
+                            {/* Only show Pin Button in Continuous Mode */}
+                            {viewMode === 'Continuous' && onPinClick && firstDayOfMonth.date.getFullYear() <= (currentYear ?? today.getFullYear()) && (
                                 <button
                                     className={`pin-btn ${isPinned ? 'pinned' : ''}`}
                                     onClick={(e) => {
@@ -471,8 +471,8 @@ const WeekRow: React.FC<WeekRowProps> = ({
                             )}
                         </div>
 
-                        {/* Focus Controls - Only in Infinite Mode */}
-                        {viewMode === 'infinite' && (
+                        {/* Focus Controls - Only in Continuous Mode */}
+                        {viewMode === 'Continuous' && (
                             isRealCurrentMonth ? (
                                 focusedMonths.size > 0 && (
                                     <button onClick={resetFocus} className="btn-focus reset">RESET</button>
@@ -592,10 +592,10 @@ const TraditionalMonthView: React.FC<TraditionalMonthViewProps> = ({
 
 
 // ==========================================
-// INFINITE CONTAINER (Main)
+// Continuous CONTAINER (Main)
 // ==========================================
 
-const InfiniteCalendar: React.FC = () => {
+const ContinuousCalendar: React.FC = () => {
 
     const virtuosoRef = useRef<VirtuosoHandle>(null);
 
@@ -615,7 +615,7 @@ const InfiniteCalendar: React.FC = () => {
     const [selectedWeekIndex, setSelectedWeekIndex] = useState<number | null>(null);
 
     // VIEW STATE
-    const [viewMode, setViewMode] = useState<'infinite' | 'month'>('infinite');
+    const [viewMode, setViewMode] = useState<'Continuous' | 'month'>('Continuous');
     const [monthViewDate, setMonthViewDate] = useState<Date>(new Date());
 
     const [pendingScrollDate, setPendingScrollDate] = useState<Date | null>(null);
@@ -691,7 +691,7 @@ const InfiniteCalendar: React.FC = () => {
     const [visibleRange, setVisibleRange] = useState<ListRange>({ startIndex: 0, endIndex: 0 });
 
     const showTodayButton = useMemo(() => {
-        if (viewMode !== 'infinite') return false;
+        if (viewMode !== 'Continuous') return false;
         if (pinnedMonth) return false;
 
         const now = new Date();
@@ -846,7 +846,7 @@ const InfiniteCalendar: React.FC = () => {
     };
 
     useEffect(() => {
-        if (viewMode === 'infinite') {
+        if (viewMode === 'Continuous') {
             handleGoToToday();
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -869,7 +869,7 @@ const InfiniteCalendar: React.FC = () => {
 
             {/* CONTENT AREA */}
             <div className="calendar-list" style={{ position: 'relative' }}>
-                {viewMode === 'infinite' ? (
+                {viewMode === 'Continuous' ? (
                     <>
                         {showTodayButton && (
                             <button
@@ -906,7 +906,7 @@ const InfiniteCalendar: React.FC = () => {
                                     onPinClick={handlePinClick}
                                     onMonthNameClick={handleMonthNameClick}
                                     pinnedMonth={pinnedMonth}
-                                    viewMode="infinite"
+                                    viewMode="Continuous"
                                     selection={selection}
                                     onCellClick={handleCellClick}
                                     onNumberClick={handleNumberClick}
@@ -926,7 +926,7 @@ const InfiniteCalendar: React.FC = () => {
                                     setCurrentYear(pYear);
                                 }
                             }
-                            setViewMode('infinite');
+                            setViewMode('Continuous');
                         }}
                         focusedMonths={focusedMonths}
                         selectedWeekIndex={selectedWeekIndex}
@@ -957,4 +957,4 @@ const InfiniteCalendar: React.FC = () => {
     );
 };
 
-export default InfiniteCalendar;
+export default ContinuousCalendar;

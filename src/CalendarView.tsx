@@ -1,9 +1,9 @@
 import { ItemView, WorkspaceLeaf } from "obsidian";
 import * as React from "react";
 import { createRoot, Root } from "react-dom/client";
-import InfiniteCalendar from "./ContinuousCalendar";
+import ContinuousCalendar from "./ContinuousCalendar";
 
-export const VIEW_TYPE_CALENDAR = "continuous-calendar-view";
+export const VIEW_TYPE_CALENDAR = "Continuous-calendar-view";
 
 export class CalendarView extends ItemView {
     root: Root | null = null;
@@ -25,18 +25,18 @@ export class CalendarView extends ItemView {
     }
 
     async onOpen() {
-        const container = this.containerEl.children[1];
+        const container = this.containerEl;
         container.empty();
 
         // Create a wrapper div for React
-        const reactRoot = container.createDiv();
+        const reactRoot = container.createDiv({ cls: "Continuous-calendar-plugin" });
         reactRoot.style.height = "100%";
         reactRoot.style.width = "100%";
 
         this.root = createRoot(reactRoot);
         this.root.render(
             <React.StrictMode>
-                <InfiniteCalendar />
+                <ContinuousCalendar />
             </React.StrictMode>
         );
     }
