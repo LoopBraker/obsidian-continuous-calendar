@@ -491,14 +491,149 @@
         color: var(--c-slate-800);
     }
 
-    /* --- MONTH VIEW & CONTROLS --- */
+    /* --- TRADITIONAL MONTH VIEW CONTAINER --- */
     .month-view-container {
         height: 100%;
         display: flex;
         flex-direction: column;
         background-color: var(--c-white);
+        /* Animation for smooth switching */
         animation: fadeIn 0.3s ease-out;
     }
+
+    @keyframes fadeIn {
+        from {
+            opacity: 0;
+            transform: translateY(5px);
+        }
+
+        to {
+            opacity: 1;
+            transform: translateY(0);
+        }
+    }
+
+    /* Header Area (Arrows, Back btn) */
+    .month-view-header {
+        display: grid;
+        grid-template-columns: 2fr 1fr 2fr;
+        gap: 2rem;
+        align-items: center;
+        justify-content: space-between;
+        padding: 1rem 1.0rem;
+        /* Match sidebar/header spacing visually */
+        border-bottom: 1px solid var(--c-gray-100);
+    }
+
+    .back-btn {
+        font-size: 0.85rem;
+        color: var(--c-slate-400);
+        background: none;
+        border: none;
+        cursor: pointer;
+        font-weight: 600;
+        text-transform: uppercase;
+    }
+
+    .back-btn:hover {
+        color: var(--c-blue-600);
+    }
+
+    .month-view-title {
+        /* Reset margins */
+        margin: 0;
+
+        /* Flexbox for perfect stacking */
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+
+        /* Align text to the right side to balance the "Back" button */
+        align-items: flex-end;
+        text-align: right;
+
+        /* Ensure it doesn't wrap awkwardly */
+        white-space: nowrap;
+    }
+
+    .title-month {
+        font-size: 1.125rem;
+        /* 18px */
+        font-weight: 900;
+        color: var(--c-slate-900);
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        line-height: 1;
+        /* Tight spacing */
+    }
+
+    .title-year {
+        font-size: 1.1rem;
+        /* 12px */
+        font-weight: 600;
+        color: var(--c-slate-400);
+        letter-spacing: 0.1em;
+        margin-top: 2px;
+        /* Tiny gap between month and year */
+    }
+
+    /* --- NAVIGATION CONTROLS --- */
+    .month-nav-controls {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        background-color: var(--c-gray-50);
+        padding: 0.25rem;
+        border-radius: 9999px;
+        border: 1px solid var(--c-gray-200);
+    }
+
+    .nav-arrow {
+        background: none;
+        border: none;
+        cursor: pointer;
+        font-weight: bold;
+        font-size: 1rem;
+        color: var(--c-slate-400);
+        width: 2rem;
+        height: 2rem;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 50%;
+        transition: all 0.2s;
+    }
+
+    .nav-arrow:hover {
+        background-color: var(--c-white);
+        color: var(--c-blue-600);
+        box-shadow: var(--shadow-sm);
+    }
+
+    .nav-dot {
+        background: none;
+        border: none;
+        cursor: pointer;
+        width: 2rem;
+        height: 2rem;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    }
+
+    .dot-inner {
+        width: 6px;
+        height: 6px;
+        background-color: var(--c-slate-400);
+        border-radius: 50%;
+        transition: all 0.2s;
+    }
+
+    .nav-dot:hover .dot-inner {
+        background-color: var(--c-blue-600);
+        transform: scale(1.5);
+    }
+
 
     @keyframes fadeIn {
         from {
