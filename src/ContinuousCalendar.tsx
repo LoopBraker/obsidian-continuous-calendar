@@ -1,9 +1,11 @@
 import * as React from 'react';
-import { useMemo, useState, useRef, useEffect } from 'react';
+import { useMemo, useState, useRef, useEffect, useLayoutEffect, useCallback } from 'react';
 import { Virtuoso, type VirtuosoHandle, type ListRange } from 'react-virtuoso';
 import { IndexService } from './services/IndexService';
 
-// --- TYPES ---
+// ==========================================
+// TYPES & HELPERS
+// ==========================================
 
 interface DayItem {
     date: Date;
@@ -21,7 +23,6 @@ interface BorderResult {
     separator: string | null;
 }
 
-// Helper to format date for IndexService (YYYY-MM-DD)
 const toDateKey = (date: Date): string => {
     const y = date.getFullYear();
     const m = String(date.getMonth() + 1).padStart(2, '0');
@@ -29,7 +30,6 @@ const toDateKey = (date: Date): string => {
     return `${y}-${m}-${d}`;
 };
 
-// --- HELPER: Date Math ---
 const getWeekNumber = (d: Date): number => {
     const target = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
     target.setUTCDate(target.getUTCDate() + 4 - (target.getUTCDay() || 7));
@@ -37,41 +37,299 @@ const getWeekNumber = (d: Date): number => {
     return Math.ceil(((target.getTime() - yearStart.getTime()) / 86400000 + 1) / 7);
 };
 
-// Generates weeks just for the Single Month View
-const getWeeksForSingleMonth = (date: Date): WeekData[] => {
-    const year = date.getFullYear();
-    const month = date.getMonth();
-    const firstDayOfMonth = new Date(year, month, 1);
-    const startDay = firstDayOfMonth.getDay(); // 0=Sun, 1=Mon
-    const diff = firstDayOfMonth.getDate() - startDay + (startDay === 0 ? -6 : 1);
-    const current = new Date(new Date(firstDayOfMonth).setDate(diff));
-    const weeks: WeekData[] = [];
-    let safetyCounter = 0;
-    while (safetyCounter < 6) {
-        const week: WeekData = [];
-        for (let i = 0; i < 7; i++) {
-            week.push({ date: new Date(current) });
-            current.setDate(current.getDate() + 1);
-        }
-        const firstDayOfNewWeek = week[0].date;
-        const isNextMonth = firstDayOfNewWeek.getMonth() !== month && firstDayOfNewWeek.getFullYear() >= year;
-        const isWayPast = firstDayOfNewWeek.getFullYear() > year || firstDayOfNewWeek.getMonth() > month;
-        if ((isNextMonth || isWayPast) && weeks.length > 0) {
-            break;
-        }
-        weeks.push(week);
-        const lastDayPushed = week[6].date;
-        if (lastDayPushed.getMonth() !== month && lastDayPushed > new Date(year, month + 1, 0)) {
-            if (weeks.length >= 4) break;
-        }
-        safetyCounter++;
-    }
-    return weeks;
+const convertTintToTextColor = (color: string | undefined): string | undefined => {
+    if (!color) return color;
+    if (color.includes('-tint')) return color.replace('-tint', '-text');
+    if (color.includes('-text')) return color.replace('-text', '-tint');
+    return color;
 };
 
 // ==========================================
-// LOGIC: The "Smart Merging" Border Generator
+// COMPONENT: DotArea
 // ==========================================
+
+const ICON_WIDTH = 10;
+const GAP_WIDTH = 2;
+const OVERFLOW_MIN_WIDTH = 20;
+
+const DotArea = ({ symbols }: { symbols: Array<{ symbol?: string; color?: string }> }) => {
+    const containerRef = useRef<HTMLDivElement>(null);
+    const [visibleCount, setVisibleCount] = useState(symbols.length);
+
+    const calculateVisibleCount = useCallback(() => {
+        if (!containerRef.current) return;
+        const containerWidth = containerRef.current.offsetWidth;
+        const totalSymbols = symbols.length;
+        if (totalSymbols === 0) {
+            setVisibleCount(0);
+            return;
+        }
+        let maxFit = Math.floor((containerWidth + GAP_WIDTH) / (ICON_WIDTH + GAP_WIDTH));
+        maxFit = Math.max(0, maxFit);
+
+        if (maxFit >= totalSymbols) {
+            setVisibleCount(totalSymbols);
+        } else {
+            const availableForIcons = containerWidth - OVERFLOW_MIN_WIDTH - GAP_WIDTH;
+            let iconsToShow = Math.floor((availableForIcons + GAP_WIDTH) / (ICON_WIDTH + GAP_WIDTH));
+            iconsToShow = Math.max(0, iconsToShow);
+            setVisibleCount(iconsToShow);
+        }
+    }, [symbols.length]);
+
+    useLayoutEffect(() => {
+        calculateVisibleCount();
+        const resizeObserver = new ResizeObserver(() => calculateVisibleCount());
+        if (containerRef.current) resizeObserver.observe(containerRef.current);
+        return () => resizeObserver.disconnect();
+    }, [calculateVisibleCount]);
+
+    const overflowCount = symbols.length - visibleCount;
+    const visibleSymbols = symbols.slice(0, visibleCount);
+
+    return (
+        <div ref={containerRef} className="dot-area">
+            {visibleSymbols.map((item, idx) => (
+                item.symbol ? (
+                    <span key={idx} className="tag-symbol" style={{ color: item.color || 'var(--text-muted)' }}>
+                        {item.symbol}
+                    </span>
+                ) : (
+                    <div key={idx} className="dot-indicator" style={{ backgroundColor: item.color }} />
+                )
+            ))}
+            {overflowCount > 0 && (
+                <span className="dot-overflow">+{overflowCount}</span>
+            )}
+        </div>
+    );
+};
+
+// ==========================================
+// COMPONENT: RangeBarArea
+// ==========================================
+
+const RangeBarArea = ({ dateKey, indexService }: { dateKey: string, indexService: IndexService }) => {
+    const ranges = indexService.getRangesForDate(dateKey);
+    const rangeSlots = indexService.getRangeSlots(dateKey);
+    const settings = indexService.settings;
+
+    if (ranges.length === 0) return null;
+
+    const hasForcedOverflow = ranges.some((r: any) => rangeSlots.get(r.path) === undefined);
+    const hasOverflow = ranges.length > 4 || hasForcedOverflow;
+
+    const dotRanges: any[] = [];
+    if (hasOverflow) {
+        ranges.forEach((r: any) => {
+            const slot = rangeSlots.get(r.path);
+            if (slot === undefined || slot >= 3) {
+                dotRanges.push(r);
+            }
+        });
+    }
+
+    return (
+        <div className="range-bar-area">
+            {[0, 1, 2, 3].map(slotIndex => {
+                const isOverflowSlot = slotIndex === 3 && hasOverflow;
+
+                if (isOverflowSlot) {
+                    return (
+                        <div key={slotIndex} className={`range-slot slot-${slotIndex}`}>
+                            <div className="range-overflow-container" title={`${dotRanges.length} range(s)`}>
+                                {dotRanges.map((dotRange, idx) => {
+                                    let dotColor = dotRange.color;
+                                    const finalDotColor = dotColor || settings?.defaultBarColor || 'var(--interactive-accent)';
+
+                                    let shapeClass = 'range-overflow-dot';
+                                    if (dotRange.dateStart === dateKey) shapeClass = 'range-triangle-start';
+                                    else if (dotRange.dateEnd === dateKey) shapeClass = 'range-triangle-end';
+
+                                    const dotStyle: React.CSSProperties = {};
+                                    if (shapeClass === 'range-overflow-dot') {
+                                        dotStyle.backgroundColor = finalDotColor;
+                                    } else if (shapeClass === 'range-triangle-start') {
+                                        dotStyle.borderLeftColor = finalDotColor;
+                                    } else if (shapeClass === 'range-triangle-end') {
+                                        dotStyle.borderRightColor = finalDotColor;
+                                    }
+
+                                    return <div key={idx} className={shapeClass} style={dotStyle} />;
+                                })}
+                            </div>
+                        </div>
+                    );
+                }
+
+                const range = ranges.find((r: any) => rangeSlots.get(r.path) === slotIndex);
+                if (!range) return <div key={slotIndex} className={`range-slot slot-${slotIndex}`} />;
+
+                let rangeColor = range.color;
+                if (!rangeColor && range.tags && settings?.tagAppearance) {
+                    for (const tag of range.tags) {
+                        if (settings.tagAppearance[tag]?.color) {
+                            rangeColor = settings.tagAppearance[tag].color;
+                            break;
+                        }
+                    }
+                }
+
+                const finalColor = rangeColor || settings?.defaultBarColor || 'var(--interactive-accent)';
+                const borderColor = convertTintToTextColor(finalColor);
+
+                const rangeBarStyle: React.CSSProperties = { backgroundColor: finalColor };
+                if (range.dateStart === dateKey && borderColor) {
+                    rangeBarStyle.borderLeft = `var(--range-bar-border-width, 2px) solid ${borderColor}`;
+                }
+                if (range.dateEnd === dateKey && borderColor) {
+                    rangeBarStyle.borderRight = `var(--range-bar-border-width, 2px) solid ${borderColor}`;
+                }
+
+                const isEmergence = indexService.isRangeEmergence(range.path, dateKey);
+
+                return (
+                    <div key={slotIndex} className={`range-slot slot-${slotIndex}`}>
+                        <div
+                            className={`range-bar ${range.dateStart === dateKey ? 'range-start' : ''} ${range.dateEnd === dateKey ? 'range-end' : ''} ${isEmergence ? 'range-emergence' : ''}`}
+                            style={rangeBarStyle}
+                            title={range.name}
+                        />
+                    </div>
+                );
+            })}
+        </div>
+    );
+};
+
+// ==========================================
+// COMPONENT: DayCell
+// ==========================================
+
+interface DayCellProps {
+    date: Date;
+    indexService: IndexService;
+    isActive: boolean;
+    isToday: boolean;
+    isSelected: boolean;
+    isCellSelected: boolean;
+    onNumberClick: (d: Date, e: React.MouseEvent) => void;
+    onCellClick: (d: Date) => void;
+}
+
+const DayCell: React.FC<DayCellProps> = ({
+    date,
+    indexService,
+    isActive,
+    isToday,
+    isSelected,
+    isCellSelected,
+    onNumberClick,
+    onCellClick
+}) => {
+    const dateKey = toDateKey(date);
+
+    // 1. Get Metadata
+    const dateStatus = indexService.getDateStatus(dateKey);
+    const isDailyNote = dateStatus && dateStatus.isDailyNote;
+
+    // 2. Get Holidays
+    const holidays = indexService.getHolidaysForDate ? indexService.getHolidaysForDate(dateKey) : [];
+    const hasHoliday = holidays.length > 0;
+    const holidayColor = hasHoliday ? holidays[0].color : undefined;
+    const holidayNames = hasHoliday ? holidays.map((h: any) => h.name).join(', ') : undefined;
+
+    // 3. Get Dots
+    const settings = indexService.settings;
+    const displaySymbols = indexService.getDisplaySymbols(
+        dateKey,
+        settings?.tagAppearance,
+        settings?.defaultDotColor,
+        settings?.collapseDuplicateTagSymbols,
+        50,
+        settings?.useDotsOnlyForTags,
+        settings?.useDotsOnlyForProperties
+    );
+
+    // 4. Build Classes
+    let numClass = 'day-number';
+    if (isToday) numClass += ' is-today';
+    else if (isActive) numClass += ' is-active';
+    else numClass += ' is-inactive';
+
+    if (hasHoliday) numClass += ' has-holiday';
+    if (isSelected) numClass += ' is-selected-number';
+    if (isDailyNote) numClass += ' is-daily-note';
+    if (isCellSelected) numClass += ' engaged range-start-engaged';
+
+    return (
+        <div className="day-cell" onClick={() => onCellClick(date)}>
+            <div className="cell-content">
+                <div className="top-content">
+                    <span
+                        className={numClass}
+                        style={hasHoliday && holidayColor ? { backgroundColor: holidayColor } : undefined}
+                        title={holidayNames}
+                        onClick={(e) => {
+                            e.stopPropagation();
+                            onNumberClick(date, e);
+                        }}
+                    >
+                        {date.getDate()}
+                    </span>
+                </div>
+                {displaySymbols.length > 0 && <DotArea symbols={displaySymbols} />}
+                <RangeBarArea dateKey={dateKey} indexService={indexService} />
+            </div>
+            {isToday && <div className="today-marker" />}
+        </div>
+    );
+};
+
+// ==========================================
+// COMPONENT: CalendarFooter (Restored)
+// ==========================================
+
+interface CalendarFooterProps {
+    year: number;
+    viewMode: 'Continuous' | 'month';
+    onYearChange: (year: number) => void;
+    onFocusAction: () => void;
+    onGoToToday: () => void;
+}
+
+const CalendarFooter: React.FC<CalendarFooterProps> = ({
+    year,
+    viewMode,
+    onYearChange,
+    onFocusAction,
+    onGoToToday
+}) => (
+    <div className="calendar-footer">
+        <button className="footer-btn-text" onClick={onFocusAction}>
+            {viewMode === 'month' ? 'Add Months' : 'Focus Year'}
+        </button>
+
+        <div className="footer-controls">
+            <button className="footer-arrow" onClick={() => onYearChange(year - 1)}>
+                <span className="arrow-icon">&larr;</span>
+            </button>
+            <div className="year-display">{year}</div>
+            <button className="footer-arrow" onClick={() => onYearChange(year + 1)}>
+                <span className="arrow-icon">&rarr;</span>
+            </button>
+        </div>
+
+        <button className="footer-btn-text" onClick={onGoToToday}>
+            Today
+        </button>
+    </div>
+);
+
+// ==========================================
+// HELPERS (Border Logic)
+// ==========================================
+
 const getBorderSegment = (
     weekData: WeekData,
     isActiveFn: (d: Date) => boolean
@@ -196,47 +454,7 @@ const getBorderSegment = (
 };
 
 // ==========================================
-// COMPONENT: Calendar Footer
-// ==========================================
-
-interface CalendarFooterProps {
-    year: number;
-    viewMode: 'Continuous' | 'month';
-    onYearChange: (year: number) => void;
-    onFocusAction: () => void;
-    onGoToToday: () => void;
-}
-
-const CalendarFooter: React.FC<CalendarFooterProps> = ({
-    year,
-    viewMode,
-    onYearChange,
-    onFocusAction,
-    onGoToToday
-}) => (
-    <div className="calendar-footer">
-        <button className="footer-btn-text" onClick={onFocusAction}>
-            {viewMode === 'month' ? 'Add Months' : 'Focus Year'}
-        </button>
-
-        <div className="footer-controls">
-            <button className="footer-arrow" onClick={() => onYearChange(year - 1)}>
-                <span className="arrow-icon">&larr;</span>
-            </button>
-            <div className="year-display">{year}</div>
-            <button className="footer-arrow" onClick={() => onYearChange(year + 1)}>
-                <span className="arrow-icon">&rarr;</span>
-            </button>
-        </div>
-
-        <button className="footer-btn-text" onClick={onGoToToday}>
-            Today
-        </button>
-    </div>
-);
-
-// ==========================================
-// COMPONENT: Week Row (Reusable)
+// COMPONENT: Week Row
 // ==========================================
 
 interface WeekRowProps {
@@ -279,7 +497,6 @@ const WeekRow: React.FC<WeekRowProps> = ({
     onCellClick,
     onNumberClick,
     currentYear
-
 }) => {
     // --- Active Logic ---
     const checkIsActive = (date: Date) => {
@@ -320,7 +537,6 @@ const WeekRow: React.FC<WeekRowProps> = ({
         ? pinnedMonth === `${firstDayOfMonth.date.getFullYear()}-${firstDayOfMonth.date.getMonth()}`
         : false;
 
-    // Relative Week Numbers
     const isSelected = selectedWeekIndex === index;
     let weekLabel: string;
     if (selectedWeekIndex === null) {
@@ -331,7 +547,6 @@ const WeekRow: React.FC<WeekRowProps> = ({
         else weekLabel = diff > 0 ? `+${diff}` : `${diff}`;
     }
 
-    // Week Status Classes
     const isWeekToday = weekData.some(d =>
         d.date.getDate() === today.getDate() &&
         d.date.getMonth() === today.getMonth() &&
@@ -344,39 +559,34 @@ const WeekRow: React.FC<WeekRowProps> = ({
     else if (isWeekActive) weekTextClass += ' is-active';
     else weekTextClass += ' is-inactive';
 
-    const checkSelection = (d: Date, type: 'cell' | 'number') => {
-        return selection &&
-            selection.type === type &&
-            d.getDate() === selection.date.getDate() &&
-            d.getMonth() === selection.date.getMonth() &&
-            d.getFullYear() === selection.date.getFullYear();
+    const checkSelection = (d: Date, type: 'cell' | 'number'): boolean => {
+        if (!selection) return false;
+        return selection.type === type &&
+            selection.date.getDate() === d.getDate() &&
+            selection.date.getMonth() === d.getMonth() &&
+            selection.date.getFullYear() === d.getFullYear();
     };
+
     return (
         <div className="week-row">
-            {/* 1. WEEK NUMBER */}
             <div className={`week-num-col ${isSelected ? 'selected' : ''}`} onClick={() => onWeekClick(index)}>
                 <span className={weekTextClass}>{weekLabel}</span>
             </div>
 
-            {/* 2. GRID AREA */}
             <div className="day-grid-container">
-                {/* Layer 1: BG */}
                 <div className="grid-layer background">
                     {weekData.map((d, i) => {
                         const isWeekend = d.date.getDay() === 0 || d.date.getDay() === 6;
-                        const isCellSelected = checkSelection(d.date, 'cell');
-
                         return (
                             <div
                                 key={i}
-                                className={`day-cell-bg ${isWeekend ? 'weekend' : ''} ${isCellSelected ? 'is-selected-cell' : ''}`}
+                                className={`day-cell-bg ${isWeekend ? 'weekend' : ''}`}
                                 onClick={() => onCellClick(d.date)}
                             />
                         );
                     })}
                 </div>
 
-                {/* Layer 2: Numbers */}
                 <div className="grid-layer foreground">
                     {weekData.map((d, i) => {
                         const isActive = checkIsActive(d.date);
@@ -386,53 +596,25 @@ const WeekRow: React.FC<WeekRowProps> = ({
                             d.date.getFullYear() === today.getFullYear();
 
                         const isNumberSelected = checkSelection(d.date, 'number');
-                        // --- 1. PREPARE DATE KEY ---
-                        const dateKey = toDateKey(d.date);
-
-                        // --- 2. GET STATUS FROM INDEX ---
-                        // Retrieve metadata to see if a daily note exists
-                        const dateStatus = indexService.getDateStatus(dateKey);
-                        const isDailyNote = dateStatus && dateStatus.isDailyNote;
-
-                        // --- HOLIDAY LOGIC START ---
-                        // Safe check for getHolidaysForDate to prevent crashes if service isn't ready
-                        const holidays = indexService.getHolidaysForDate ? indexService.getHolidaysForDate(dateKey) : [];
-                        const hasHoliday = holidays.length > 0;
-                        const holidayColor = hasHoliday ? holidays[0].color : undefined;
-                        const holidayNames = hasHoliday ? holidays.map((h: any) => h.name).join(', ') : undefined;
-                        // --- HOLIDAY LOGIC END ---
-
-                        let numClass = 'day-number';
-                        if (isToday) numClass += ' is-today';
-                        else if (isActive) numClass += ' is-active';
-                        else numClass += ' is-inactive';
-
-                        if (hasHoliday) numClass += ' has-holiday';
-
-                        if (isNumberSelected) numClass += ' is-selected-number';
-
-                        if (isDailyNote) numClass += ' is-daily-note';
+                        const isCellSelected = checkSelection(d.date, 'cell');
 
                         return (
                             <div key={i} className="day-cell-fg">
-                                <span
-                                    className={numClass}
-                                    style={hasHoliday && holidayColor ? { backgroundColor: holidayColor } : undefined}
-                                    title={holidayNames}
-                                    onClick={(e) => {
-                                        e.stopPropagation();
-                                        onNumberClick(d.date, e);
-                                    }}
-                                >
-                                    {d.date.getDate()}
-                                </span>
-                                {isToday && <div className="today-marker" />}
+                                <DayCell
+                                    date={d.date}
+                                    indexService={indexService}
+                                    isActive={isActive}
+                                    isToday={isToday}
+                                    isSelected={!!isNumberSelected}
+                                    isCellSelected={!!isCellSelected}
+                                    onNumberClick={onNumberClick}
+                                    onCellClick={onCellClick}
+                                />
                             </div>
                         );
                     })}
                 </div>
 
-                {/* Layer 3: SVG Border */}
                 <div className="svg-layer">
                     <svg viewBox="0 -2 700 100" className="svg-content" preserveAspectRatio="none">
                         {borderPath && <path d={borderPath} fill="none" stroke="black" strokeWidth="4" strokeLinejoin="round" />}
@@ -441,7 +623,6 @@ const WeekRow: React.FC<WeekRowProps> = ({
                 </div>
             </div>
 
-            {/* 3. SIDEBAR */}
             <div className="sidebar-col">
                 {shouldShowLabel && (
                     <div className="month-label-group">
@@ -493,8 +674,39 @@ const WeekRow: React.FC<WeekRowProps> = ({
 };
 
 // ==========================================
-// COMPONENT: Traditional Month View (Styled like List)
+// COMPONENT: Traditional Month View 
 // ==========================================
+
+const getWeeksForSingleMonth = (date: Date): WeekData[] => {
+    const year = date.getFullYear();
+    const month = date.getMonth();
+    const firstDayOfMonth = new Date(year, month, 1);
+    const startDay = firstDayOfMonth.getDay();
+    const diff = firstDayOfMonth.getDate() - startDay + (startDay === 0 ? -6 : 1);
+    const current = new Date(new Date(firstDayOfMonth).setDate(diff));
+    const weeks: WeekData[] = [];
+    let safetyCounter = 0;
+    while (safetyCounter < 6) {
+        const week: WeekData = [];
+        for (let i = 0; i < 7; i++) {
+            week.push({ date: new Date(current) });
+            current.setDate(current.getDate() + 1);
+        }
+        const firstDayOfNewWeek = week[0].date;
+        const isNextMonth = firstDayOfNewWeek.getMonth() !== month && firstDayOfNewWeek.getFullYear() >= year;
+        const isWayPast = firstDayOfNewWeek.getFullYear() > year || firstDayOfNewWeek.getMonth() > month;
+        if ((isNextMonth || isWayPast) && weeks.length > 0) {
+            break;
+        }
+        weeks.push(week);
+        const lastDayPushed = week[6].date;
+        if (lastDayPushed.getMonth() !== month && lastDayPushed > new Date(year, month + 1, 0)) {
+            if (weeks.length >= 4) break;
+        }
+        safetyCounter++;
+    }
+    return weeks;
+};
 
 interface TraditionalMonthViewProps {
     currentDate: Date;
@@ -519,7 +731,7 @@ const TraditionalMonthView: React.FC<TraditionalMonthViewProps> = ({
     selection,
     onCellClick,
     onNumberClick,
-    indexService // FIX: Destructured here
+    indexService
 }) => {
     const monthNames = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
     const weeks = useMemo(() => getWeeksForSingleMonth(currentDate), [currentDate]);
@@ -563,7 +775,7 @@ const TraditionalMonthView: React.FC<TraditionalMonthViewProps> = ({
                         selection={selection}
                         onCellClick={onCellClick}
                         onNumberClick={onNumberClick}
-                        indexService={indexService} // FIX: Passed correct prop
+                        indexService={indexService}
                     />
                 ))}
             </div>
@@ -571,44 +783,34 @@ const TraditionalMonthView: React.FC<TraditionalMonthViewProps> = ({
     );
 };
 
-
 // ==========================================
-// Continuous CONTAINER (Main)
+// COMPONENT: Continuous Calendar (Main)
 // ==========================================
 
-// FIX: Interface for Main Component Props
-interface ContinuousCalendarProps {
+export interface ContinuousCalendarProps {
     index: IndexService;
     onOpenNote: (date: Date) => void;
     onCreateRange: (start: Date, end: Date) => void;
-    onYearChange?: (year: number) => void
-
+    onYearChange?: (year: number) => void;
 }
 
 export const ContinuousCalendar = (props: ContinuousCalendarProps) => {
-    // Destructure props for easier usage
     const { index, onOpenNote, onCreateRange, onYearChange } = props;
-
 
     const virtuosoRef = useRef<VirtuosoHandle>(null);
 
-    // State
     const [currentYear, setCurrentYear] = useState<number>(new Date().getFullYear());
     const [minWeeksToFill, setMinWeeksToFill] = useState<number>(20);
     const [focusedMonths, setFocusedMonths] = useState<Set<string>>(new Set());
     const [selectedWeekIndex, setSelectedWeekIndex] = useState<number | null>(null);
-
-    // we need to distinguish between clicking the 'number' vs the 'cell' background
     const [selection, setSelection] = useState<SelectionState | null>(null);
 
-    // VIEW STATE
     const [dataVersion, setDataVersion] = useState(0);
     const [viewMode, setViewMode] = useState<'Continuous' | 'month'>('Continuous');
     const [monthViewDate, setMonthViewDate] = useState<Date>(new Date());
     const [pendingScrollDate, setPendingScrollDate] = useState<Date | null>(null);
     const [pinnedMonth, setPinnedMonth] = useState<string | null>(null);
 
-    // --- EFFECT: Handle Window Resize ---   
     useEffect(() => {
         const updateWeeks = () => {
             const weeks = Math.ceil(window.innerHeight / 62) + 2;
@@ -619,9 +821,7 @@ export const ContinuousCalendar = (props: ContinuousCalendarProps) => {
         return () => window.removeEventListener('resize', updateWeeks);
     }, []);
 
-    // --- EFFECT: Handle Index Changes ---
     useEffect(() => {
-        // FIX: 'index' is now available from props
         const unsubscribe = index.subscribe ? index.subscribe(() => {
             setDataVersion(v => v + 1);
         }) : () => { };
@@ -638,34 +838,23 @@ export const ContinuousCalendar = (props: ContinuousCalendarProps) => {
 
     const handleYearChange = (newYear: number) => {
         setCurrentYear(newYear);
-        if (onYearChange) {
-            onYearChange(newYear);
-        }
+        if (onYearChange) onYearChange(newYear);
     };
 
     const handleNumberClick = (date: Date, e: React.MouseEvent) => {
-        const isModKey = e.ctrlKey || e.metaKey; // Windows Ctrl or Mac Cmd
+        const isModKey = e.ctrlKey || e.metaKey;
 
-        // LOGIC A: Range Creation (Modifier Key + Date Selected)
         if (isModKey && selection) {
-            // Prevent range creation if clicking the exact same date
             if (selection.date.getTime() === date.getTime()) return;
-
-            // Determine which is start and which is end
             const d1 = selection.date;
             const d2 = date;
-
             const start = d1 < d2 ? d1 : d2;
             const end = d1 < d2 ? d2 : d1;
-
             onCreateRange(start, end);
-
-            // Clear selection after creating range
             setSelection(null);
             return;
         }
 
-        // LOGIC B: Standard Engage/Open
         const isSameDate = selection?.type === 'number' &&
             selection.date.getDate() === date.getDate() &&
             selection.date.getMonth() === date.getMonth() &&
@@ -825,6 +1014,7 @@ export const ContinuousCalendar = (props: ContinuousCalendarProps) => {
             }
         }
     };
+
     const handleMonthNameClick = (date: Date) => {
         setMonthViewDate(date);
         setViewMode('month');
@@ -875,12 +1065,11 @@ export const ContinuousCalendar = (props: ContinuousCalendarProps) => {
                             }}
                             initialTopMostItemIndex={initialWeekIndex}
                             totalCount={allWeeks.length}
-                            // FIX: Renamed callback var to rowIndex to avoid shadowing prop 'index'
                             itemContent={(rowIndex) => (
                                 <WeekRow
                                     weekData={allWeeks[rowIndex]}
                                     index={rowIndex}
-                                    indexService={index} // FIX: Passing service prop
+                                    indexService={index}
                                     focusedMonths={focusedMonths}
                                     toggleMonthFocus={toggleMonthFocus}
                                     resetFocus={resetFocus}
@@ -905,9 +1094,7 @@ export const ContinuousCalendar = (props: ContinuousCalendarProps) => {
                         onClose={() => {
                             if (pinnedMonth) {
                                 const [pYear] = pinnedMonth.split('-').map(Number);
-                                if (pYear !== currentYear) {
-                                    setCurrentYear(pYear);
-                                }
+                                if (pYear !== currentYear) setCurrentYear(pYear);
                             }
                             setViewMode('Continuous');
                         }}
@@ -917,7 +1104,7 @@ export const ContinuousCalendar = (props: ContinuousCalendarProps) => {
                         selection={selection}
                         onCellClick={handleCellClick}
                         onNumberClick={handleNumberClick}
-                        indexService={index} // FIX: Passing service prop
+                        indexService={index}
                     />
                 )}
             </div>
@@ -925,7 +1112,7 @@ export const ContinuousCalendar = (props: ContinuousCalendarProps) => {
             <CalendarFooter
                 year={currentYear}
                 viewMode={viewMode}
-                onYearChange={handleYearChange} // Use wrapper here
+                onYearChange={handleYearChange}
                 onFocusAction={handleFocusAction}
                 onGoToToday={handleGoToToday}
             />
