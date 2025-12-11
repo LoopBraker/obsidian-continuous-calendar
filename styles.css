@@ -709,3 +709,166 @@
         background-color: var(--c-blue-500);
     }
 }
+
+/* Day Detail Overlay */
+.day-detail-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background-color: rgba(0, 0, 0, 0.5);
+    z-index: 1000;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    backdrop-filter: blur(2px);
+}
+
+.day-detail-card {
+    background-color: var(--background-primary);
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 8px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    width: 90%;
+    max-width: 500px;
+    max-height: 80%;
+    overflow-y: auto;
+    padding: 20px;
+    position: relative;
+    display: flex;
+    flex-direction: column;
+}
+
+.day-detail-card .day-detail-nav {
+    margin-bottom: 15px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.day-detail-header h2 {
+    margin-block-start: 0 !important;
+    margin-block-end: 0 !important;
+}
+
+.day-detail-header .day-detail-relative {
+    margin-block-start: 0 !important;
+    margin-block-end: 0 !important;
+    font-style: italic;
+}
+
+.day-detail-section h3 {
+    margin-block-end: 0 !important;
+}
+
+.day-detail-card .nav-buttons {
+    display: flex;
+    gap: 10px;
+}
+
+.day-detail-card .daily-note-btn {
+    margin-top: 10px;
+    padding: 6px 12px;
+    border-radius: 4px;
+    border: none;
+    cursor: pointer;
+    font-size: 0.9em;
+    /* width: 100%; */
+    transition: background-color 0.2s;
+}
+
+.day-detail-card .daily-note-btn.create-note {
+    background-color: var(--interactive-accent);
+    color: var(--text-on-accent);
+}
+
+.day-detail-card .daily-note-btn.create-note:hover {
+    background-color: var(--interactive-accent-hover);
+}
+
+.day-detail-card .daily-note-btn.open-note {
+    background-color: var(--background-modifier-border);
+    color: var(--text-normal);
+}
+
+.day-detail-card .daily-note-btn.open-note:hover {
+    background-color: var(--background-modifier-hover);
+}
+
+
+
+.day-detail-card .close-btn {
+    background: none;
+    border: none;
+    cursor: pointer;
+    color: var(--text-muted);
+    padding: 4px;
+}
+
+.day-detail-card .close-btn:hover {
+    color: var(--text-normal);
+}
+
+/* --- Recurrence Modal Styles --- */
+.recurrence-modal {
+    min-width: 450px;
+}
+
+.recurrence-weekday-container,
+.recurrence-end-container {
+    margin-top: 10px;
+}
+
+.recurrence-weekday-buttons {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.recurrence-day-btn {
+    padding: 6px 10px;
+    border: 1px solid var(--background-modifier-border);
+    background-color: var(--background-primary);
+    color: var(--text-muted);
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.85em;
+    transition: all 0.2s ease;
+    min-width: 42px;
+}
+
+.recurrence-day-btn:hover {
+    background-color: var(--background-modifier-hover);
+    color: var(--text-normal);
+}
+
+.recurrence-day-btn.active {
+    background-color: var(--interactive-accent);
+    color: var(--text-on-accent);
+    border-color: var(--interactive-accent);
+    font-weight: 600;
+}
+
+.recurrence-day-btn.active:hover {
+    background-color: var(--interactive-accent-hover);
+}
+
+/* --- Settings Tab Separators --- */
+.settings-separator {
+    border: none;
+    border-top: 2px solid var(--background-modifier-border);
+    margin: 30px 0;
+    opacity: 0.6;
+}
+
+/* Remove separators within add holiday source controls */
+.add-holiday-source-controls .setting-item {
+    border-top: none !important;
+    padding-top: 8px;
+}
+
+/* Remove separator between Holiday Settings heading and first setting */
+.holiday-settings-container h2+.setting-item {
+    border-top: none !important;
+}

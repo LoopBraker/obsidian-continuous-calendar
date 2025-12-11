@@ -1,12 +1,39 @@
-import { Plugin, WorkspaceLeaf } from "obsidian";
+import { Plugin, ItemView, WorkspaceLeaf, TFile } from 'obsidian';
 import { CalendarView, VIEW_TYPE_CALENDAR } from "./CalendarView";
+import { IndexService } from "./services/IndexService";
+import { DEFAULT_SETTINGS, type CalendarPluginSettings } from "./settings/settings";
+import { CalendarSettingTab } from "./settings/SettingsTab";
+import { HolidayService } from './services/HolidayService';
 
 export default class ContinuousCalendarPlugin extends Plugin {
+    settings: CalendarPluginSettings;
+    calendarIndex: IndexService;
+    holidayService: HolidayService;
+    displayedYear: number;
+
+
     async onload() {
+
+        // Load settings
+        await this.loadSettings();
+
+        //Add settings tab
+        this.addSettingTab(new CalendarSettingTab(this.app, this));
+
+        //Initialize index service
+        this.calendarIndex = new IndexService(this.app);
+        this.calendarIndex.setSettings(this.settings);
+
+
+        //Initialize holiday service
+        this.holidayService = new HolidayService(this.app, this);
+
+        this.displayedYear = new Date().getFullYear();
+
         // 1. Register the View
         this.registerView(
             VIEW_TYPE_CALENDAR,
-            (leaf) => new CalendarView(leaf)
+            (leaf) => new CalendarView(leaf, this.calendarIndex, this)
         );
 
         // 2. Add Ribbon Icon
@@ -22,6 +49,24 @@ export default class ContinuousCalendarPlugin extends Plugin {
                 this.activateView();
             },
         });
+    }
+
+    async loadHolidaysForYear(year: number) {
+        // Load holidays for the requested year, plus previous and next year to handle scrolling
+        const yearsToLoad = [year - 1, year, year + 1];
+
+        // We can load them in parallel
+        await Promise.all(yearsToLoad.map(async (y) => {
+            const holidayMap = await this.holidayService.getAggregatedHolidays(y);
+            this.calendarIndex.setHolidaysForYear(y, holidayMap);
+        }));
+    }
+    async loadSettings() {
+        this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    }
+
+    async saveSettings() {
+        await this.saveData(this.settings);
     }
 
     async activateView() {
