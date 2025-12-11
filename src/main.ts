@@ -4,6 +4,7 @@ import { IndexService } from "./services/IndexService";
 import { DEFAULT_SETTINGS, type CalendarPluginSettings } from "./settings/settings";
 import { CalendarSettingTab } from "./settings/SettingsTab";
 import { HolidayService } from './services/HolidayService';
+import { CalendarBasesView, CALENDAR_BASES_VIEW_TYPE } from './CalendarBasesView';
 
 export default class ContinuousCalendarPlugin extends Plugin {
     settings: CalendarPluginSettings;
@@ -30,18 +31,24 @@ export default class ContinuousCalendarPlugin extends Plugin {
 
         this.displayedYear = new Date().getFullYear();
 
-        // 1. Register the View
+        // 1. Wait for layout to be ready to index
+        this.app.workspace.onLayoutReady(async () => {
+            this.calendarIndex.indexVault();
+            await this.loadHolidaysForYear(new Date().getFullYear());
+        });
+
+        // 2. Register the Standard View
         this.registerView(
             VIEW_TYPE_CALENDAR,
             (leaf) => new CalendarView(leaf, this.calendarIndex, this)
         );
 
-        // 2. Add Ribbon Icon
+        // 3. Add Ribbon Icon
         this.addRibbonIcon("calendar-days", "Open Calendar", () => {
             this.activateView();
         });
 
-        // 3. Add Command
+        // 4. Add Command
         this.addCommand({
             id: "open-calendar-view",
             name: "Open Continuous Calendar",
@@ -50,6 +57,20 @@ export default class ContinuousCalendarPlugin extends Plugin {
             },
         });
 
+        // 5. REGISTER BASES VIEW (This is the missing piece)
+        // We use @ts-ignore because 'registerBasesView' is likely added dynamically by the Bases plugin
+        // @ts-ignore
+        if (this.registerBasesView) {
+            // @ts-ignore
+            this.registerBasesView(CALENDAR_BASES_VIEW_TYPE, {
+                name: 'Calendar',
+                icon: 'calendar-with-checkmark',
+                factory: (controller: any, containerEl: HTMLElement) => {
+                    return new CalendarBasesView(controller, containerEl, this);
+                },
+            });
+        }
+
         this.app.workspace.onLayoutReady(async () => {
             this.calendarIndex.indexVault();
             // This triggers the async fetch, which calls index.setHolidaysForYear, 
@@ -57,6 +78,7 @@ export default class ContinuousCalendarPlugin extends Plugin {
             await this.loadHolidaysForYear(new Date().getFullYear());
         });
     }
+
 
     async loadHolidaysForYear(year: number) {
         // Load holidays for the requested year, plus previous and next year to handle scrolling

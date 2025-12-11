@@ -581,11 +581,13 @@ interface ContinuousCalendarProps {
     index: IndexService;
     onOpenNote: (date: Date) => void;
     onCreateRange: (start: Date, end: Date) => void;
+    onYearChange?: (year: number) => void
+
 }
 
 export const ContinuousCalendar = (props: ContinuousCalendarProps) => {
     // Destructure props for easier usage
-    const { index, onOpenNote, onCreateRange } = props;
+    const { index, onOpenNote, onCreateRange, onYearChange } = props;
 
 
     const virtuosoRef = useRef<VirtuosoHandle>(null);
@@ -631,6 +633,13 @@ export const ContinuousCalendar = (props: ContinuousCalendarProps) => {
             setSelection(null);
         } else {
             setSelection({ date, type: 'cell' });
+        }
+    };
+
+    const handleYearChange = (newYear: number) => {
+        setCurrentYear(newYear);
+        if (onYearChange) {
+            onYearChange(newYear);
         }
     };
 
@@ -782,7 +791,7 @@ export const ContinuousCalendar = (props: ContinuousCalendarProps) => {
         } else {
             const thisYear = now.getFullYear();
             if (thisYear !== currentYear) {
-                setCurrentYear(thisYear);
+                handleYearChange(thisYear);
                 setPendingScrollDate(now);
             } else {
                 scrollToDate(now);
@@ -916,14 +925,7 @@ export const ContinuousCalendar = (props: ContinuousCalendarProps) => {
             <CalendarFooter
                 year={currentYear}
                 viewMode={viewMode}
-                onYearChange={(y) => {
-                    setCurrentYear(y);
-                    if (viewMode === 'month') {
-                        const d = new Date(monthViewDate);
-                        d.setFullYear(y);
-                        setMonthViewDate(d);
-                    }
-                }}
+                onYearChange={handleYearChange} // Use wrapper here
                 onFocusAction={handleFocusAction}
                 onGoToToday={handleGoToToday}
             />
