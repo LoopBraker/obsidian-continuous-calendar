@@ -264,7 +264,7 @@
         padding: 0px 4px;
         border-radius: 4px;
         cursor: pointer;
-        transition: all 0.2s;
+        transition: outline-color 0.1s ease-in-out, background-color 0.1s ease-in-out;
     }
 
     .day-number.is-today {
@@ -289,6 +289,7 @@
     .day-number.is-selected-number {
         color: var(--c-slate-800);
         background-color: var(--c-slate-200);
+        border: 1px solid var(--c-blue-600);
         transform: scale(1.1);
     }
 
@@ -409,25 +410,29 @@
     }
 
     .range-overflow-dot {
-        width: 3px;
-        height: 3px;
-        border-radius: 50%;
+        width: 7px;
+        height: 4px;
+        /* border-radius: 25%; */
     }
 
     .range-triangle-start {
-        width: 0;
-        height: 0;
+        width: 7px;
+        height: 4px;
         border-style: solid;
-        border-width: 2px 0 2px 4px;
-        border-color: transparent transparent transparent transparent;
+        border-width: 1px 1px 1px 3px;
+        border-top-left-radius: 25%;
+        border-bottom-left-radius: 25%;
+        background-color: transparent !important;
     }
 
     .range-triangle-end {
-        width: 0;
-        height: 0;
+        width: 7px;
+        height: 4px;
         border-style: solid;
-        border-width: 2px 4px 2px 0;
-        border-color: transparent transparent transparent transparent;
+        border-width: 1px 3px 1px 1px;
+        border-top-right-radius: 25%;
+        border-bottom-right-radius: 25%;
+        background-color: transparent !important;
     }
 
 

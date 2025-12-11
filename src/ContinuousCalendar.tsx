@@ -152,9 +152,18 @@ const RangeBarArea = ({ dateKey, indexService }: { dateKey: string, indexService
                                     if (shapeClass === 'range-overflow-dot') {
                                         dotStyle.backgroundColor = finalDotColor;
                                     } else if (shapeClass === 'range-triangle-start') {
+                                        //this will be like a mini range bar start, i mean with the left border color tint and background text color
                                         dotStyle.borderLeftColor = finalDotColor;
+                                        dotStyle.borderTopColor = finalDotColor;
+                                        dotStyle.borderBottomColor = finalDotColor;
+                                        dotStyle.color = convertTintToTextColor(finalDotColor);
+                                        dotStyle.backgroundColor = convertTintToTextColor(finalDotColor);
                                     } else if (shapeClass === 'range-triangle-end') {
                                         dotStyle.borderRightColor = finalDotColor;
+                                        dotStyle.borderTopColor = finalDotColor;
+                                        dotStyle.borderBottomColor = finalDotColor;
+                                        dotStyle.color = convertTintToTextColor(finalDotColor);
+                                        dotStyle.backgroundColor = convertTintToTextColor(finalDotColor);
                                     }
 
                                     return <div key={idx} className={shapeClass} style={dotStyle} />;
