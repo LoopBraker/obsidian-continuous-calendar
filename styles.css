@@ -534,23 +534,71 @@
         cursor: pointer;
     }
 
+    /* --- SIDEBAR & PIN --- */
+    .month-label-group {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 0.25rem;
+        width: 100%;
+    }
+
+    .month-header-row {
+        display: flex;
+        align-items: center;
+        width: 100%;
+    }
+
     .pin-btn {
         background: none;
         border: none;
         cursor: pointer;
+        padding: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
         color: var(--c-slate-300);
-        transition: transform 0.2s;
+        transition: all 0.2s;
     }
 
-    .pin-btn.pinned {
-        color: var(--c-blue-600);
-        transform: rotate(90deg);
+    .pin-btn:hover {
+        color: var(--c-slate-800);
+        transform: scale(1.1) rotate(15deg);
     }
 
     .pin-icon-svg {
         width: 14px;
         height: 14px;
     }
+
+    .pin-btn:active {
+        transform: scale(0.95) rotate(-15deg);
+    }
+
+    /* --- PINNED / CLICKED STATE --- */
+    .pin-btn.pinned {
+        opacity: 1;
+        /* Use theme blue instead of harsh red */
+        color: var(--c-blue-600);
+        background-color: var(--c-blue-50);
+    }
+
+    .pin-btn.pinned .pin-icon-svg {
+        /* Rotate the icon inside to look "stuck in" */
+        transform: rotate(90deg);
+    }
+
+    /* Hovering while pinned (Indicates you can remove it) */
+    .pin-btn.pinned:hover {
+        background-color: var(--c-blue-50-50);
+        color: var(--c-blue-500);
+        transform: scale(1.1);
+    }
+
+    .pin-btn.pinned:active {
+        transform: scale(0.9);
+    }
+
 
 
 
