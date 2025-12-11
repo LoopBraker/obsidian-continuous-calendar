@@ -71,14 +71,39 @@ export default class ContinuousCalendarPlugin extends Plugin {
             });
         }
 
-        this.app.workspace.onLayoutReady(async () => {
-            this.calendarIndex.indexVault();
-            // This triggers the async fetch, which calls index.setHolidaysForYear, 
-            // which calls notifyListeners, which updates dataVersion in React
-            await this.loadHolidaysForYear(new Date().getFullYear());
-        });
-    }
+        // Listen for file changes (Frontmatter updates, content edits)
+        this.registerEvent(
+            this.app.metadataCache.on("changed", async (file) => {
+                // Update the index for this specific file
+                this.calendarIndex.indexFile(file);
 
+                // If the file is a Holiday file, reload holidays
+                if (file.path.includes(' Holidays ')) {
+                    await this.loadHolidaysForYear(new Date().getFullYear());
+                }
+            })
+        );
+
+        // Listen for file deletions
+        this.registerEvent(
+            this.app.vault.on("delete", (file) => {
+                if (file instanceof TFile && file.extension === 'md') {
+                    this.calendarIndex.removeFile(file.path);
+                }
+            })
+        );
+
+        // Listen for file renames
+        this.registerEvent(
+            this.app.vault.on("rename", (file, oldPath) => {
+                if (file instanceof TFile && file.extension === 'md') {
+                    this.calendarIndex.renameFile(file, oldPath);
+                }
+            })
+        );
+
+
+    }
 
     async loadHolidaysForYear(year: number) {
         // Load holidays for the requested year, plus previous and next year to handle scrolling
@@ -117,7 +142,7 @@ export default class ContinuousCalendarPlugin extends Plugin {
             }
         }
 
-        // FIX 2: Check if leaf exists before revealing
+        // Check if leaf exists before revealing
         if (leaf) {
             workspace.revealLeaf(leaf);
         }
