@@ -425,9 +425,10 @@
         overflow: visible;
     }
 
-    /* --- SIDEBAR --- */
+    /* 3. Sidebar Column */
     .sidebar-col {
         width: 4rem;
+        /* w-20 */
         flex-shrink: 0;
         border-left: 2px dashed var(--c-gray-200);
         margin-left: 1rem;
@@ -439,41 +440,89 @@
         padding-left: 0.5rem;
     }
 
+    .month-label {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 0.25rem;
+    }
+
     .month-name {
         font-size: 0.7rem;
         font-weight: 900;
         color: var(--c-slate-800);
         text-transform: uppercase;
+        letter-spacing: 0.025em;
+        line-height: 1;
+        padding-right: 0.1rem;
+    }
+
+    .month-name.clickable:hover {
         cursor: pointer;
     }
 
-    .month-name:hover {
+    .month-name.clickable:hover {
+        color: var(--c-blue-600);
+        transform: scale(1.05);
+        transition: all 0.1s;
+    }
+
+    .month-name.clickable:active {
+        color: var(--c-blue-600);
+    }
+
+    .month-name.is-active {
         color: var(--c-blue-600);
     }
 
     .btn-focus {
         font-size: 0.6rem;
+        /* 0.625rem = 10px */
         font-weight: 500;
-        padding: 2px 4px;
-        border-radius: 4px;
-        border: 1px solid var(--c-slate-200);
-        background: var(--c-white);
-        color: var(--c-slate-400);
-        margin-top: 4px;
+        padding: 0.125rem 0.125rem;
+        border-radius: 0.25rem;
+        border: 1px solid;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
         cursor: pointer;
+        transition: all 0.2s;
     }
 
+    /* Reset Button Style */
+    .btn-focus.reset {
+        display: flex;
+        align-items: center;
+        gap: 0.25rem;
+        border-color: var(--c-slate-200);
+        border-style: dashed;
+        background-color: var(--c-white);
+        color: var(--c-slate-500);
+    }
+
+    .btn-focus.reset:hover {
+        color: var(--c-blue-600);
+        border-color: var(--c-blue-300);
+    }
+
+    /* Focus Button States */
     .btn-focus.active {
-        background: var(--c-slate-800);
-        color: white;
+        background-color: var(--c-slate-800);
+        color: var(--c-white);
         border-color: var(--c-slate-800);
     }
 
-    .btn-focus.reset {
-        border-style: dashed;
+    .btn-focus.inactive {
+        background-color: var(--c-white);
+        color: var(--c-slate-400);
+        border-color: var(--c-slate-200);
     }
 
-    /* --- FOOTER --- */
+    .btn-focus.inactive:hover {
+        border-color: var(--c-blue-500);
+        color: var(--c-blue-500);
+    }
+
+    /* --- Footer --- */
     .calendar-footer {
         background-color: var(--c-white);
         border-top: 1px solid var(--c-gray-100);
@@ -483,6 +532,48 @@
         justify-content: space-between;
         z-index: 50;
         box-shadow: var(--shadow-footer);
+    }
+
+    .footer-btn-text {
+        font-size: 0.75rem;
+        font-weight: 700;
+        color: var(--c-slate-400);
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        padding: 0.25rem 0.5rem;
+        background: none;
+        border: none;
+        cursor: pointer;
+        transition: color 0.2s;
+    }
+
+    .footer-btn-text:hover {
+        color: var(--c-blue-600);
+    }
+
+    .footer-controls {
+        display: flex;
+        align-items: center;
+        gap: 1.5rem;
+    }
+
+    .footer-arrow {
+        color: var(--c-slate-300);
+        background: none;
+        border: none;
+        cursor: pointer;
+        transition: color 0.2s;
+        display: flex;
+        /* alignment */
+    }
+
+    .footer-arrow:hover {
+        color: var(--c-slate-800);
+    }
+
+    .arrow-icon {
+        font-size: 1.25rem;
+        font-weight: 700;
     }
 
     .year-display {
