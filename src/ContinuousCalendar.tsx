@@ -1,6 +1,7 @@
 import * as React from 'react';
 import { useMemo, useState, useRef, useEffect } from 'react';
 import { Virtuoso, type VirtuosoHandle, type ListRange } from 'react-virtuoso';
+import { IndexService } from './services/IndexService';
 
 // --- TYPES ---
 
@@ -20,6 +21,14 @@ interface BorderResult {
     separator: string | null;
 }
 
+// Helper to format date for IndexService (YYYY-MM-DD)
+const toDateKey = (date: Date): string => {
+    const y = date.getFullYear();
+    const m = String(date.getMonth() + 1).padStart(2, '0');
+    const d = String(date.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+};
+
 // --- HELPER: Date Math ---
 const getWeekNumber = (d: Date): number => {
     const target = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
@@ -29,56 +38,31 @@ const getWeekNumber = (d: Date): number => {
 };
 
 // Generates weeks just for the Single Month View
-// Ensures we have full weeks covering the month
 const getWeeksForSingleMonth = (date: Date): WeekData[] => {
     const year = date.getFullYear();
     const month = date.getMonth();
-
-    // Find the first day of the month
     const firstDayOfMonth = new Date(year, month, 1);
-
-    // Find the Monday of that week (start of the grid)
     const startDay = firstDayOfMonth.getDay(); // 0=Sun, 1=Mon
     const diff = firstDayOfMonth.getDate() - startDay + (startDay === 0 ? -6 : 1);
     const current = new Date(new Date(firstDayOfMonth).setDate(diff));
-
-    // Find the end: We want to show until we finish the week of the last day
-    // Or simply generate 6 weeks to be safe and consistent, or dynamic:
     const weeks: WeekData[] = [];
-
-    // Generate until we correspond to the next month's start week
-    // A safe bet for a calendar view is ensuring we cover the whole month
     let safetyCounter = 0;
     while (safetyCounter < 6) {
-        // We stop if we are past the current month AND we are at the start of a week (Monday)
-        // But simplest is just generating 6 rows (standard calendar max) or dynamic
         const week: WeekData = [];
         for (let i = 0; i < 7; i++) {
             week.push({ date: new Date(current) });
             current.setDate(current.getDate() + 1);
         }
-
-        // Logic to stop adding weeks:
-        // If the FIRST day of this week is in the NEXT month, we don't need this row (usually)
-        // Unless the previous row ended exactly on the last day of month. 
-        // Let's stick to the logic: If the *first* day of the *new* week is > end of month
         const firstDayOfNewWeek = week[0].date;
         const isNextMonth = firstDayOfNewWeek.getMonth() !== month && firstDayOfNewWeek.getFullYear() >= year;
         const isWayPast = firstDayOfNewWeek.getFullYear() > year || firstDayOfNewWeek.getMonth() > month;
-
         if ((isNextMonth || isWayPast) && weeks.length > 0) {
-            // If the *previous* week contained the last day, and this week is fully next month, discard and break
-            // Actually, just pushing 6 weeks is the standard UI pattern to prevent jumping height
-            // But for "Continuous style", dynamic height is fine.
             break;
         }
-
         weeks.push(week);
-
-        // Safety break if we covered the month
         const lastDayPushed = week[6].date;
         if (lastDayPushed.getMonth() !== month && lastDayPushed > new Date(year, month + 1, 0)) {
-            if (weeks.length >= 4) break; // Minimum 4 weeks
+            if (weeks.length >= 4) break;
         }
         safetyCounter++;
     }
@@ -88,7 +72,6 @@ const getWeeksForSingleMonth = (date: Date): WeekData[] => {
 // ==========================================
 // LOGIC: The "Smart Merging" Border Generator
 // ==========================================
-// (Kept exactly as provided)
 const getBorderSegment = (
     weekData: WeekData,
     isActiveFn: (d: Date) => boolean
@@ -259,6 +242,7 @@ const CalendarFooter: React.FC<CalendarFooterProps> = ({
 interface WeekRowProps {
     weekData: WeekData;
     index: number;
+    indexService: IndexService;
     focusedMonths: Set<string>;
     toggleMonthFocus: (year: number, month: number) => void;
     resetFocus: () => void;
@@ -267,7 +251,6 @@ interface WeekRowProps {
     onPinClick?: (date: Date) => void;
     pinnedMonth?: string | null;
     onMonthNameClick?: (date: Date) => void;
-    // Custom active logic for Month View to force borders around specific month
     customIsActiveFn?: (date: Date) => boolean;
     viewMode: 'Continuous' | 'month';
     displayedMonth?: number;
@@ -280,6 +263,7 @@ interface WeekRowProps {
 const WeekRow: React.FC<WeekRowProps> = ({
     weekData,
     index,
+    indexService,
     focusedMonths,
     toggleMonthFocus,
     resetFocus,
@@ -298,7 +282,6 @@ const WeekRow: React.FC<WeekRowProps> = ({
 
 }) => {
     // --- Active Logic ---
-    // If custom logic is provided (Month View), use it. Otherwise use Continuous View logic.
     const checkIsActive = (date: Date) => {
         if (customIsActiveFn) {
             return customIsActiveFn(date);
@@ -404,10 +387,21 @@ const WeekRow: React.FC<WeekRowProps> = ({
 
                         const isNumberSelected = checkSelection(d.date, 'number');
 
+                        // --- HOLIDAY LOGIC START ---
+                        const dateKey = toDateKey(d.date);
+                        // Safe check for getHolidaysForDate to prevent crashes if service isn't ready
+                        const holidays = indexService.getHolidaysForDate ? indexService.getHolidaysForDate(dateKey) : [];
+                        const hasHoliday = holidays.length > 0;
+                        const holidayColor = hasHoliday ? holidays[0].color : undefined;
+                        const holidayNames = hasHoliday ? holidays.map((h: any) => h.name).join(', ') : undefined;
+                        // --- HOLIDAY LOGIC END ---
+
                         let numClass = 'day-number';
                         if (isToday) numClass += ' is-today';
                         else if (isActive) numClass += ' is-active';
                         else numClass += ' is-inactive';
+
+                        if (hasHoliday) numClass += ' has-holiday';
 
                         if (isNumberSelected) numClass += ' is-selected-number';
 
@@ -415,8 +409,10 @@ const WeekRow: React.FC<WeekRowProps> = ({
                             <div key={i} className="day-cell-fg">
                                 <span
                                     className={numClass}
+                                    style={hasHoliday && holidayColor ? { backgroundColor: holidayColor } : undefined}
+                                    title={holidayNames}
                                     onClick={(e) => {
-                                        e.stopPropagation(); // CRITICAL: Stops click from reaching the cell background
+                                        e.stopPropagation();
                                         onNumberClick(d.date);
                                     }}
                                 >
@@ -439,7 +435,6 @@ const WeekRow: React.FC<WeekRowProps> = ({
 
             {/* 3. SIDEBAR */}
             <div className="sidebar-col">
-
                 {shouldShowLabel && (
                     <div className="month-label-group">
                         <div className="month-header-row">
@@ -453,8 +448,6 @@ const WeekRow: React.FC<WeekRowProps> = ({
                             >
                                 {monthNames[firstDayOfMonth.date.getMonth()]}
                             </span>
-
-                            {/* Only show Pin Button in Continuous Mode */}
                             {viewMode === 'Continuous' && onPinClick && firstDayOfMonth.date.getFullYear() <= (currentYear ?? today.getFullYear()) && (
                                 <button
                                     className={`pin-btn ${isPinned ? 'pinned' : ''}`}
@@ -470,8 +463,6 @@ const WeekRow: React.FC<WeekRowProps> = ({
                                 </button>
                             )}
                         </div>
-
-                        {/* Focus Controls - Only in Continuous Mode */}
                         {viewMode === 'Continuous' && (
                             isRealCurrentMonth ? (
                                 focusedMonths.size > 0 && (
@@ -501,13 +492,13 @@ interface TraditionalMonthViewProps {
     currentDate: Date;
     onMonthChange: (d: Date) => void;
     onClose: () => void;
-    // Props needed for WeekRow to function visually
     focusedMonths: Set<string>;
     selectedWeekIndex: number | null;
     onWeekClick: (index: number) => void;
     selection: SelectionState | null;
     onCellClick: (date: Date) => void;
     onNumberClick: (date: Date) => void;
+    indexService: IndexService;
 }
 
 const TraditionalMonthView: React.FC<TraditionalMonthViewProps> = ({
@@ -519,70 +510,52 @@ const TraditionalMonthView: React.FC<TraditionalMonthViewProps> = ({
     onWeekClick,
     selection,
     onCellClick,
-    onNumberClick
+    onNumberClick,
+    indexService // FIX: Destructured here
 }) => {
     const monthNames = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
-
-    // 1. Generate specific rows for this month
     const weeks = useMemo(() => getWeeksForSingleMonth(currentDate), [currentDate]);
-
-    // 2. Define the active function: Only days in THIS month get the border
     const isDayInCurrentMonth = (d: Date) => {
         return d.getMonth() === currentDate.getMonth() && d.getFullYear() === currentDate.getFullYear();
     };
-
     const handleNav = (direction: -1 | 1) => {
         const newDate = new Date(currentDate);
         newDate.setMonth(newDate.getMonth() + direction);
         onMonthChange(newDate);
     };
 
-    const handleDotClick = () => {
-        const now = new Date();
-        onMonthChange(now);
-    };
-
     return (
         <div className="month-view-container">
-            {/* Navigation Header */}
             <div className="month-view-header">
-                <button className="back-btn" onClick={onClose}>
-                    &larr; Back to list
-                </button>
-
+                <button className="back-btn" onClick={onClose}>&larr; Back to list</button>
                 <div className="month-nav-controls">
                     <button className="nav-arrow" onClick={() => handleNav(-1)}>&lt;</button>
-                    <button className="nav-dot" onClick={handleDotClick} title="Go to Today">
-                        <div className="dot-inner"></div>
-                    </button>
+                    <button className="nav-dot" onClick={() => onMonthChange(new Date())} title="Go to Today"><div className="dot-inner"></div></button>
                     <button className="nav-arrow" onClick={() => handleNav(1)}>&gt;</button>
                 </div>
-
                 <div className="month-view-title">
                     <span className="title-month">{monthNames[currentDate.getMonth()]}</span>
                     <span className="title-year">{currentDate.getFullYear()}</span>
                 </div>
             </div>
-
-            {/* The Grid - Now rendered as WeekRows! */}
             <div className="month-view-list-wrapper">
                 {weeks.map((week, i) => (
                     <WeekRow
                         key={i}
                         weekData={week}
                         index={i}
-                        // Pass dummy or real functions, but visual logic is overridden by customIsActiveFn
                         focusedMonths={focusedMonths}
                         toggleMonthFocus={() => { }}
                         resetFocus={() => { }}
                         selectedWeekIndex={selectedWeekIndex}
                         onWeekClick={onWeekClick}
                         viewMode="month"
-                        customIsActiveFn={isDayInCurrentMonth} // <--- This forces the border around only this month
+                        customIsActiveFn={isDayInCurrentMonth}
                         displayedMonth={currentDate.getMonth()}
                         selection={selection}
                         onCellClick={onCellClick}
                         onNumberClick={onNumberClick}
+                        indexService={indexService} // FIX: Passed correct prop
                     />
                 ))}
             </div>
@@ -595,7 +568,13 @@ const TraditionalMonthView: React.FC<TraditionalMonthViewProps> = ({
 // Continuous CONTAINER (Main)
 // ==========================================
 
-const ContinuousCalendar: React.FC = () => {
+// FIX: Interface for Main Component Props
+interface ContinuousCalendarProps {
+    index: IndexService;
+}
+
+// FIX: Accepting props and destructuring 'index'
+const ContinuousCalendar: React.FC<ContinuousCalendarProps> = ({ index }) => {
 
     const virtuosoRef = useRef<VirtuosoHandle>(null);
 
@@ -615,17 +594,23 @@ const ContinuousCalendar: React.FC = () => {
     const [selectedWeekIndex, setSelectedWeekIndex] = useState<number | null>(null);
 
     // VIEW STATE
+    const [dataVersion, setDataVersion] = useState(0);
+
+    useEffect(() => {
+        // FIX: 'index' is now available from props
+        const unsubscribe = index.subscribe ? index.subscribe(() => {
+            setDataVersion(v => v + 1);
+        }) : () => { };
+        return unsubscribe;
+    }, [index]);
+
     const [viewMode, setViewMode] = useState<'Continuous' | 'month'>('Continuous');
     const [monthViewDate, setMonthViewDate] = useState<Date>(new Date());
-
     const [pendingScrollDate, setPendingScrollDate] = useState<Date | null>(null);
-
     const [selection, setSelection] = useState<SelectionState | null>(null);
-
     const [pinnedMonth, setPinnedMonth] = useState<string | null>(null);
 
     const handleCellClick = (date: Date) => {
-        // If clicking the same cell that is already selected, deselect it
         if (selection?.type === 'cell' && selection.date.getTime() === date.getTime()) {
             setSelection(null);
         } else {
@@ -634,7 +619,6 @@ const ContinuousCalendar: React.FC = () => {
     };
 
     const handleNumberClick = (date: Date) => {
-        // If clicking the same number that is already selected, deselect it
         if (selection?.type === 'number' && selection.date.getTime() === date.getTime()) {
             setSelection(null);
         } else {
@@ -662,20 +646,16 @@ const ContinuousCalendar: React.FC = () => {
         else setSelectedWeekIndex(index);
     };
 
-    // Generate weeks logic
     const allWeeks = useMemo<WeekData[]>(() => {
-        if (viewMode === 'month') return []; // optimize memory when not used
-
+        if (viewMode === 'month') return [];
         setSelectedWeekIndex(null);
-        const start = new Date(currentYear - 1, 11, 1); // Dec 1 of previous year
+        const start = new Date(currentYear - 1, 11, 1);
         const day = start.getDay();
         const diff = start.getDate() - day + (day === 0 ? -6 : 1);
         const current = new Date(start.setDate(diff));
-
         const decFirst = new Date(currentYear, 11, 1);
         const end = new Date(decFirst);
         end.setDate(decFirst.getDate() + minWeeksToFill * 7);
-
         const weeks: WeekData[] = [];
         while (current < end) {
             const week: WeekData = [];
@@ -693,20 +673,16 @@ const ContinuousCalendar: React.FC = () => {
     const showTodayButton = useMemo(() => {
         if (viewMode !== 'Continuous') return false;
         if (pinnedMonth) return false;
-
         const now = new Date();
         const currentMonth = now.getMonth();
         const currentYearVal = now.getFullYear();
-
         const start = Math.max(0, visibleRange.startIndex);
         const end = Math.min(allWeeks.length - 1, visibleRange.endIndex);
-
         for (let i = start; i <= end; i++) {
             const week = allWeeks[i];
             if (!week) continue;
             const firstDay = week[0].date;
             const lastDay = week[6].date;
-
             if ((firstDay.getMonth() === currentMonth && firstDay.getFullYear() === currentYearVal) ||
                 (lastDay.getMonth() === currentMonth && lastDay.getFullYear() === currentYearVal)) {
                 return false;
@@ -719,22 +695,13 @@ const ContinuousCalendar: React.FC = () => {
         if (pinnedMonth) {
             const [pYear, pMonth] = pinnedMonth.split('-').map(Number);
             const idx = allWeeks.findIndex((week) =>
-                week.some((d) =>
-                    d.date.getFullYear() === pYear &&
-                    d.date.getMonth() === pMonth &&
-                    d.date.getDate() === 1
-                )
+                week.some((d) => d.date.getFullYear() === pYear && d.date.getMonth() === pMonth && d.date.getDate() === 1)
             );
             if (idx !== -1) return idx;
         }
-
         const now = new Date();
         return allWeeks.findIndex((week) =>
-            week.some((d) =>
-                d.date.getDate() === now.getDate() &&
-                d.date.getMonth() === now.getMonth() &&
-                d.date.getFullYear() === now.getFullYear()
-            )
+            week.some((d) => d.date.getDate() === now.getDate() && d.date.getMonth() === now.getMonth() && d.date.getFullYear() === now.getFullYear())
         );
     }, [allWeeks, pinnedMonth]);
 
@@ -756,15 +723,9 @@ const ContinuousCalendar: React.FC = () => {
     };
 
     const scrollToDate = (date: Date) => {
-        // We look inside the CURRENT 'allWeeks'
         const idx = allWeeks.findIndex((w) =>
-            w.some((d) =>
-                d.date.getDate() === date.getDate() &&
-                d.date.getMonth() === date.getMonth() &&
-                d.date.getFullYear() === date.getFullYear()
-            )
+            w.some((d) => d.date.getDate() === date.getDate() && d.date.getMonth() === date.getMonth() && d.date.getFullYear() === date.getFullYear())
         );
-
         if (idx !== -1 && virtuosoRef.current) {
             virtuosoRef.current.scrollToIndex({ index: idx, align: 'center', behavior: 'smooth' });
         }
@@ -772,64 +733,43 @@ const ContinuousCalendar: React.FC = () => {
 
     const handleGoToToday = () => {
         const now = new Date();
-
         if (viewMode === 'month') {
             setMonthViewDate(now);
             setCurrentYear(now.getFullYear());
         } else {
             const thisYear = now.getFullYear();
             if (thisYear !== currentYear) {
-                // 1. Change the year
                 setCurrentYear(thisYear);
-                // 2. Queue the scroll (wait for re-render)
                 setPendingScrollDate(now);
             } else {
-                // Same year? Scroll immediately
                 scrollToDate(now);
             }
         }
     };
 
-    // --- NEW EFFECT: Listens for data updates to perform queued scrolls ---
     useEffect(() => {
         if (pendingScrollDate && allWeeks.length > 0) {
             scrollToDate(pendingScrollDate);
-            setPendingScrollDate(null); // Clear queue
+            setPendingScrollDate(null);
         }
-        // Dependency on 'allWeeks' ensures this runs AFTER the new year is generated
-        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [allWeeks, pendingScrollDate]);
 
     const handlePinClick = (date: Date) => {
         const monthKey = `${date.getFullYear()}-${date.getMonth()}`;
-
         if (pinnedMonth === monthKey) {
-            // Unpin
             setPinnedMonth(null);
         } else {
-            // Pin: scroll to top and lock
             setPinnedMonth(monthKey);
-
-            // Auto-focus the pinned month
             setFocusedMonths((prev) => {
                 const next = new Set(prev);
                 next.add(monthKey);
                 return next;
             });
-
-            // Find the first week of this month
             const firstWeekIndex = allWeeks.findIndex(week =>
-                week.some(d => d.date.getMonth() === date.getMonth() &&
-                    d.date.getFullYear() === date.getFullYear() &&
-                    d.date.getDate() === 1)
+                week.some(d => d.date.getMonth() === date.getMonth() && d.date.getFullYear() === date.getFullYear() && d.date.getDate() === 1)
             );
-
             if (firstWeekIndex !== -1 && virtuosoRef.current) {
-                virtuosoRef.current.scrollToIndex({
-                    index: firstWeekIndex,
-                    align: 'start',
-                    behavior: 'smooth'
-                });
+                virtuosoRef.current.scrollToIndex({ index: firstWeekIndex, align: 'start', behavior: 'smooth' });
             }
         }
     };
@@ -849,12 +789,10 @@ const ContinuousCalendar: React.FC = () => {
         if (viewMode === 'Continuous') {
             handleGoToToday();
         }
-        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
     return (
         <div className="calendar-container">
-            {/* HEADER */}
             <div className="calendar-header">
                 <div className="header-row">
                     <div className="header-spacer-left"></div>
@@ -867,37 +805,29 @@ const ContinuousCalendar: React.FC = () => {
                 </div>
             </div>
 
-            {/* CONTENT AREA */}
             <div className="calendar-list" style={{ position: 'relative' }}>
                 {viewMode === 'Continuous' ? (
                     <>
                         {showTodayButton && (
-                            <button
-                                className="floating-today-btn"
-                                onClick={handleGoToToday}
-                            >
-                                Today
-                            </button>
+                            <button className="floating-today-btn" onClick={handleGoToToday}>Today</button>
                         )}
                         <Virtuoso
                             ref={virtuosoRef}
                             rangeChanged={setVisibleRange}
                             style={{
                                 height: '100%',
-                                paddingTop: '2px', // Keeps the top border visible
-
-                                // 1. Lock scroll if pinned
+                                paddingTop: '2px',
                                 overflowY: pinnedMonth ? 'hidden' : 'auto',
-
-                                // 2. Always reserve space for scrollbar (prevents jumping)
                                 scrollbarGutter: 'stable'
                             }}
                             initialTopMostItemIndex={initialWeekIndex}
                             totalCount={allWeeks.length}
-                            itemContent={(index) => (
+                            // FIX: Renamed callback var to rowIndex to avoid shadowing prop 'index'
+                            itemContent={(rowIndex) => (
                                 <WeekRow
-                                    weekData={allWeeks[index]}
-                                    index={index}
+                                    weekData={allWeeks[rowIndex]}
+                                    index={rowIndex}
+                                    indexService={index} // FIX: Passing service prop
                                     focusedMonths={focusedMonths}
                                     toggleMonthFocus={toggleMonthFocus}
                                     resetFocus={resetFocus}
@@ -934,11 +864,11 @@ const ContinuousCalendar: React.FC = () => {
                         selection={selection}
                         onCellClick={handleCellClick}
                         onNumberClick={handleNumberClick}
+                        indexService={index} // FIX: Passing service prop
                     />
                 )}
             </div>
 
-            {/* FOOTER */}
             <CalendarFooter
                 year={currentYear}
                 viewMode={viewMode}

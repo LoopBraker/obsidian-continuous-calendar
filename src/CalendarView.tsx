@@ -42,7 +42,7 @@ export class CalendarView extends ItemView {
         this.root = createRoot(reactRoot);
         this.root.render(
             <React.StrictMode>
-                <ContinuousCalendar />
+                <ContinuousCalendar index={this.calendarIndex} />
             </React.StrictMode>
         );
     }

@@ -242,6 +242,16 @@
         ;
     }
 
+    .day-number.has-holiday {
+        color: white;
+        padding: 0.2rem;
+    }
+
+    /* Holiday and inactive */
+    .day-number.has-holiday.is-inactive {
+        background-color: var(--c-gray-200) !important;
+    }
+
     /* SVG Layer */
     .svg-layer {
         position: absolute;
