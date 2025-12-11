@@ -256,7 +256,7 @@ interface WeekRowProps {
     displayedMonth?: number;
     selection: SelectionState | null;
     onCellClick: (date: Date) => void;
-    onNumberClick: (date: Date) => void;
+    onNumberClick: (date: Date, e: React.MouseEvent) => void;
     currentYear?: number;
 }
 
@@ -421,7 +421,7 @@ const WeekRow: React.FC<WeekRowProps> = ({
                                     title={holidayNames}
                                     onClick={(e) => {
                                         e.stopPropagation();
-                                        onNumberClick(d.date);
+                                        onNumberClick(d.date, e);
                                     }}
                                 >
                                     {d.date.getDate()}
@@ -505,7 +505,7 @@ interface TraditionalMonthViewProps {
     onWeekClick: (index: number) => void;
     selection: SelectionState | null;
     onCellClick: (date: Date) => void;
-    onNumberClick: (date: Date) => void;
+    onNumberClick: (date: Date, e: React.MouseEvent) => void;
     indexService: IndexService;
 }
 
@@ -580,10 +580,11 @@ const TraditionalMonthView: React.FC<TraditionalMonthViewProps> = ({
 interface ContinuousCalendarProps {
     index: IndexService;
     onOpenNote: (date: Date) => void;
+    onCreateRange: (start: Date, end: Date) => void;
 }
 
 // FIX: Accepting props and destructuring 'index'
-const ContinuousCalendar: React.FC<ContinuousCalendarProps> = ({ index, onOpenNote }) => {
+const ContinuousCalendar: React.FC<ContinuousCalendarProps> = ({ index, onOpenNote, onCreateRange }) => {
 
     const virtuosoRef = useRef<VirtuosoHandle>(null);
 
@@ -627,20 +628,37 @@ const ContinuousCalendar: React.FC<ContinuousCalendarProps> = ({ index, onOpenNo
         }
     };
 
-    const handleNumberClick = (date: Date) => {
-        // Check if we are clicking the EXACT same date that is currently selected (engaged)
+    const handleNumberClick = (date: Date, e: React.MouseEvent) => {
+        const isModKey = e.ctrlKey || e.metaKey; // Windows Ctrl or Mac Cmd
+
+        // LOGIC A: Range Creation (Modifier Key + Date Selected)
+        if (isModKey && selection) {
+            // Prevent range creation if clicking the exact same date
+            if (selection.date.getTime() === date.getTime()) return;
+
+            // Determine which is start and which is end
+            const d1 = selection.date;
+            const d2 = date;
+
+            const start = d1 < d2 ? d1 : d2;
+            const end = d1 < d2 ? d2 : d1;
+
+            onCreateRange(start, end);
+
+            // Clear selection after creating range
+            setSelection(null);
+            return;
+        }
+
+        // LOGIC B: Standard Engage/Open
         const isSameDate = selection?.type === 'number' &&
             selection.date.getDate() === date.getDate() &&
             selection.date.getMonth() === date.getMonth() &&
             selection.date.getFullYear() === date.getFullYear();
 
         if (isSameDate) {
-            // ACTION: It was already engaged, so now we OPEN it.
             onOpenNote(date);
-            // Optional: Clear selection after opening? 
-            // setSelection(null); 
         } else {
-            // ENGAGE: Select it so the user sees visual feedback
             setSelection({ date, type: 'number' });
         }
     };

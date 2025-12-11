@@ -4,6 +4,7 @@ import { createRoot, Root } from "react-dom/client";
 import ContinuousCalendar from "./ContinuousCalendar";
 import ContinuousCalendarPlugin from "./main";
 import { IndexService } from "./services/IndexService";
+import { createRangeNote } from './createRangeNote';
 import { createConfirmationDialog } from './modals/ConfirmationModal';
 
 // Import Daily Note utilities
@@ -92,12 +93,38 @@ export class CalendarView extends ItemView {
             }
         };
 
+        // Create Range Note Handler
+        const handleCreateRange = async (startDate: Date, endDate: Date) => {
+            const moment = (window as any).moment;
+            const startStr = moment(startDate).format('YYYY-MM-DD');
+            const endStr = moment(endDate).format('YYYY-MM-DD');
+
+            const performCreate = async () => {
+                await createRangeNote(this.app, startStr, endStr);
+            };
+
+            // Check settings for confirmation (assuming you have this setting)
+            if (this.plugin.settings.shouldConfirmBeforeCreateRange) {
+                createConfirmationDialog(this.app, {
+                    title: 'Create Range Note?',
+                    text: `Create a range note from ${startStr} to ${endStr}?`,
+                    cta: 'Create',
+                    onAccept: async () => {
+                        await performCreate();
+                    }
+                });
+            } else {
+                await performCreate();
+            }
+        };
+
         this.root = createRoot(reactRoot);
         this.root.render(
             <React.StrictMode>
                 <ContinuousCalendar
                     index={this.calendarIndex}
                     onOpenNote={handleOpenNote}
+                    onCreateRange={handleCreateRange}
                 />
             </React.StrictMode>
         );
