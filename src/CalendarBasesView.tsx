@@ -62,7 +62,7 @@ export class CalendarBasesView extends BasesView {
         this.root.render(
             <ContinuousCalendar
                 index={this.calendarIndex}
-
+                app={this.app || this.plugin.app}
                 // --- HANDLERS ---
                 onOpenNote={async (date: Date) => {
                     const mDate = moment(date);

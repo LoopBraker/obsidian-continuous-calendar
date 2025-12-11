@@ -1,0 +1,51 @@
+/* src/styles/day-detail-modal.css */
+.day-detail-modal .modal-content {
+  padding: 20px;
+}
+.day-detail-header {
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+.day-detail-header h2 {
+  margin: 0 0 4px 0;
+  font-size: 1.4em;
+  color: var(--text-normal);
+}
+.day-detail-relative {
+  margin: 0;
+  color: var(--text-muted);
+  font-style: italic;
+  font-size: 0.95em;
+}
+.day-detail-section {
+  margin-bottom: 16px;
+}
+.day-detail-section h3 {
+  margin: 0 0 8px 0;
+  font-size: 1.1em;
+  color: var(--text-normal);
+  font-weight: 600;
+}
+.day-detail-list {
+  list-style: none;
+  padding-left: 0;
+  margin: 0;
+}
+.day-detail-list li {
+  padding: 4px 0;
+}
+.day-detail-list a {
+  text-decoration: none;
+  transition: opacity 0.2s;
+}
+.day-detail-list a:hover {
+  opacity: 0.8;
+  text-decoration: underline;
+}
+.day-detail-empty {
+  color: var(--text-muted);
+  font-style: italic;
+  text-align: center;
+  padding: 20px;
+}

@@ -123,6 +123,7 @@ export class CalendarView extends ItemView {
             <React.StrictMode>
                 <ContinuousCalendar
                     index={this.calendarIndex}
+                    app={this.app}
                     onOpenNote={handleOpenNote}
                     onCreateRange={handleCreateRange}
                 />

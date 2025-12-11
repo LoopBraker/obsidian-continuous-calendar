@@ -1,7 +1,9 @@
 import * as React from 'react';
 import { useMemo, useState, useRef, useEffect, useLayoutEffect, useCallback } from 'react';
 import { Virtuoso, type VirtuosoHandle, type ListRange } from 'react-virtuoso';
+import { App } from 'obsidian';
 import { IndexService } from './services/IndexService';
+import { DayDetailView } from './DayDetailView';
 
 // ==========================================
 // TYPES & HELPERS
@@ -789,13 +791,14 @@ const TraditionalMonthView: React.FC<TraditionalMonthViewProps> = ({
 
 export interface ContinuousCalendarProps {
     index: IndexService;
+    app: App;
     onOpenNote: (date: Date) => void;
     onCreateRange: (start: Date, end: Date) => void;
     onYearChange?: (year: number) => void;
 }
 
 export const ContinuousCalendar = (props: ContinuousCalendarProps) => {
-    const { index, onOpenNote, onCreateRange, onYearChange } = props;
+    const { index, app, onOpenNote, onCreateRange, onYearChange } = props;
 
     const virtuosoRef = useRef<VirtuosoHandle>(null);
 
@@ -833,6 +836,22 @@ export const ContinuousCalendar = (props: ContinuousCalendarProps) => {
             setSelection(null);
         } else {
             setSelection({ date, type: 'cell' });
+        }
+    };
+
+    const handlePrevDay = () => {
+        if (selection && selection.type === 'cell') {
+            const prev = new Date(selection.date);
+            prev.setDate(prev.getDate() - 1);
+            setSelection({ date: prev, type: 'cell' });
+        }
+    };
+
+    const handleNextDay = () => {
+        if (selection && selection.type === 'cell') {
+            const next = new Date(selection.date);
+            next.setDate(next.getDate() + 1);
+            setSelection({ date: next, type: 'cell' });
         }
     };
 
@@ -1034,7 +1053,35 @@ export const ContinuousCalendar = (props: ContinuousCalendarProps) => {
     }, []);
 
     return (
-        <div className="calendar-container">
+        <div className="calendar-container" style={{ position: 'relative' }}>
+            {selection?.type === 'cell' && (
+                <div
+                    className="day-detail-overlay"
+                    onClick={(e) => {
+                        // Close when clicking the background
+                        if (e.target === e.currentTarget) {
+                            setSelection(null);
+                        }
+                    }}
+                >
+                    <DayDetailView
+                        dateKey={toDateKey(selection.date)}
+                        index={index}
+                        app={app}
+                        settings={index.settings} // Pass settings from index
+                        onClose={() => setSelection(null)}
+                        onPrev={handlePrevDay}
+                        onNext={handleNextDay}
+                        onOpenNote={(dateStr) => {
+                            // Convert string back to Date for handler
+                            const d = new Date(dateStr + 'T00:00:00');
+                            onOpenNote(d);
+                            // Optional: close after opening
+                            // setSelection(null); 
+                        }}
+                    />
+                </div>
+            )}
             <div className="calendar-header">
                 <div className="header-row">
                     <div className="header-spacer-left"></div>
