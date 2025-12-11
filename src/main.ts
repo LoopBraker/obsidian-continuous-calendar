@@ -49,6 +49,13 @@ export default class ContinuousCalendarPlugin extends Plugin {
                 this.activateView();
             },
         });
+
+        this.app.workspace.onLayoutReady(async () => {
+            this.calendarIndex.indexVault();
+            // This triggers the async fetch, which calls index.setHolidaysForYear, 
+            // which calls notifyListeners, which updates dataVersion in React
+            await this.loadHolidaysForYear(new Date().getFullYear());
+        });
     }
 
     async loadHolidaysForYear(year: number) {

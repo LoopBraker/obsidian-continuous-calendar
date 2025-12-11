@@ -814,6 +814,7 @@ const ContinuousCalendar: React.FC<ContinuousCalendarProps> = ({ index }) => {
                         <Virtuoso
                             ref={virtuosoRef}
                             rangeChanged={setVisibleRange}
+                            context={{ dataVersion }}
                             style={{
                                 height: '100%',
                                 paddingTop: '2px',
