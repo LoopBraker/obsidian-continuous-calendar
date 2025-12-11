@@ -242,6 +242,16 @@
         ;
     }
 
+    .day-number.is-daily-note {
+        text-decoration: underline;
+        text-decoration-thickness: 2px;
+        text-decoration-color: var(--interactive-accent);
+        text-underline-offset: 3px;
+        font-weight: bold;
+        /* Ensure text color stays normal unless overridden */
+        color: var(--text-normal);
+    }
+
     .day-number.has-holiday {
         color: white;
         padding: 0.2rem;

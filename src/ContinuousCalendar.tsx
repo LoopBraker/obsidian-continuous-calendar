@@ -386,9 +386,15 @@ const WeekRow: React.FC<WeekRowProps> = ({
                             d.date.getFullYear() === today.getFullYear();
 
                         const isNumberSelected = checkSelection(d.date, 'number');
+                        // --- 1. PREPARE DATE KEY ---
+                        const dateKey = toDateKey(d.date);
+
+                        // --- 2. GET STATUS FROM INDEX ---
+                        // Retrieve metadata to see if a daily note exists
+                        const dateStatus = indexService.getDateStatus(dateKey);
+                        const isDailyNote = dateStatus && dateStatus.isDailyNote;
 
                         // --- HOLIDAY LOGIC START ---
-                        const dateKey = toDateKey(d.date);
                         // Safe check for getHolidaysForDate to prevent crashes if service isn't ready
                         const holidays = indexService.getHolidaysForDate ? indexService.getHolidaysForDate(dateKey) : [];
                         const hasHoliday = holidays.length > 0;
@@ -404,6 +410,8 @@ const WeekRow: React.FC<WeekRowProps> = ({
                         if (hasHoliday) numClass += ' has-holiday';
 
                         if (isNumberSelected) numClass += ' is-selected-number';
+
+                        if (isDailyNote) numClass += ' is-daily-note';
 
                         return (
                             <div key={i} className="day-cell-fg">
@@ -571,10 +579,11 @@ const TraditionalMonthView: React.FC<TraditionalMonthViewProps> = ({
 // FIX: Interface for Main Component Props
 interface ContinuousCalendarProps {
     index: IndexService;
+    onOpenNote: (date: Date) => void;
 }
 
 // FIX: Accepting props and destructuring 'index'
-const ContinuousCalendar: React.FC<ContinuousCalendarProps> = ({ index }) => {
+const ContinuousCalendar: React.FC<ContinuousCalendarProps> = ({ index, onOpenNote }) => {
 
     const virtuosoRef = useRef<VirtuosoHandle>(null);
 
@@ -619,9 +628,19 @@ const ContinuousCalendar: React.FC<ContinuousCalendarProps> = ({ index }) => {
     };
 
     const handleNumberClick = (date: Date) => {
-        if (selection?.type === 'number' && selection.date.getTime() === date.getTime()) {
-            setSelection(null);
+        // Check if we are clicking the EXACT same date that is currently selected (engaged)
+        const isSameDate = selection?.type === 'number' &&
+            selection.date.getDate() === date.getDate() &&
+            selection.date.getMonth() === date.getMonth() &&
+            selection.date.getFullYear() === date.getFullYear();
+
+        if (isSameDate) {
+            // ACTION: It was already engaged, so now we OPEN it.
+            onOpenNote(date);
+            // Optional: Clear selection after opening? 
+            // setSelection(null); 
         } else {
+            // ENGAGE: Select it so the user sees visual feedback
             setSelection({ date, type: 'number' });
         }
     };

@@ -4,6 +4,16 @@ import { createRoot, Root } from "react-dom/client";
 import ContinuousCalendar from "./ContinuousCalendar";
 import ContinuousCalendarPlugin from "./main";
 import { IndexService } from "./services/IndexService";
+import { createConfirmationDialog } from './modals/ConfirmationModal';
+
+// Import Daily Note utilities
+import {
+    getAllDailyNotes,
+    getDailyNote,
+    createDailyNote
+} from 'obsidian-daily-notes-interface';
+import moment from 'moment';
+
 
 export const VIEW_TYPE_CALENDAR = "Continuous-calendar-view";
 
@@ -39,10 +49,56 @@ export class CalendarView extends ItemView {
         reactRoot.style.height = "100%";
         reactRoot.style.width = "100%";
 
+        // --- THE OPEN/CREATE LOGIC ---
+        const handleOpenNote = async (date: Date) => {
+            const { workspace } = this.app;
+            const momentDate = moment(date);
+            const dateStr = momentDate.format('YYYY-MM-DD');
+
+            const allDailyNotes = getAllDailyNotes();
+            const existingNote = getDailyNote(momentDate, allDailyNotes);
+
+            // A: If note exists, just open it
+            if (existingNote) {
+                await workspace.getLeaf(false).openFile(existingNote);
+                return;
+            }
+
+            // Define the creation logic as a reusable function
+            const performCreate = async () => {
+                try {
+                    const newNote = await createDailyNote(momentDate);
+                    await workspace.getLeaf(false).openFile(newNote);
+                } catch (err) {
+                    console.error(`Failed to create daily note for ${dateStr}`, err);
+                }
+            };
+
+            // B: If note does NOT exist, check settings
+            // (Assuming your settings interface has 'shouldConfirmBeforeCreate')
+            if (this.plugin.settings.shouldConfirmBeforeCreate) {
+                // Show Confirmation Modal
+                createConfirmationDialog(this.app, {
+                    title: 'Create Daily Note?',
+                    text: `Daily note for ${dateStr} does not exist. Create it now?`,
+                    cta: 'Create',
+                    onAccept: async () => {
+                        await performCreate();
+                    }
+                });
+            } else {
+                // Create immediately if setting is off
+                await performCreate();
+            }
+        };
+
         this.root = createRoot(reactRoot);
         this.root.render(
             <React.StrictMode>
-                <ContinuousCalendar index={this.calendarIndex} />
+                <ContinuousCalendar
+                    index={this.calendarIndex}
+                    onOpenNote={handleOpenNote}
+                />
             </React.StrictMode>
         );
     }
