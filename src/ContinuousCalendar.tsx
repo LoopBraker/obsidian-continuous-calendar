@@ -583,15 +583,30 @@ interface ContinuousCalendarProps {
     onCreateRange: (start: Date, end: Date) => void;
 }
 
-// FIX: Accepting props and destructuring 'index'
-const ContinuousCalendar: React.FC<ContinuousCalendarProps> = ({ index, onOpenNote, onCreateRange }) => {
+export const ContinuousCalendar = (props: ContinuousCalendarProps) => {
+    // Destructure props for easier usage
+    const { index, onOpenNote, onCreateRange } = props;
+
 
     const virtuosoRef = useRef<VirtuosoHandle>(null);
 
+    // State
     const [currentYear, setCurrentYear] = useState<number>(new Date().getFullYear());
     const [minWeeksToFill, setMinWeeksToFill] = useState<number>(20);
     const [focusedMonths, setFocusedMonths] = useState<Set<string>>(new Set());
+    const [selectedWeekIndex, setSelectedWeekIndex] = useState<number | null>(null);
 
+    // we need to distinguish between clicking the 'number' vs the 'cell' background
+    const [selection, setSelection] = useState<SelectionState | null>(null);
+
+    // VIEW STATE
+    const [dataVersion, setDataVersion] = useState(0);
+    const [viewMode, setViewMode] = useState<'Continuous' | 'month'>('Continuous');
+    const [monthViewDate, setMonthViewDate] = useState<Date>(new Date());
+    const [pendingScrollDate, setPendingScrollDate] = useState<Date | null>(null);
+    const [pinnedMonth, setPinnedMonth] = useState<string | null>(null);
+
+    // --- EFFECT: Handle Window Resize ---   
     useEffect(() => {
         const updateWeeks = () => {
             const weeks = Math.ceil(window.innerHeight / 62) + 2;
@@ -601,11 +616,8 @@ const ContinuousCalendar: React.FC<ContinuousCalendarProps> = ({ index, onOpenNo
         window.addEventListener('resize', updateWeeks);
         return () => window.removeEventListener('resize', updateWeeks);
     }, []);
-    const [selectedWeekIndex, setSelectedWeekIndex] = useState<number | null>(null);
 
-    // VIEW STATE
-    const [dataVersion, setDataVersion] = useState(0);
-
+    // --- EFFECT: Handle Index Changes ---
     useEffect(() => {
         // FIX: 'index' is now available from props
         const unsubscribe = index.subscribe ? index.subscribe(() => {
@@ -613,12 +625,6 @@ const ContinuousCalendar: React.FC<ContinuousCalendarProps> = ({ index, onOpenNo
         }) : () => { };
         return unsubscribe;
     }, [index]);
-
-    const [viewMode, setViewMode] = useState<'Continuous' | 'month'>('Continuous');
-    const [monthViewDate, setMonthViewDate] = useState<Date>(new Date());
-    const [pendingScrollDate, setPendingScrollDate] = useState<Date | null>(null);
-    const [selection, setSelection] = useState<SelectionState | null>(null);
-    const [pinnedMonth, setPinnedMonth] = useState<string | null>(null);
 
     const handleCellClick = (date: Date) => {
         if (selection?.type === 'cell' && selection.date.getTime() === date.getTime()) {
@@ -924,5 +930,3 @@ const ContinuousCalendar: React.FC<ContinuousCalendarProps> = ({ index, onOpenNo
         </div>
     );
 };
-
-export default ContinuousCalendar;

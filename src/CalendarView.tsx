@@ -1,7 +1,7 @@
 import { Plugin, ItemView, WorkspaceLeaf, TFile } from 'obsidian';
 import * as React from "react";
 import { createRoot, Root } from "react-dom/client";
-import ContinuousCalendar from "./ContinuousCalendar";
+import { ContinuousCalendar } from "./ContinuousCalendar";
 import ContinuousCalendarPlugin from "./main";
 import { IndexService } from "./services/IndexService";
 import { createRangeNote } from './createRangeNote';
