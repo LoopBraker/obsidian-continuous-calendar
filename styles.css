@@ -18,10 +18,10 @@
     --c-blue-50: #eff6ff;
     --c-blue-50-50: rgba(239, 246, 255, 0.5);
 
-    --cell-height: 60px;
+    --cell-height: 55px;
     /* INCREASED to fit ranges */
-    --range-bar-height: 4px;
-    --range-bar-spacing: 1px;
+    --range-bar-height: 3px;
+    --range-bar-spacing: 2px;
 
     --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
     --shadow-footer: 0 -4px 6px -1px rgba(0, 0, 0, 0.02);
@@ -38,7 +38,7 @@
     .calendar-container {
         height: 100%;
         width: 100%;
-        background-color: var(--c-white);
+        background-color: var(--background-primary);
         display: flex;
         flex-direction: column;
         max-width: 34rem;
@@ -135,28 +135,26 @@
 
     .week-num-text {
         font-weight: 500;
-        font-size: 0.7rem;
-        color: var(--c-gray-400);
+        font-size: 0.8rem;
+        color: var(--color-grey-text);
         transition: all 0.2s;
     }
 
     .week-num-text.is-today {
-        color: var(--c-slate-800);
         font-weight: 900;
-        font-size: 0.8rem;
+        font-size: 0.9rem;
     }
 
-    .week-num-text.is-active {
-        color: var(--c-slate-500);
-    }
+    /* .week-num-text.is-active {
+        color: var(--text-normal);
+    } */
 
     .week-num-text.is-inactive {
-        color: var(--c-gray-300);
-        font-weight: 500;
+        color: var(--text-faint);
     }
 
     .week-num-col.selected .week-num-text {
-        color: var(--c-blue-600);
+        color: var(--interactive-accent);
         transform: scale(1.25);
     }
 
@@ -259,8 +257,8 @@
 
     .day-number {
         display: inline-block;
-        font-size: 0.8rem;
-        font-weight: 700;
+        font-size: 1rem;
+        font-weight: 500;
         padding: 0px 4px;
         border-radius: 4px;
         cursor: pointer;
@@ -268,16 +266,17 @@
     }
 
     .day-number.is-today {
-        color: var(--c-slate-800);
-        font-weight: 900;
+        color: var(--text-normal);
+        font-weight: 700;
     }
 
     .day-number.is-active {
-        color: var(--c-slate-500);
+        color: var(--color-grey-text);
     }
 
     .day-number.is-inactive {
-        color: var(--c-gray-300);
+        color: var(--text-faint);
+        opacity: 0.2;
     }
 
     .day-number:hover {
@@ -287,7 +286,7 @@
     }
 
     .day-number.is-selected-number {
-        color: var(--c-slate-800);
+        color: var(--text-normal);
         background-color: var(--c-slate-200);
         border: 1px solid var(--c-blue-600);
         transform: scale(1.1);
@@ -308,7 +307,8 @@
 
     /* Holiday and inactive */
     .day-number.has-holiday.is-inactive {
-        background-color: var(--c-gray-200) !important;
+        background-color: var(--text-faint) !important;
+        opacity: 0.2;
     }
 
     .day-number.engaged.range-start-engaged {
@@ -324,7 +324,7 @@
         border-radius: 6px;
         pointer-events: none;
         z-index: 5;
-        box-shadow: 0 0 0 2px var(--c-slate-400);
+        box-shadow: 0 0 0 1px var(--interactive-accent);
     }
 
     /* --- DOT AREA --- */
@@ -350,10 +350,11 @@
     .tag-symbol {
         font-size: 8px;
         margin: 0 1px;
+        text-shadow: 0 0 3px var(--c-gray-400);
     }
 
     .dot-overflow {
-        font-size: 8px;
+        font-size: 6px;
         color: var(--c-blue-600);
         font-weight: bold;
     }
@@ -411,9 +412,9 @@
     }
 
     .range-overflow-dot {
-        width: 7px;
+        width: 4px;
         height: 4px;
-        /* border-radius: 25%; */
+        border-radius: 50%;
     }
 
     .range-triangle-start {
@@ -474,9 +475,9 @@
     }
 
     .month-name {
-        font-size: 0.7rem;
-        font-weight: 900;
-        color: var(--c-slate-800);
+        font-size: 1rem;
+        font-weight: 700;
+        color: var(--color-grey-text);
         text-transform: uppercase;
         letter-spacing: 0.025em;
         line-height: 1;
@@ -778,6 +779,7 @@
         padding-top: 4px;
     }
 
+    /* --- Floating Today Button --- */
     .floating-today-btn {
         position: absolute;
         top: 0.5rem;
@@ -790,8 +792,13 @@
         border-radius: 9999px;
         border: none;
         font-weight: 600;
-        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
         cursor: pointer;
+        transition: background-color 0.2s;
+    }
+
+    .floating-today-btn:hover {
+        background-color: var(--c-blue-500);
     }
 
     /* --- SIDEBAR & PIN --- */
@@ -827,8 +834,8 @@
     }
 
     .pin-icon-svg {
-        width: 14px;
-        height: 14px;
+        width: 1rem;
+        height: 1rem;
     }
 
     .pin-btn:active {

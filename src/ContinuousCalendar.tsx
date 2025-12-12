@@ -628,8 +628,8 @@ const WeekRow: React.FC<WeekRowProps> = ({
 
                 <div className="svg-layer">
                     <svg viewBox="0 -2 700 100" className="svg-content" preserveAspectRatio="none">
-                        {borderPath && <path d={borderPath} fill="none" stroke="black" strokeWidth="4" strokeLinejoin="round" />}
-                        {separatorPath && <path d={separatorPath} fill="none" stroke="black" strokeWidth="1" strokeDasharray="6 8" strokeLinecap="round" />}
+                        {borderPath && <path d={borderPath} fill="none" stroke="var(--text-normal)" strokeWidth="4" strokeLinejoin="round" />}
+                        {separatorPath && <path d={separatorPath} fill="none" stroke="var(--text-normal)" strokeWidth="1" strokeDasharray="6 8" strokeLinecap="round" />}
                     </svg>
                 </div>
             </div>
