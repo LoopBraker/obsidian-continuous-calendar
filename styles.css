@@ -320,10 +320,11 @@
     .today-marker {
         position: absolute;
         inset: 1px;
-        border: 2px solid var(--c-blue-500);
+        border: none;
         border-radius: 6px;
         pointer-events: none;
         z-index: 5;
+        box-shadow: 0 0 0 2px var(--c-slate-400);
     }
 
     /* --- DOT AREA --- */
