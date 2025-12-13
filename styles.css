@@ -151,6 +151,7 @@
 
     .week-num-text.is-inactive {
         color: var(--text-faint);
+        opacity: 0.2;
     }
 
     .week-num-col.selected .week-num-text {
@@ -977,5 +978,36 @@
 
     .day-detail-card .close-btn:hover {
         color: var(--text-normal);
+    }
+
+
+
+    /* --- INACTIVE STATE STYLING --- */
+
+    /* 1. Reduce opacity for the entire content when inactive */
+    .day-cell.is-inactive-cell .range-bar-area,
+    .day-cell.is-inactive-cell .dot-area {
+        opacity: 0.2;
+        /* Makes bars and dots faded */
+        filter: grayscale(0.5);
+        /* Optional: makes colors less vibrant */
+    }
+
+    /* 2. Specific fix for the Range Bars */
+    .day-cell.is-inactive-cell .range-bar {
+        border-color: transparent !important;
+        /* Hides borders if they look messy */
+    }
+
+    /* 3. Specific fix for the Dots/Icons */
+    .day-cell.is-inactive-cell .tag-symbol,
+    .day-cell.is-inactive-cell .dot-indicator {
+        opacity: 0.5;
+        /* Maybe keep dots slightly more visible than bars */
+    }
+
+    /* 4. Specific fix for the Range Overflow (Triangles/Dots) */
+    .day-cell.is-inactive-cell .range-overflow-container {
+        opacity: 0.3;
     }
 }

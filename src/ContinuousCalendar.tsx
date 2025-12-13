@@ -273,8 +273,11 @@ const DayCell: React.FC<DayCellProps> = ({
     if (isDailyNote) numClass += ' is-daily-note';
     if (isCellSelected) numClass += ' engaged range-start-engaged';
 
+    // Create a variable for the container class
+    const containerClass = `day-cell ${!isActive ? 'is-inactive-cell' : ''}`;
+
     return (
-        <div className="day-cell" onClick={() => onCellClick(date)}>
+        <div className={containerClass} onClick={() => onCellClick(date)}>
             <div className="cell-content">
                 <div className="top-content">
                     <span
