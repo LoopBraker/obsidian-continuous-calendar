@@ -531,6 +531,7 @@
         justify-content: flex-start;
         padding-top: 1rem;
         padding-left: 0.5rem;
+        pointer-events: none;
     }
 
     .month-label {
@@ -874,6 +875,7 @@
         align-items: flex-start;
         gap: 0.25rem;
         width: 100%;
+        pointer-events: auto;
     }
 
     .month-header-row {
