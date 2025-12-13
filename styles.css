@@ -18,7 +18,55 @@
     --c-blue-50: #eff6ff;
     --c-blue-50-50: rgba(239, 246, 255, 0.5);
 
-    --cell-height: 55px;
+    /* ───────── Lower (micro) ───────── */
+    --phi--4: 2px;
+    /* 0.146 × 16 */
+    --phi--3: 4px;
+    /* 0.236 × 16 */
+    --phi--2: 6px;
+    /* 0.382 × 16 */
+    --phi--1: 10px;
+    /* 0.618 × 16 */
+    --phi-0: 16px;
+    /* 1 × 16 */
+
+    /* ───────── Core UI ───────── */
+    --phi-1: 26px;
+    /* 1.618 × 16 */
+    --phi-2: 42px;
+    /* 2.618 × 16 */
+    --phi-3: 68px;
+    /* 4.236 × 16 */
+    --phi-4: 110px;
+    /* 6.854 × 16 */
+    --phi-5: 177px;
+    /* 11.090 × 16 */
+    --phi-6: 287px;
+    /* 17.944 × 16 */
+    --phi-7: 465px;
+    /* 29.034 × 16 */
+
+    /* ───────── Fractional (φ⁷ → φ⁸) ───────── */
+    --phi-7-25: 554px;
+    /* φ⁷·²⁵ */
+    --phi-7-5: 578px;
+    /* φ⁷·⁵ */
+    --phi-7-75: 630px;
+    /* φ⁷·⁷⁵ */
+    --phi-7-9: 671px;
+    /* φ⁷·⁹ */
+
+    /* ───────── Very Large / Layout Math ───────── */
+    --phi-8: 752px;
+    --phi-9: 1216px;
+    --phi-10: 1968px;
+    --phi-11: 3184px;
+    --phi-12: 5152px;
+    --phi-13: 8336px;
+    --phi-14: 13488px;
+    --phi-15: 21840px;
+
+    --cell-height: var(--phi-3);
     /* INCREASED to fit ranges */
     --range-bar-height: 4px;
     --range-bar-spacing: 1px;
@@ -41,7 +89,8 @@
         background-color: var(--background-primary);
         display: flex;
         flex-direction: column;
-        max-width: 34rem;
+        max-width: var(--phi-7-25);
+        min-width: 370px;
         /* Widened slightly for breathing room */
         margin: 0 auto;
         box-shadow: var(--shadow-2xl);
@@ -298,18 +347,19 @@
     .day-number.is-daily-note {
         text-decoration: underline;
         text-decoration-thickness: 2px;
-        text-decoration-color: var(--interactive-accent);
-        text-underline-offset: 2px;
+        text-decoration-color: var(--text-normal);
+        text-underline-offset: var(--phi--4);
     }
 
     .day-number.has-holiday {
         color: white;
+        padding-bottom: var(--phi--4);
         /* text-shadow: 0 0 2px rgba(0, 0, 0, 0.2); */
     }
 
     /* has holiday and daily note */
     .day-number.has-holiday.is-daily-note {
-        padding-bottom: 2px;
+        text-decoration-color: white;
     }
 
     /* Holiday and inactive */
@@ -338,7 +388,7 @@
     .dot-area {
         flex: 0 0 10px;
         text-align: center;
-        margin: 1px 0;
+        margin: var(--phi--2) 0;
         height: 10px;
         min-height: 10px;
         width: 100%;
@@ -349,20 +399,20 @@
     }
 
     .dot-indicator {
-        width: 5px;
-        height: 5px;
+        width: var(--phi--2);
+        height: var(--phi--2);
         margin: 0 1px;
         border-radius: 50%;
     }
 
     .tag-symbol {
-        font-size: 8px;
+        font-size: var(--phi--2);
         margin: 0 1px;
         text-shadow: 0 0 3px var(--c-gray-400);
     }
 
     .dot-overflow {
-        font-size: 6px;
+        font-size: var(--phi--1);
         color: var(--c-blue-600);
         font-weight: bold;
     }
