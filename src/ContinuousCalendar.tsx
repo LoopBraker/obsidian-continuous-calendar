@@ -54,7 +54,14 @@ const ICON_WIDTH = 5;
 const GAP_WIDTH = 2;
 const OVERFLOW_MIN_WIDTH = 20;
 
-const DotArea = ({ symbols }: { symbols: Array<{ symbol?: string; color?: string }> }) => {
+// 1. Add isCompact to props
+const DotArea = ({
+    symbols,
+    isCompact = false
+}: {
+    symbols: Array<{ symbol?: string; color?: string }>;
+    isCompact?: boolean;
+}) => {
     const containerRef = useRef<HTMLDivElement>(null);
     const [visibleCount, setVisibleCount] = useState(symbols.length);
 
@@ -66,14 +73,19 @@ const DotArea = ({ symbols }: { symbols: Array<{ symbol?: string; color?: string
             setVisibleCount(0);
             return;
         }
-        let maxFit = Math.floor((containerWidth + GAP_WIDTH) / (ICON_WIDTH + GAP_WIDTH));
+
+        // In compact mode, items might be smaller (e.g., 4px dots), 
+        // but sticking to standard math is safer to avoid overcrowding.
+        let itemWidth = ICON_WIDTH;
+
+        let maxFit = Math.floor((containerWidth + GAP_WIDTH) / (itemWidth + GAP_WIDTH));
         maxFit = Math.max(0, maxFit);
 
         if (maxFit >= totalSymbols) {
             setVisibleCount(totalSymbols);
         } else {
             const availableForIcons = containerWidth - OVERFLOW_MIN_WIDTH - GAP_WIDTH;
-            let iconsToShow = Math.floor((availableForIcons + GAP_WIDTH) / (ICON_WIDTH + GAP_WIDTH));
+            let iconsToShow = Math.floor((availableForIcons + GAP_WIDTH) / (itemWidth + GAP_WIDTH));
             iconsToShow = Math.max(0, iconsToShow);
             setVisibleCount(iconsToShow);
         }
@@ -91,15 +103,28 @@ const DotArea = ({ symbols }: { symbols: Array<{ symbol?: string; color?: string
 
     return (
         <div ref={containerRef} className="dot-area">
-            {visibleSymbols.map((item, idx) => (
-                item.symbol ? (
-                    <span key={idx} className="tag-symbol" style={{ color: item.color || 'var(--text-muted)' }}>
-                        {item.symbol}
-                    </span>
-                ) : (
-                    <div key={idx} className="dot-indicator" style={{ backgroundColor: item.color }} />
-                )
-            ))}
+            {visibleSymbols.map((item, idx) => {
+                // 2. LOGIC CHANGE: 
+                // Only show the Icon/Character if a symbol exists AND we are NOT in compact mode.
+                const showAsSymbol = item.symbol && !isCompact;
+
+                if (showAsSymbol) {
+                    return (
+                        <span key={idx} className="tag-symbol" style={{ color: item.color || 'var(--text-muted)' }}>
+                            {item.symbol}
+                        </span>
+                    );
+                } else {
+                    // Otherwise, render as a simple colored dot
+                    return (
+                        <div
+                            key={idx}
+                            className="dot-indicator"
+                            style={{ backgroundColor: item.color || 'var(--interactive-accent)' }}
+                        />
+                    );
+                }
+            })}
             {overflowCount > 0 && (
                 <span className="dot-overflow">+{overflowCount}</span>
             )}
@@ -352,12 +377,14 @@ const DayCell: React.FC<DayCellProps> = ({
                 {isCompact ? (
                     /* Compact mode: unified combined area for dots + ranges */
                     <div className="compact-combined-area">
-                        {hasDots && <DotArea symbols={displaySymbols} />}
+                        {/* PASS isCompact=true HERE */}
+                        {hasDots && <DotArea symbols={displaySymbols} isCompact={true} />}
                         {hasRanges && <RangeBarArea dateKey={dateKey} indexService={indexService} isCompact={true} />}
                     </div>
                 ) : (
                     /* Normal mode: separate areas for dots and ranges */
                     <>
+                        {/* isCompact defaults to false here */}
                         {displaySymbols.length > 0 && <DotArea symbols={displaySymbols} />}
                         <RangeBarArea dateKey={dateKey} indexService={indexService} isCompact={false} />
                     </>
