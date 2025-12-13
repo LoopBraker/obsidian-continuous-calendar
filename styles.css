@@ -1075,7 +1075,7 @@
 
     /* 1. Reduce cell height */
     .calendar-container.is-compact-mode {
-        --cell-height: 42px;
+        --cell-height: 36px;
     }
 
     /* 2. Adjust Day Number */
@@ -1126,7 +1126,7 @@
 */
     .range-compact-dot {
         width: 4px;
-        height: 4px;
+        height: 2px;
         border-radius: 1px;
         /* Square with soft corners */
         flex-shrink: 0;
@@ -1149,6 +1149,7 @@
         min-height: 6px;
         margin: 0;
         padding: 0;
+        padding-top: 3px;
         align-items: center;
     }
 
