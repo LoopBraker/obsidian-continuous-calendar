@@ -259,7 +259,7 @@
 
     .day-number {
         display: inline-block;
-        font-size: 1rem;
+        font-size: 1em;
         font-weight: 500;
         padding: 0px 4px;
         border-radius: 4px;
@@ -273,7 +273,7 @@
     }
 
     .day-number.is-active {
-        color: var(--color-grey-text);
+        color: var(--text-normal);
     }
 
     .day-number.is-inactive {
@@ -304,7 +304,12 @@
 
     .day-number.has-holiday {
         color: white;
-        text-shadow: 0 0 2px rgba(0, 0, 0, 0.2);
+        /* text-shadow: 0 0 2px rgba(0, 0, 0, 0.2); */
+    }
+
+    /* has holiday and daily note */
+    .day-number.has-holiday.is-daily-note {
+        padding-bottom: 2px;
     }
 
     /* Holiday and inactive */
@@ -409,8 +414,8 @@
 
     /* Emergence (Triangular styling) */
     .range-bar.range-emergence {
-        clip-path: polygon(4px 0, 100% 0, 100% 100%, 4px 100%, 0 50%);
-        margin-left: 0;
+        /* clip-path: polygon(4px 0, 100% 0, 100% 100%, 4px 100%, 0 50%); */
+        margin-left: 1px;
     }
 
     /* Overflow Dots in Range Slot */
