@@ -1065,4 +1065,101 @@
     .day-cell.is-inactive-cell .range-overflow-container {
         opacity: 0.3;
     }
+
+    /* ==========================================
+   COMPACT MODE STYLES
+   Triggered when container width <= 420px
+   ========================================== */
+
+    /* 1. Reduce cell height */
+    .calendar-container.is-compact-mode {
+        --cell-height: 42px;
+    }
+
+    /* 2. Adjust Day Number */
+    .calendar-container.is-compact-mode .top-content {
+        flex: 0 0 16px;
+        height: 16px;
+        min-height: 16px;
+        padding-top: 1px;
+        font-size: 0.85em;
+    }
+
+    /* 
+   3. Combined Area (The stack container) 
+   Stacks DotArea (Top) and RangeArea (Bottom) vertically
+*/
+    .calendar-container.is-compact-mode .compact-combined-area {
+        display: flex;
+        flex-direction: column;
+        flex: 1;
+        width: 100%;
+        justify-content: flex-end;
+        gap: 2px;
+        /* Small gap between the two rows of dots */
+        padding-bottom: 2px;
+    }
+
+    /* 
+   4. Range Dots Container 
+   Mimics the DotArea layout: Centered row of items
+*/
+    .range-bar-area.compact-mode-dots {
+        display: flex;
+        flex-direction: row;
+        align-items: center;
+        justify-content: center;
+        width: 100%;
+        height: 6px;
+        /* Fixed height for consistency */
+        gap: 2px;
+        /* Space between dots */
+        margin: 0;
+    }
+
+    /* 
+   5. Range Dot Style 
+   DISTINCTION: We use slight border-radius (Square-ish) for Ranges
+   to distinguish them from the fully circular Task dots.
+*/
+    .range-compact-dot {
+        width: 4px;
+        height: 4px;
+        border-radius: 1px;
+        /* Square with soft corners */
+        flex-shrink: 0;
+    }
+
+    /* Overflow (+) indicator for ranges */
+    .range-compact-overflow-dot {
+        font-size: 7px;
+        line-height: 1;
+        color: var(--c-blue-600);
+        font-weight: 700;
+    }
+
+    /* 
+   6. Task Dot Adjustments (Existing DotArea)
+   Ensure they align nicely with the ranges below
+*/
+    .calendar-container.is-compact-mode .dot-area {
+        height: 6px;
+        min-height: 6px;
+        margin: 0;
+        padding: 0;
+        align-items: center;
+    }
+
+    .calendar-container.is-compact-mode .dot-indicator {
+        width: 4px;
+        height: 4px;
+        border-radius: 50%;
+        /* Tasks remain perfect circles */
+        margin: 0 1px;
+    }
+
+    .calendar-container.is-compact-mode .tag-symbol {
+        font-size: 6px;
+        line-height: 6px;
+    }
 }

@@ -50,7 +50,7 @@ const convertTintToTextColor = (color: string | undefined): string | undefined =
 // COMPONENT: DotArea
 // ==========================================
 
-const ICON_WIDTH = 10;
+const ICON_WIDTH = 5;
 const GAP_WIDTH = 2;
 const OVERFLOW_MIN_WIDTH = 20;
 
@@ -111,13 +111,63 @@ const DotArea = ({ symbols }: { symbols: Array<{ symbol?: string; color?: string
 // COMPONENT: RangeBarArea
 // ==========================================
 
-const RangeBarArea = ({ dateKey, indexService }: { dateKey: string, indexService: IndexService }) => {
+interface RangeBarAreaProps {
+    dateKey: string;
+    indexService: IndexService;
+    isCompact?: boolean;
+}
+
+const RangeBarArea = ({ dateKey, indexService, isCompact = false }: RangeBarAreaProps) => {
     const ranges = indexService.getRangesForDate(dateKey);
     const rangeSlots = indexService.getRangeSlots(dateKey);
     const settings = indexService.settings;
 
     if (ranges.length === 0) return null;
 
+    // --- COMPACT MODE: DOTS REPRESENTATION ---
+    if (isCompact) {
+        // Limit to 5 dots max to fit the small cell
+        const MAX_DOTS = 4;
+        const visibleRanges = ranges.slice(0, MAX_DOTS);
+        const overflowCount = ranges.length - MAX_DOTS;
+
+        return (
+            <div className="range-bar-area compact-mode-dots">
+                {visibleRanges.map((range: any, idx: number) => {
+                    // 1. Resolve Color
+                    let rangeColor = range.color;
+                    if (!rangeColor && range.tags && settings?.tagAppearance) {
+                        for (const tag of range.tags) {
+                            if (settings.tagAppearance[tag]?.color) {
+                                rangeColor = settings.tagAppearance[tag].color;
+                                break;
+                            }
+                        }
+                    }
+                    const finalColor = rangeColor || settings?.defaultBarColor || 'var(--interactive-accent)';
+
+                    // 2. Determine Shape (Optional: visual cue for Start/End)
+                    // We stick to a simple square for compactness, but you could add classes here
+
+                    return (
+                        <div
+                            key={idx}
+                            className="range-compact-dot"
+                            style={{ backgroundColor: finalColor }}
+                            title={range.name}
+                        />
+                    );
+                })}
+
+                {/* Overflow Dot (if any) */}
+                {overflowCount > 0 && (
+                    <div className="range-compact-overflow-dot" title={`${overflowCount} more`}>+</div>
+                )}
+            </div>
+        );
+    }
+
+    // --- NORMAL MODE: BAR REPRESENTATION (Unchanged) ---
     const hasForcedOverflow = ranges.some((r: any) => rangeSlots.get(r.path) === undefined);
     const hasOverflow = ranges.length > 4 || hasForcedOverflow;
 
@@ -152,7 +202,6 @@ const RangeBarArea = ({ dateKey, indexService }: { dateKey: string, indexService
                                     if (shapeClass === 'range-overflow-dot') {
                                         dotStyle.backgroundColor = finalDotColor;
                                     } else if (shapeClass === 'range-triangle-start') {
-                                        //this will be like a mini range bar start, i mean with the left border color tint and background text color
                                         dotStyle.borderLeftColor = finalDotColor;
                                         dotStyle.borderTopColor = finalDotColor;
                                         dotStyle.borderBottomColor = finalDotColor;
@@ -224,6 +273,7 @@ interface DayCellProps {
     isToday: boolean;
     isSelected: boolean;
     isCellSelected: boolean;
+    isCompact: boolean;
     onNumberClick: (d: Date, e: React.MouseEvent) => void;
     onCellClick: (d: Date) => void;
 }
@@ -235,6 +285,7 @@ const DayCell: React.FC<DayCellProps> = ({
     isToday,
     isSelected,
     isCellSelected,
+    isCompact,
     onNumberClick,
     onCellClick
 }) => {
@@ -276,8 +327,14 @@ const DayCell: React.FC<DayCellProps> = ({
     // Create a variable for the container class
     const containerClass = `day-cell ${!isActive ? 'is-inactive-cell' : ''}`;
 
+    // In compact mode, combine dots and ranges into a unified area
+    const ranges = indexService.getRangesForDate(dateKey);
+    const hasRanges = ranges.length > 0;
+    const hasDots = displaySymbols.length > 0;
+    const totalItems = displaySymbols.length + ranges.length;
+
     return (
-        <div className={containerClass} onClick={() => onCellClick(date)}>
+        <div className={`${containerClass}${isCompact ? ' is-compact' : ''}`} onClick={() => onCellClick(date)}>
             <div className="cell-content">
                 <div className="top-content">
                     <span
@@ -292,8 +349,19 @@ const DayCell: React.FC<DayCellProps> = ({
                         {date.getDate()}
                     </span>
                 </div>
-                {displaySymbols.length > 0 && <DotArea symbols={displaySymbols} />}
-                <RangeBarArea dateKey={dateKey} indexService={indexService} />
+                {isCompact ? (
+                    /* Compact mode: unified combined area for dots + ranges */
+                    <div className="compact-combined-area">
+                        {hasDots && <DotArea symbols={displaySymbols} />}
+                        {hasRanges && <RangeBarArea dateKey={dateKey} indexService={indexService} isCompact={true} />}
+                    </div>
+                ) : (
+                    /* Normal mode: separate areas for dots and ranges */
+                    <>
+                        {displaySymbols.length > 0 && <DotArea symbols={displaySymbols} />}
+                        <RangeBarArea dateKey={dateKey} indexService={indexService} isCompact={false} />
+                    </>
+                )}
             </div>
             {isToday && <div className="today-marker" />}
         </div>
@@ -490,6 +558,7 @@ interface WeekRowProps {
     onCellClick: (date: Date) => void;
     onNumberClick: (date: Date, e: React.MouseEvent) => void;
     currentYear?: number;
+    isCompact?: boolean;
 }
 
 const WeekRow: React.FC<WeekRowProps> = ({
@@ -510,7 +579,8 @@ const WeekRow: React.FC<WeekRowProps> = ({
     selection,
     onCellClick,
     onNumberClick,
-    currentYear
+    currentYear,
+    isCompact = false
 }) => {
     // --- Active Logic ---
     const checkIsActive = (date: Date) => {
@@ -621,6 +691,7 @@ const WeekRow: React.FC<WeekRowProps> = ({
                                     isToday={isToday}
                                     isSelected={!!isNumberSelected}
                                     isCellSelected={!!isCellSelected}
+                                    isCompact={isCompact}
                                     onNumberClick={onNumberClick}
                                     onCellClick={onCellClick}
                                 />
@@ -832,6 +903,7 @@ export const ContinuousCalendar = (props: ContinuousCalendarProps) => {
     const { index, app, onOpenNote, onCreateRange, onYearChange } = props;
 
     const virtuosoRef = useRef<VirtuosoHandle>(null);
+    const containerRef = useRef<HTMLDivElement>(null);
 
     const [currentYear, setCurrentYear] = useState<number>(new Date().getFullYear());
     const [minWeeksToFill, setMinWeeksToFill] = useState<number>(20);
@@ -844,6 +916,27 @@ export const ContinuousCalendar = (props: ContinuousCalendarProps) => {
     const [monthViewDate, setMonthViewDate] = useState<Date>(new Date());
     const [pendingScrollDate, setPendingScrollDate] = useState<Date | null>(null);
     const [pinnedMonth, setPinnedMonth] = useState<string | null>(null);
+
+    // Compact mode state - triggers when container width approaches min-width
+    const COMPACT_MODE_THRESHOLD = 420; // Width at which we switch to compact mode
+    const [isCompact, setIsCompact] = useState<boolean>(false);
+
+    // Detect compact mode based on container width
+    useLayoutEffect(() => {
+        const checkCompactMode = () => {
+            if (containerRef.current) {
+                const width = containerRef.current.offsetWidth;
+                setIsCompact(width <= COMPACT_MODE_THRESHOLD);
+            }
+        };
+
+        checkCompactMode();
+        const resizeObserver = new ResizeObserver(() => checkCompactMode());
+        if (containerRef.current) {
+            resizeObserver.observe(containerRef.current);
+        }
+        return () => resizeObserver.disconnect();
+    }, []);
 
     useEffect(() => {
         const updateWeeks = () => {
@@ -1084,7 +1177,7 @@ export const ContinuousCalendar = (props: ContinuousCalendarProps) => {
     }, []);
 
     return (
-        <div className="calendar-container" style={{ position: 'relative' }}>
+        <div ref={containerRef} className={`calendar-container${isCompact ? ' is-compact-mode' : ''}`} style={{ position: 'relative' }}>
             {selection?.type === 'cell' && (
                 <div
                     className="day-detail-overlay"
@@ -1161,6 +1254,7 @@ export const ContinuousCalendar = (props: ContinuousCalendarProps) => {
                                     onCellClick={handleCellClick}
                                     onNumberClick={handleNumberClick}
                                     currentYear={currentYear}
+                                    isCompact={isCompact}
                                 />
                             )}
                         />
