@@ -850,6 +850,7 @@ interface TraditionalMonthViewProps {
     onCellClick: (date: Date) => void;
     onNumberClick: (date: Date, e: React.MouseEvent) => void;
     indexService: IndexService;
+    isCompact: boolean;
 }
 
 const TraditionalMonthView: React.FC<TraditionalMonthViewProps> = ({
@@ -862,7 +863,8 @@ const TraditionalMonthView: React.FC<TraditionalMonthViewProps> = ({
     selection,
     onCellClick,
     onNumberClick,
-    indexService
+    indexService,
+    isCompact
 }) => {
     const monthNames = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
     const weeks = useMemo(() => getWeeksForSingleMonth(currentDate), [currentDate]);
@@ -907,6 +909,7 @@ const TraditionalMonthView: React.FC<TraditionalMonthViewProps> = ({
                         onCellClick={onCellClick}
                         onNumberClick={onNumberClick}
                         indexService={indexService}
+                        isCompact={isCompact}
                     />
                 ))}
             </div>
@@ -1304,6 +1307,7 @@ export const ContinuousCalendar = (props: ContinuousCalendarProps) => {
                         onCellClick={handleCellClick}
                         onNumberClick={handleNumberClick}
                         indexService={index}
+                        isCompact={isCompact}
                     />
                 )}
             </div>
