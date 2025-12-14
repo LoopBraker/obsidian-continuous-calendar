@@ -110,6 +110,10 @@
         padding-right: 15px;
     }
 
+    .calendar-header.month-mode {
+        padding-right: 0px;
+    }
+
     .header-row {
         display: flex;
         width: 100%;
@@ -130,8 +134,8 @@
         flex: 1;
         display: grid;
         grid-template-columns: repeat(7, 1fr);
-        padding-top: 0.75rem;
-        padding-bottom: 0.75rem;
+        padding-top: 2px;
+        padding-bottom: 2px;
     }
 
     .header-day-label {
@@ -749,6 +753,7 @@
         text-transform: uppercase;
         letter-spacing: 0.05em;
         line-height: 1;
+        min-width: 8rem;
         /* Tight spacing */
     }
 
@@ -1126,7 +1131,7 @@
 */
     .range-compact-dot {
         width: 4px;
-        height: 2px;
+        height: 3px;
         border-radius: 1px;
         /* Square with soft corners */
         flex-shrink: 0;
@@ -1134,9 +1139,9 @@
 
     /* Overflow (+) indicator for ranges */
     .range-compact-overflow-dot {
-        font-size: 7px;
+        font-size: 8px;
         line-height: 1;
-        color: var(--c-blue-600);
+        color: var(--interactive-accent);
         font-weight: 700;
     }
 

@@ -745,7 +745,7 @@ const WeekRow: React.FC<WeekRowProps> = ({
                                 fill="none"
                                 stroke="var(--text-normal)"
                                 strokeWidth="1"
-                                strokeDasharray="6 8"
+                                strokeDasharray={isCompact ? '10 6' : '6 8'} //the first number is the length of the dash, the second is the length of the gap
                                 strokeLinecap="round"
                                 vectorEffect="non-scaling-stroke"
                             />
@@ -880,7 +880,7 @@ const TraditionalMonthView: React.FC<TraditionalMonthViewProps> = ({
     return (
         <div className="month-view-container">
             <div className="month-view-header">
-                <button className="back-btn" onClick={onClose}>&larr; Back to list</button>
+                <button className="back-btn" onClick={onClose}>&larr; {isCompact ? '' : 'Back to list'}</button>
                 <div className="month-nav-controls">
                     <button className="nav-arrow" onClick={() => handleNav(-1)}>&lt;</button>
                     <button className="nav-dot" onClick={() => onMonthChange(new Date())} title="Go to Today"><div className="dot-inner"></div></button>
@@ -889,6 +889,18 @@ const TraditionalMonthView: React.FC<TraditionalMonthViewProps> = ({
                 <div className="month-view-title">
                     <span className="title-month">{monthNames[currentDate.getMonth()]}</span>
                     <span className="title-year">{currentDate.getFullYear()}</span>
+                </div>
+            </div>
+            {/* WEEKDAY HEADER (NEW POSITION) */}
+            <div className="calendar-header month-mode">
+                <div className="header-row">
+                    <div className="header-spacer-left"></div>
+                    <div className="header-days-grid">
+                        {['M', 'T', 'W', 'T', 'F', 'S', 'S'].map((d, i) => (
+                            <div key={i} className="header-day-label">{d}</div>
+                        ))}
+                    </div>
+                    <div className="header-spacer-right"></div>
                 </div>
             </div>
             <div className="month-view-list-wrapper">
@@ -1236,17 +1248,19 @@ export const ContinuousCalendar = (props: ContinuousCalendarProps) => {
                     />
                 </div>
             )}
-            <div className="calendar-header">
-                <div className="header-row">
-                    <div className="header-spacer-left"></div>
-                    <div className="header-days-grid">
-                        {['M', 'T', 'W', 'T', 'F', 'S', 'S'].map((d, i) => (
-                            <div key={i} className="header-day-label">{d}</div>
-                        ))}
+            {viewMode === 'Continuous' && (
+                <div className="calendar-header">
+                    <div className="header-row">
+                        <div className="header-spacer-left"></div>
+                        <div className="header-days-grid">
+                            {['M', 'T', 'W', 'T', 'F', 'S', 'S'].map((d, i) => (
+                                <div key={i} className="header-day-label">{d}</div>
+                            ))}
+                        </div>
+                        <div className="header-spacer-right"></div>
                     </div>
-                    <div className="header-spacer-right"></div>
                 </div>
-            </div>
+            )}
 
             <div className="calendar-list" style={{ position: 'relative' }}>
                 {viewMode === 'Continuous' ? (
