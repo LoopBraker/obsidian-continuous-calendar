@@ -421,7 +421,7 @@
     }
 
     .dot-overflow {
-        font-size: var(--phi--1);
+        font-size: 10px;
         color: var(--c-blue-600);
         font-weight: bold;
     }
@@ -1125,6 +1125,7 @@
         justify-content: center;
         width: 100%;
         height: 6px;
+        min-width: 6px !important;
         /* Fixed height for consistency */
         gap: 2px;
         /* Space between dots */
@@ -1157,18 +1158,19 @@
    Ensure they align nicely with the ranges below
 */
     .calendar-container.is-compact-mode .dot-area {
-        height: 6px;
-        min-height: 6px;
+        height: 7px;
+        min-height: 7px;
         margin: 0;
         padding: 0;
-        padding-top: 5px;
+        padding-top: 3px;
         align-items: center;
-        flex: 1 1 auto;
+        /* flex: 0 0 10px !important; */
     }
 
     .calendar-container.is-compact-mode .dot-indicator {
-        width: 4px;
-        height: 4px;
+        width: 5px;
+        height: 5px;
+        min-width: 5px !important;
         border-radius: 50%;
         /* Tasks remain perfect circles */
         margin: 0 1px;

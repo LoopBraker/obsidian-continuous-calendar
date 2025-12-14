@@ -51,8 +51,8 @@ const convertTintToTextColor = (color: string | undefined): string | undefined =
 // ==========================================
 
 // Define the widths clearly here
-const COMPACT_ICON_WIDTH = 4;
-const NORMAL_ICON_WIDTH = 10;
+const COMPACT_ICON_WIDTH = 5;
+const NORMAL_ICON_WIDTH = 6;
 const GAP_WIDTH = 2;
 const OVERFLOW_MIN_WIDTH = 20;
 
