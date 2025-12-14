@@ -702,10 +702,11 @@ const WeekRow: React.FC<WeekRowProps> = ({
                 <div className="grid-layer background">
                     {weekData.map((d, i) => {
                         const isWeekend = d.date.getDay() === 0 || d.date.getDay() === 6;
+                        const isActive = checkIsActive(d.date);
                         return (
                             <div
                                 key={i}
-                                className={`day-cell-bg ${isWeekend ? 'weekend' : ''}`}
+                                className={`day-cell-bg ${isWeekend ? 'weekend' : ''} ${!isActive ? 'is-inactive' : ''}`}
                                 onClick={() => onCellClick(d.date)}
                             />
                         );

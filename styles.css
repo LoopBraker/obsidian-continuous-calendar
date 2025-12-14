@@ -102,7 +102,7 @@
 
     /* --- HEADER --- */
     .calendar-header {
-        background-color: var(--c-white);
+        background-color: var(--background-primary);
         z-index: 50;
         border-bottom: 1px solid var(--c-gray-200);
         box-shadow: var(--shadow-sm);
@@ -140,7 +140,7 @@
 
     .header-day-label {
         text-align: center;
-        font-weight: 700;
+        font-weight: 500;
         color: var(--c-gray-400);
         font-size: 0.875rem;
     }
@@ -243,6 +243,10 @@
         transition: background-color 0.2s;
     }
 
+    .day-cell-bg.is-inactive {
+        border-bottom: none;
+    }
+
     /* Hover style for the cell */
     .day-cell-fg:hover {
         background-color: var(--c-blue-50-50);
@@ -261,9 +265,12 @@
     }
 
     .day-cell-bg.weekend {
-        background-color: rgba(249, 250, 251, 0.5);
+        background-color: var(--background-secondary);
     }
 
+    .day-cell-bg.weekend.is-inactive {
+        background-color: var(--background-primary);
+    }
 
     /* Foreground Layer (Content) */
     .grid-layer.foreground {
@@ -854,6 +861,7 @@
         flex: 1;
         overflow-y: auto;
         padding-top: 4px;
+        background-color: var(--background-primary);
     }
 
     /* --- Floating Today Button --- */
