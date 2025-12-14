@@ -308,7 +308,7 @@
 
     .day-number {
         display: inline-block;
-        font-size: 1em;
+        font-size: 1rem;
         font-weight: 500;
         padding: 0px 4px;
         border-radius: 4px;
@@ -346,14 +346,14 @@
     /* Daily Note & Holiday Styles */
     .day-number.is-daily-note {
         text-decoration: underline;
-        text-decoration-thickness: 2px;
+        text-decoration-thickness: 1px;
         text-decoration-color: var(--text-normal);
         text-underline-offset: var(--phi--4);
     }
 
     .day-number.has-holiday {
         color: white;
-        padding-bottom: var(--phi--4);
+        padding-bottom: 1px;
         /* text-shadow: 0 0 2px rgba(0, 0, 0, 0.2); */
     }
 
@@ -1075,7 +1075,7 @@
 
     /* 1. Reduce cell height */
     .calendar-container.is-compact-mode {
-        --cell-height: 36px;
+        --cell-height: 39px;
     }
 
     /* 2. Adjust Day Number */
@@ -1149,7 +1149,7 @@
         min-height: 6px;
         margin: 0;
         padding: 0;
-        padding-top: 3px;
+        padding-top: 5px;
         align-items: center;
     }
 
