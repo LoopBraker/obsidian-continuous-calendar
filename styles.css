@@ -220,7 +220,7 @@
 
     .grid-layer {
         display: grid;
-        grid-template-columns: repeat(7, 1fr);
+        grid-template-columns: repeat(7, minmax(0, 1fr)) !important;
         height: 100%;
         width: 100%;
         position: absolute;
@@ -296,6 +296,8 @@
         width: 100%;
         height: 100%;
         /* No padding to maximize range bar width */
+        min-width: 0;
+        overflow: hidden;
     }
 
     /* Top Content: Number */
@@ -396,10 +398,12 @@
         height: 10px;
         min-height: 10px;
         width: 100%;
+        max-width: 100%;
         display: flex;
         align-items: center;
         justify-content: center;
         overflow: hidden;
+        white-space: nowrap;
     }
 
     .dot-indicator {
@@ -413,6 +417,7 @@
         font-size: var(--phi--2);
         margin: 0 1px;
         text-shadow: 0 0 3px var(--c-gray-400);
+        flex-shrink: 0;
     }
 
     .dot-overflow {
@@ -1101,10 +1106,12 @@
         flex-direction: column;
         flex: 1;
         width: 100%;
+        max-width: 100%;
         justify-content: flex-end;
         gap: 2px;
         /* Small gap between the two rows of dots */
         padding-bottom: 2px;
+        overflow: hidden;
     }
 
     /* 
@@ -1130,9 +1137,9 @@
    to distinguish them from the fully circular Task dots.
 */
     .range-compact-dot {
-        width: 4px;
+        width: 5px;
         height: 3px;
-        border-radius: 1px;
+        border-radius: 2px;
         /* Square with soft corners */
         flex-shrink: 0;
     }
@@ -1156,6 +1163,7 @@
         padding: 0;
         padding-top: 5px;
         align-items: center;
+        flex: 1 1 auto;
     }
 
     .calendar-container.is-compact-mode .dot-indicator {

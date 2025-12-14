@@ -50,11 +50,12 @@ const convertTintToTextColor = (color: string | undefined): string | undefined =
 // COMPONENT: DotArea
 // ==========================================
 
-const ICON_WIDTH = 5;
+// Define the widths clearly here
+const COMPACT_ICON_WIDTH = 4;
+const NORMAL_ICON_WIDTH = 10;
 const GAP_WIDTH = 2;
 const OVERFLOW_MIN_WIDTH = 20;
 
-// 1. Add isCompact to props
 const DotArea = ({
     symbols,
     isCompact = false
@@ -63,38 +64,55 @@ const DotArea = ({
     isCompact?: boolean;
 }) => {
     const containerRef = useRef<HTMLDivElement>(null);
-    const [visibleCount, setVisibleCount] = useState(symbols.length);
+    const [visibleCount, setVisibleCount] = useState(0);
 
     const calculateVisibleCount = useCallback(() => {
         if (!containerRef.current) return;
+
+        // Because of the CSS fix (minmax(0, 1fr)), this will now report 
+        // the TRUE available space, not the stretched space.
         const containerWidth = containerRef.current.offsetWidth;
         const totalSymbols = symbols.length;
-        if (totalSymbols === 0) {
+
+        if (totalSymbols === 0 || containerWidth === 0) {
             setVisibleCount(0);
             return;
         }
 
-        // In compact mode, items might be smaller (e.g., 4px dots), 
-        // but sticking to standard math is safer to avoid overcrowding.
-        let itemWidth = ICON_WIDTH;
+        const itemWidth = isCompact ? COMPACT_ICON_WIDTH : NORMAL_ICON_WIDTH;
+        const itemTotalWidth = itemWidth + GAP_WIDTH;
 
-        let maxFit = Math.floor((containerWidth + GAP_WIDTH) / (itemWidth + GAP_WIDTH));
+        // 1. Calculate how many fit nicely
+        let maxFit = Math.floor((containerWidth + GAP_WIDTH) / itemTotalWidth);
         maxFit = Math.max(0, maxFit);
 
         if (maxFit >= totalSymbols) {
             setVisibleCount(totalSymbols);
         } else {
-            const availableForIcons = containerWidth - OVERFLOW_MIN_WIDTH - GAP_WIDTH;
-            let iconsToShow = Math.floor((availableForIcons + GAP_WIDTH) / (itemWidth + GAP_WIDTH));
+            // 2. Reserve space for the "+N" indicator
+            const availableForIcons = containerWidth - OVERFLOW_MIN_WIDTH;
+            let iconsToShow = Math.floor((availableForIcons + GAP_WIDTH) / itemTotalWidth);
             iconsToShow = Math.max(0, iconsToShow);
             setVisibleCount(iconsToShow);
         }
-    }, [symbols.length]);
+    }, [symbols.length, isCompact]);
 
     useLayoutEffect(() => {
-        calculateVisibleCount();
-        const resizeObserver = new ResizeObserver(() => calculateVisibleCount());
-        if (containerRef.current) resizeObserver.observe(containerRef.current);
+        // Reset to 0 to allow CSS to snap back if it was stretched
+        setVisibleCount(0);
+
+        // Wait for next frame to measure
+        requestAnimationFrame(() => {
+            calculateVisibleCount();
+        });
+    }, [isCompact, calculateVisibleCount, symbols.length]);
+
+    useLayoutEffect(() => {
+        if (!containerRef.current) return;
+        const resizeObserver = new ResizeObserver(() => {
+            calculateVisibleCount();
+        });
+        resizeObserver.observe(containerRef.current);
         return () => resizeObserver.disconnect();
     }, [calculateVisibleCount]);
 
@@ -104,10 +122,7 @@ const DotArea = ({
     return (
         <div ref={containerRef} className="dot-area">
             {visibleSymbols.map((item, idx) => {
-                // 2. LOGIC CHANGE: 
-                // Only show the Icon/Character if a symbol exists AND we are NOT in compact mode.
                 const showAsSymbol = item.symbol && !isCompact;
-
                 if (showAsSymbol) {
                     return (
                         <span key={idx} className="tag-symbol" style={{ color: item.color || 'var(--text-muted)' }}>
@@ -115,7 +130,6 @@ const DotArea = ({
                         </span>
                     );
                 } else {
-                    // Otherwise, render as a simple colored dot
                     return (
                         <div
                             key={idx}
@@ -152,7 +166,7 @@ const RangeBarArea = ({ dateKey, indexService, isCompact = false }: RangeBarArea
     // --- COMPACT MODE: DOTS REPRESENTATION ---
     if (isCompact) {
         // Limit to 5 dots max to fit the small cell
-        const MAX_DOTS = 4;
+        const MAX_DOTS = 3;
         const visibleRanges = ranges.slice(0, MAX_DOTS);
         const overflowCount = ranges.length - MAX_DOTS;
 
