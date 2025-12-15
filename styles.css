@@ -66,7 +66,7 @@
     --phi-14: 13488px;
     --phi-15: 21840px;
 
-    --cell-height: var(--phi-3);
+    --cell-height: 60px;
     /* INCREASED to fit ranges */
     --range-bar-height: 4px;
     --range-bar-spacing: 1px;
@@ -208,7 +208,7 @@
     }
 
     .week-num-col.selected .week-num-text {
-        color: var(--interactive-accent);
+        color: var(--text-accent);
         transform: scale(1.25);
     }
 
@@ -249,7 +249,7 @@
 
     /* Hover style for the cell */
     .day-cell-fg:hover {
-        background-color: var(--c-blue-50-50);
+        background-color: var(--text-selection);
         cursor: pointer;
         /* Light blue tint on hover */
     }
@@ -283,6 +283,7 @@
         height: 100%;
         width: 100%;
         position: relative;
+        border-radius: 5px;
     }
 
     /* --- DAY CELL INTERNAL STRUCTURE --- */
@@ -394,14 +395,14 @@
         border-radius: 6px;
         pointer-events: none;
         z-index: 5;
-        box-shadow: 0 0 0 1px var(--interactive-accent);
+        box-shadow: 0 0 0 1px var(--text-accent);
     }
 
     /* --- DOT AREA --- */
     .dot-area {
         flex: 0 0 10px;
         text-align: center;
-        margin: var(--phi--2) 0;
+        margin: 4px 0;
         height: 10px;
         min-height: 10px;
         width: 100%;
@@ -429,7 +430,7 @@
 
     .dot-overflow {
         font-size: 10px;
-        color: var(--interactive-accent);
+        color: var(--text-accent);
         font-weight: bold;
     }
 
@@ -500,23 +501,35 @@
     }
 
     .range-triangle-start {
-        width: 7px;
+        /* width: 7px;
         height: 4px;
         border-style: solid;
         border-width: 1px 1px 1px 3px;
         border-top-left-radius: 25%;
         border-bottom-left-radius: 25%;
-        background-color: transparent !important;
+        background-color: transparent !important; */
+        width: 7px;
+        height: 4px;
+        /* REQUIRED... pointing to the right */
+        clip-path: polygon(0 0,
+                5px 0,
+                7px 50%,
+                5px 100%,
+                0 100%);
     }
 
     .range-triangle-end {
-        width: 7px;
+        /* width: 7px;
         height: 4px;
         border-style: solid;
         border-width: 1px 3px 1px 1px;
         border-top-right-radius: 25%;
         border-bottom-right-radius: 25%;
-        background-color: transparent !important;
+        background-color: transparent !important; */
+        width: 7px;
+        height: 4px;
+        /* REQUIRED */
+        clip-path: polygon(2px 0, 100% 0, 100% 100%, 2px 100%, 0 50%);
     }
 
 
@@ -1024,12 +1037,12 @@
     }
 
     .day-detail-card .daily-note-btn.create-note {
-        background-color: var(--interactive-accent);
+        background-color: var(--text-accent);
         color: var(--text-on-accent);
     }
 
     .day-detail-card .daily-note-btn.create-note:hover {
-        background-color: var(--interactive-accent-hover);
+        background-color: var(--text-accent-hover);
     }
 
     .day-detail-card .daily-note-btn.open-note {
@@ -1157,7 +1170,7 @@
     .range-compact-overflow-dot {
         font-size: 8px;
         line-height: 1;
-        color: var(--interactive-accent);
+        color: var(--text-accent);
         font-weight: 700;
     }
 

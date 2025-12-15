@@ -244,14 +244,14 @@ const RangeBarArea = ({ dateKey, indexService, isCompact = false }: RangeBarArea
                                         dotStyle.borderLeftColor = finalDotColor;
                                         dotStyle.borderTopColor = finalDotColor;
                                         dotStyle.borderBottomColor = finalDotColor;
-                                        dotStyle.color = convertTintToTextColor(finalDotColor);
-                                        dotStyle.backgroundColor = convertTintToTextColor(finalDotColor);
+                                        dotStyle.color = finalDotColor;
+                                        dotStyle.backgroundColor = finalDotColor;
                                     } else if (shapeClass === 'range-triangle-end') {
                                         dotStyle.borderRightColor = finalDotColor;
                                         dotStyle.borderTopColor = finalDotColor;
                                         dotStyle.borderBottomColor = finalDotColor;
-                                        dotStyle.color = convertTintToTextColor(finalDotColor);
-                                        dotStyle.backgroundColor = convertTintToTextColor(finalDotColor);
+                                        dotStyle.color = finalDotColor;
+                                        dotStyle.backgroundColor = finalDotColor;
                                     }
 
                                     return <div key={idx} className={shapeClass} style={dotStyle} />;
