@@ -179,6 +179,7 @@
 
     .week-num-col:hover {
         background-color: var(--c-gray-50);
+        transform: scale(1.1);
     }
 
     .week-num-col.selected {
