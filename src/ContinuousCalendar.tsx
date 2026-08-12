@@ -764,52 +764,54 @@ const WeekRow: React.FC<WeekRowProps> = ({
                 </div>
             </div>
 
-            <div className="sidebar-col">
-                {shouldShowLabel && (
-                    <div className="month-label-group">
-                        <div className="month-header-row">
-                            <span
-                                className={`month-name ${viewMode === 'Continuous' ? 'clickable' : ''}`}
-                                onClick={() => {
-                                    if (viewMode === 'Continuous' && onMonthNameClick) {
-                                        onMonthNameClick(firstDayOfMonth.date);
-                                    }
-                                }}
-                            >
-                                {monthNames[firstDayOfMonth.date.getMonth()]}
-                            </span>
-                            {viewMode === 'Continuous' && onPinClick && firstDayOfMonth.date.getFullYear() <= (currentYear ?? today.getFullYear()) && (
-                                <button
-                                    className={`pin-btn ${isPinned ? 'pinned' : ''}`}
-                                    onClick={(e) => {
-                                        e.stopPropagation();
-                                        onPinClick(firstDayOfMonth.date);
+            {viewMode === 'Continuous' && (
+                <div className="sidebar-col">
+                    {shouldShowLabel && (
+                        <div className="month-label-group">
+                            <div className="month-header-row">
+                                <span
+                                    className={`month-name ${viewMode === 'Continuous' ? 'clickable' : ''}`}
+                                    onClick={() => {
+                                        if (viewMode === 'Continuous' && onMonthNameClick) {
+                                            onMonthNameClick(firstDayOfMonth.date);
+                                        }
                                     }}
-                                    title={isPinned ? "Unpin Month" : "Pin Month"}
                                 >
-                                    <svg viewBox="0 0 24 24" fill="currentColor" className="pin-icon-svg">
-                                        <path d="M16,12V4H17V2H7V4H8V12L6,14V16H11.2V22H12.8V16H18V14L16,12Z" />
-                                    </svg>
-                                </button>
+                                    {monthNames[firstDayOfMonth.date.getMonth()]}
+                                </span>
+                                {viewMode === 'Continuous' && onPinClick && firstDayOfMonth.date.getFullYear() <= (currentYear ?? today.getFullYear()) && (
+                                    <button
+                                        className={`pin-btn ${isPinned ? 'pinned' : ''}`}
+                                        onClick={(e) => {
+                                            e.stopPropagation();
+                                            onPinClick(firstDayOfMonth.date);
+                                        }}
+                                        title={isPinned ? "Unpin Month" : "Pin Month"}
+                                    >
+                                        <svg viewBox="0 0 24 24" fill="currentColor" className="pin-icon-svg">
+                                            <path d="M16,12V4H17V2H7V4H8V12L6,14V16H11.2V22H12.8V16H18V14L16,12Z" />
+                                        </svg>
+                                    </button>
+                                )}
+                            </div>
+                            {viewMode === 'Continuous' && (
+                                isRealCurrentMonth ? (
+                                    focusedMonths.size > 0 && (
+                                        <button onClick={resetFocus} className="btn-focus reset">RESET</button>
+                                    )
+                                ) : (
+                                    <button
+                                        onClick={() => toggleMonthFocus(firstDayOfMonth.date.getFullYear(), firstDayOfMonth.date.getMonth())}
+                                        className={`btn-focus ${isMonthFocused ? 'active' : 'inactive'}`}
+                                    >
+                                        {isMonthFocused ? 'Active' : 'Focus'}
+                                    </button>
+                                )
                             )}
                         </div>
-                        {viewMode === 'Continuous' && (
-                            isRealCurrentMonth ? (
-                                focusedMonths.size > 0 && (
-                                    <button onClick={resetFocus} className="btn-focus reset">RESET</button>
-                                )
-                            ) : (
-                                <button
-                                    onClick={() => toggleMonthFocus(firstDayOfMonth.date.getFullYear(), firstDayOfMonth.date.getMonth())}
-                                    className={`btn-focus ${isMonthFocused ? 'active' : 'inactive'}`}
-                                >
-                                    {isMonthFocused ? 'Active' : 'Focus'}
-                                </button>
-                            )
-                        )}
-                    </div>
-                )}
-            </div>
+                    )}
+                </div>
+            )}
         </div>
     );
 };
@@ -971,7 +973,6 @@ const TraditionalMonthView: React.FC<TraditionalMonthViewProps> = ({
                             <div key={i} className="header-day-label">{d}</div>
                         ))}
                     </div>
-                    <div className="header-spacer-right"></div>
                 </div>
             </div>
             <div className="month-view-list-wrapper">
