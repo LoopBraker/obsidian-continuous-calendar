@@ -594,7 +594,6 @@ interface WeekRowProps {
     onMonthNameClick?: (date: Date) => void;
     customIsActiveFn?: (date: Date) => boolean;
     viewMode: 'Continuous' | 'month';
-    displayedMonth?: number;
     selection: SelectionState | null;
     onCellClick: (date: Date) => void;
     onNumberClick: (date: Date, e: React.MouseEvent) => void;
@@ -616,7 +615,6 @@ const WeekRow: React.FC<WeekRowProps> = ({
     onMonthNameClick,
     customIsActiveFn,
     viewMode,
-    displayedMonth,
     selection,
     onCellClick,
     onNumberClick,
@@ -643,10 +641,7 @@ const WeekRow: React.FC<WeekRowProps> = ({
     const firstDayOfMonth = weekData.find((d) => d.date.getDate() === 1);
     const monthNames = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
 
-    const shouldShowLabel = firstDayOfMonth && (
-        viewMode === 'Continuous' ||
-        (viewMode === 'month' && firstDayOfMonth.date.getMonth() === displayedMonth)
-    );
+    const shouldShowLabel = firstDayOfMonth && viewMode === 'Continuous';
 
     const isMonthFocused = firstDayOfMonth
         ? focusedMonths.has(`${firstDayOfMonth.date.getFullYear()}-${firstDayOfMonth.date.getMonth()}`)
@@ -868,6 +863,32 @@ interface TraditionalMonthViewProps {
     isCompact: boolean;
 }
 
+type MonthToolbarIconName = 'arrow-left' | 'chevron-left' | 'chevron-right';
+
+const MonthToolbarIcon = ({ name }: { name: MonthToolbarIconName }) => {
+    const path = name === 'arrow-left'
+        ? 'm12 19-7-7 7-7M19 12H5'
+        : name === 'chevron-left'
+            ? 'm15 18-6-6 6-6'
+            : 'm9 18 6-6-6-6';
+
+    return (
+        <svg
+            className="month-toolbar-icon"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+            focusable="false"
+        >
+            <path d={path} />
+        </svg>
+    );
+};
+
 const TraditionalMonthView: React.FC<TraditionalMonthViewProps> = ({
     currentDate,
     onMonthChange,
@@ -887,23 +908,58 @@ const TraditionalMonthView: React.FC<TraditionalMonthViewProps> = ({
         return d.getMonth() === currentDate.getMonth() && d.getFullYear() === currentDate.getFullYear();
     };
     const handleNav = (direction: -1 | 1) => {
-        const newDate = new Date(currentDate);
-        newDate.setMonth(newDate.getMonth() + direction);
-        onMonthChange(newDate);
+        onMonthChange(new Date(currentDate.getFullYear(), currentDate.getMonth() + direction, 1));
+    };
+    const handleToday = () => {
+        const today = new Date();
+        onMonthChange(new Date(today.getFullYear(), today.getMonth(), 1));
     };
 
     return (
         <div className="month-view-container">
             <div className="month-view-header">
-                <button className="back-btn" onClick={onClose}>&larr; {isCompact ? '' : 'Back to list'}</button>
-                <div className="month-nav-controls">
-                    <button className="nav-arrow" onClick={() => handleNav(-1)}>&lt;</button>
-                    <button className="nav-dot" onClick={() => onMonthChange(new Date())} title="Go to Today"><div className="dot-inner"></div></button>
-                    <button className="nav-arrow" onClick={() => handleNav(1)}>&gt;</button>
-                </div>
-                <div className="month-view-title">
+                <button
+                    type="button"
+                    className="month-toolbar-button month-back-button"
+                    onClick={onClose}
+                    aria-label="Back to calendar"
+                    title="Back to calendar"
+                >
+                    <MonthToolbarIcon name="arrow-left" />
+                    {!isCompact && <span className="month-back-label">Calendar</span>}
+                </button>
+                <h2 className="month-view-title" aria-live="polite">
                     <span className="title-month">{monthNames[currentDate.getMonth()]}</span>
                     <span className="title-year">{currentDate.getFullYear()}</span>
+                </h2>
+                <div className="month-nav-controls" role="group" aria-label="Month navigation">
+                    <button
+                        type="button"
+                        className="month-toolbar-button month-icon-button"
+                        onClick={() => handleNav(-1)}
+                        aria-label="Previous month"
+                        title="Previous month"
+                    >
+                        <MonthToolbarIcon name="chevron-left" />
+                    </button>
+                    <button
+                        type="button"
+                        className="month-toolbar-button month-today-button"
+                        onClick={handleToday}
+                        aria-label="Go to current month"
+                        title="Go to current month"
+                    >
+                        Today
+                    </button>
+                    <button
+                        type="button"
+                        className="month-toolbar-button month-icon-button"
+                        onClick={() => handleNav(1)}
+                        aria-label="Next month"
+                        title="Next month"
+                    >
+                        <MonthToolbarIcon name="chevron-right" />
+                    </button>
                 </div>
             </div>
             {/* WEEKDAY HEADER (NEW POSITION) */}
@@ -931,7 +987,6 @@ const TraditionalMonthView: React.FC<TraditionalMonthViewProps> = ({
                         onWeekClick={onWeekClick}
                         viewMode="month"
                         customIsActiveFn={isDayInCurrentMonth}
-                        displayedMonth={currentDate.getMonth()}
                         selection={selection}
                         onCellClick={onCellClick}
                         onNumberClick={onNumberClick}
