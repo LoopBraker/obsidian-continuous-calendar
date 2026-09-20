@@ -1,7 +1,27 @@
-import { App, PluginSettingTab, Setting, AbstractInputSuggest, prepareFuzzySearch, TextComponent, Notice, TFolder, setIcon } from 'obsidian';
+import { App, PluginSettingTab, Setting, AbstractInputSuggest, prepareFuzzySearch, TextComponent, Notice, TFolder, setIcon, Platform } from 'obsidian';
 import type ContinuousCalendarPlugin from '../main';
-import type { DateProperty } from './settings';
+import type { CalendarSyncSettings, DateProperty, SyncMode } from './settings';
 import { HolidaySource } from '../services/holiday/HolidayTypes';
+import type { SyncUiActions, SyncUiConflict } from '../components/SyncUi';
+import { sanitizeSyncUiError } from '../components/SyncUi';
+import { createConfirmationDialog } from '../modals/ConfirmationModal';
+import { openSyncConflictModal } from '../modals/SyncConflictModal';
+
+export interface SyncSettingsActions extends SyncUiActions {
+	readonly onSettingsChanged?: () => Promise<void> | void;
+}
+
+export function clampSyncInterval(value: number): number {
+	if (!Number.isFinite(value)) return 5;
+	return Math.min(1440, Math.max(1, Math.round(value)));
+}
+
+export function syncConnectionLabel(sync: CalendarSyncSettings, lifecycleStarted: boolean): string {
+	if (!Platform.isDesktopApp) return 'Desktop sync unavailable on this device';
+	if (!sync.providerId || !sync.accountId) return 'Not connected';
+	if (!sync.calendarId) return 'Connected — choose a calendar';
+	return lifecycleStarted ? 'Connected and ready' : 'Connected — waiting for sync';
+}
 
 // Helper function to get all folder paths
 function getAllFolderPaths(app: App): string[] {
@@ -238,15 +258,17 @@ class PropertySuggest extends AbstractInputSuggest<string> {
     }
 }
 
-export type SettingsTabId = 'general' | 'tasks' | 'holidays';
+export type SettingsTabId = 'general' | 'tasks' | 'holidays' | 'sync';
 
 export class CalendarSettingTab extends PluginSettingTab {
     plugin: ContinuousCalendarPlugin;
     private activeTab: SettingsTabId = 'general';
+    private readonly syncActions?: SyncSettingsActions;
 
-    constructor(app: App, plugin: ContinuousCalendarPlugin) {
+    constructor(app: App, plugin: ContinuousCalendarPlugin, syncActions?: SyncSettingsActions) {
         super(app, plugin);
         this.plugin = plugin;
+        this.syncActions = syncActions ?? (plugin as unknown as { syncUiActions?: SyncSettingsActions }).syncUiActions;
     }
 
     display(): void {
@@ -269,6 +291,9 @@ export class CalendarSettingTab extends PluginSettingTab {
             case 'holidays':
                 this.renderHolidaysTab(contentEl);
                 break;
+            case 'sync':
+                this.renderSyncTab(contentEl);
+                break;
         }
     }
 
@@ -280,6 +305,7 @@ export class CalendarSettingTab extends PluginSettingTab {
             { id: 'tasks', label: 'Tasks', icon: 'check-square' },
             { id: 'holidays', label: 'Holidays', icon: 'calendar' },
         ];
+        if (Platform.isDesktopApp) tabs.push({ id: 'sync', label: 'Sync', icon: 'refresh-cw' });
 
         tabs.forEach((tab) => {
             const btn = navEl.createEl('button', {
@@ -407,6 +433,348 @@ export class CalendarSettingTab extends PluginSettingTab {
 
         // Section 4: Custom Date Properties
         this.renderCustomDatePropertiesSettings(generalContainer);
+    }
+
+    private renderSyncTab(containerEl: HTMLElement): void {
+        const sync = this.plugin.settings.sync;
+        const syncContainer = containerEl.createDiv('calendar-sync-settings');
+        syncContainer.createEl('h2', { text: 'Calendar synchronization' });
+        syncContainer.createEl('p', {
+            text: 'Sync is desktop-only and opt-in. Provider access is supplied by the plugin lifecycle; this panel never creates an OAuth client or stores a token.',
+            cls: 'setting-item-description',
+        });
+
+        if (!Platform.isDesktopApp) {
+            const mobileNotice = syncContainer.createDiv('calendar-settings-callout');
+            setIcon(mobileNotice.createSpan(), 'monitor');
+            mobileNotice.createSpan({ text: 'Synchronization controls are hidden on mobile. Your local calendar remains available.' });
+            return;
+        }
+
+        const connectionCard = syncContainer.createDiv('calendar-settings-card sync-connection-card');
+        const connectionHeader = connectionCard.createDiv('sync-connection-header');
+        connectionHeader.createEl('h3', { text: 'Connection' });
+        const connectionState = connectionHeader.createSpan({
+            text: syncConnectionLabel(sync, Boolean(this.plugin.syncLifecycle?.isStarted)),
+            cls: `sync-connection-state ${sync.providerId && sync.accountId ? 'is-connected' : 'is-disconnected'}`,
+        });
+
+        new Setting(connectionCard)
+            .setName('Provider')
+            .setDesc('Choose the provider that the lifecycle callback will authenticate.')
+            .addDropdown(dropdown => {
+                dropdown.addOption('', 'Not connected');
+                dropdown.addOption('google', 'Google Calendar');
+                if (sync.providerId === 'microsoft') dropdown.addOption('microsoft', 'Microsoft Outlook (deferred)');
+                dropdown.setValue(sync.providerId ?? '');
+                dropdown.onChange(async value => {
+                    sync.providerId = value === 'google' || value === 'microsoft' ? value : null;
+                    if (!sync.providerId) {
+                        sync.accountId = null;
+                        sync.calendarId = null;
+                    }
+                    await this.saveSyncSettings();
+                    this.display();
+                });
+            });
+
+        if (sync.providerId === 'google') {
+            new Setting(connectionCard)
+                .setName('Google Client ID')
+                .setDesc('Supply a testing Google OAuth Client ID (Desktop app type). Do not commit your credentials.')
+                .addText(text => {
+                    text.setValue(sync.googleClientId ?? '')
+                        .setPlaceholder('client-id.apps.googleusercontent.com')
+                        .onChange(async value => {
+                            sync.googleClientId = value.trim() || null;
+                            await this.saveSyncSettings();
+                        });
+                });
+
+            new Setting(connectionCard)
+                .setName('Google Client Secret')
+                .setDesc('Required for Google Desktop Apps.')
+                .addText(text => {
+                    text.setValue(sync.googleClientSecret ?? '')
+                        .setPlaceholder('GOCSPX-...')
+                        .onChange(async value => {
+                            sync.googleClientSecret = value.trim() || null;
+                            await this.saveSyncSettings();
+                        });
+                });
+        }
+
+        new Setting(connectionCard)
+            .setName('Account')
+            .setDesc(sync.accountId ? 'Authenticated account supplied by the lifecycle.' : 'Connect an account to select a calendar.')
+            .addText(text => {
+                text.setValue(sync.accountId ?? '').setDisabled(true);
+                text.inputEl.setAttribute('aria-label', 'Connected calendar account');
+            });
+
+        new Setting(connectionCard)
+            .setName('Calendar')
+            .setDesc('Only writable calendars are offered by the injected provider callback.')
+            .addDropdown(dropdown => {
+                dropdown.addOption('', 'Select a calendar');
+                if (sync.calendarId) dropdown.setValue(sync.calendarId);
+                void this.populateCalendars(dropdown);
+                dropdown.onChange(async value => {
+                    sync.calendarId = value || null;
+                    await this.saveSyncSettings();
+                });
+            });
+
+        const isConnected = !!sync.accountId;
+        
+        new Setting(connectionCard)
+            .setName('Actions')
+            .setDesc('Connect authorizes the plugin. Reconnect refreshes the injected session. Disconnect preserves notes and remote events while removing the binding through the lifecycle callback.')
+            .addButton(button => button
+                .setButtonText('Sync now')
+                .setCta()
+                .onClick(() => { void this.runSyncNow(connectionState); }))
+            .addButton(button => button
+                .setButtonText(isConnected ? 'Reconnect' : 'Connect')
+                .onClick(() => {
+                    if (isConnected) void this.reconnect(connectionState);
+                    else void this.connect(connectionState);
+                }))
+            .addButton(button => button
+                .setButtonText('Disconnect')
+                .setWarning()
+                .onClick(() => this.confirmDisconnect()));
+
+        const configurationCard = syncContainer.createDiv('calendar-settings-card');
+        configurationCard.createEl('h3', { text: 'Sync configuration' });
+        new Setting(configurationCard)
+            .setName('Event folder')
+            .setDesc('Marked event notes are created here. Existing notes are never moved automatically.')
+            .addText(text => {
+                text.setValue(sync.eventFolder === '' ? '/' : sync.eventFolder)
+                    .setPlaceholder('Calendar Events')
+                    .onChange(async value => {
+                        sync.eventFolder = value.trim() === '/' ? '' : value.trim();
+                        await this.saveSyncSettings();
+                    });
+                new FolderSuggest(this.app, text.inputEl);
+            });
+        new Setting(configurationCard)
+            .setName('Timezone')
+            .setDesc('IANA timezone used for the bounded sync window and event defaults.')
+            .addText(text => text.setValue(sync.timezone).onChange(async value => {
+                if (value.trim()) {
+                    sync.timezone = value.trim();
+                    await this.saveSyncSettings();
+                }
+            }));
+        new Setting(configurationCard)
+            .setName('Polling interval (minutes)')
+            .setDesc('The lifecycle bounds polling while Obsidian is open.')
+            .addText(text => text
+                .setValue(String(sync.pollIntervalMinutes))
+                .onChange(async value => {
+                    const numeric = Number(value);
+                    if (!Number.isFinite(numeric) || numeric <= 0) return;
+                    sync.pollIntervalMinutes = clampSyncInterval(numeric);
+                    await this.saveSyncSettings();
+                }));
+        new Setting(configurationCard)
+            .setName('Past horizon (days)')
+            .addText(text => text
+                .setValue(String(sync.horizon.pastDays))
+                .onChange(async value => {
+                    const numeric = Number(value);
+                    if (!Number.isInteger(numeric) || numeric < 0) return;
+                    sync.horizon.pastDays = numeric;
+                    await this.saveSyncSettings();
+                }));
+        new Setting(configurationCard)
+            .setName('Future horizon (days)')
+            .addText(text => text
+                .setValue(String(sync.horizon.futureDays))
+                .onChange(async value => {
+                    const numeric = Number(value);
+                    if (!Number.isInteger(numeric) || numeric < 0) return;
+                    sync.horizon.futureDays = numeric;
+                    await this.saveSyncSettings();
+                }));
+        new Setting(configurationCard)
+            .setName('Mode')
+            .setDesc('Dry run previews changes without provider writes; import-only never uploads local edits.')
+            .addDropdown(dropdown => {
+                const modes: Array<[SyncMode, string]> = [
+                    ['disabled', 'Disabled'],
+                    ['dry-run', 'Dry run / preview'],
+                    ['import-only', 'Import only'],
+                    ['bidirectional', 'Bidirectional'],
+                ];
+                modes.forEach(([value, label]) => dropdown.addOption(value, label));
+                dropdown.setValue(sync.syncMode);
+                dropdown.onChange(async value => {
+                    sync.syncMode = value as SyncMode;
+                    await this.saveSyncSettings();
+                });
+            });
+
+        const status = this.syncActions?.getStatus?.();
+        if (status?.lastError) {
+            const errorCallout = syncContainer.createDiv('calendar-settings-callout is-error');
+            setIcon(errorCallout.createSpan(), 'alert-triangle');
+            errorCallout.createSpan({ text: `Last sync error: ${sanitizeSyncUiError(status.lastError)}` });
+        }
+
+        const conflicts = syncContainer.createDiv('sync-conflict-settings');
+        conflicts.createEl('h3', { text: 'Conflicts' });
+        const conflictBody = conflicts.createDiv('sync-conflict-list');
+        void this.loadConflicts(conflictBody);
+    }
+
+    private async saveSyncSettings(): Promise<void> {
+        try {
+            await this.plugin.saveSettings();
+            await this.syncActions?.onSettingsChanged?.();
+        } catch (error) {
+            new Notice(`Sync settings were not saved: ${sanitizeSyncUiError(error)}`);
+        }
+    }
+
+    private async populateCalendars(dropdown: { addOption(value: string, label: string): unknown; setValue(value: string): unknown }): Promise<void> {
+        if (!this.syncActions?.listCalendars) return;
+        try {
+            const calendars = await this.syncActions.listCalendars();
+            for (const calendar of calendars) {
+                if (calendar.writable === false) continue;
+                dropdown.addOption(calendar.calendarId, calendar.name);
+            }
+            dropdown.setValue(this.plugin.settings.sync.calendarId ?? '');
+        } catch (error) {
+            new Notice(`Calendars could not be loaded: ${sanitizeSyncUiError(error)}`);
+        }
+    }
+
+    private async runSyncNow(connectionState: HTMLElement): Promise<void> {
+        try {
+            const run = this.syncActions?.syncNow
+                ? this.syncActions.syncNow()
+                : this.plugin.syncLifecycle?.syncNow('manual');
+            await run;
+            connectionState.setText(syncConnectionLabel(this.plugin.settings.sync, Boolean(this.plugin.syncLifecycle?.isStarted)));
+            new Notice('Calendar sync requested');
+        } catch (error) {
+            new Notice(`Sync could not start: ${sanitizeSyncUiError(error)}`);
+        }
+    }
+
+    private async connect(connectionState: HTMLElement): Promise<void> {
+        if (!this.syncActions?.connect) {
+            new Notice('Connect is not available until the plugin supplies an authentication callback.');
+            return;
+        }
+        try {
+            await this.syncActions.connect();
+            connectionState.setText(syncConnectionLabel(this.plugin.settings.sync, Boolean(this.plugin.syncLifecycle?.isStarted)));
+            new Notice('Calendar account connected');
+            this.display();
+        } catch (error) {
+            console.error('[Calendar Sync] Connect failed:', error);
+            new Notice(`Connect failed: ${sanitizeSyncUiError(error)}`);
+        }
+    }
+
+    private async reconnect(connectionState: HTMLElement): Promise<void> {
+        if (!this.syncActions?.reconnect) {
+            new Notice('Reconnect is not available until the plugin supplies an authentication callback.');
+            return;
+        }
+        try {
+            await this.syncActions.reconnect();
+            connectionState.setText(syncConnectionLabel(this.plugin.settings.sync, Boolean(this.plugin.syncLifecycle?.isStarted)));
+            new Notice('Calendar account reconnected');
+        } catch (error) {
+            new Notice(`Reconnect failed: ${sanitizeSyncUiError(error)}`);
+        }
+    }
+
+    private confirmDisconnect(): void {
+        createConfirmationDialog(this.app, {
+            title: 'Disconnect calendar sync?',
+            text: 'This preserves event notes and remote events. The plugin callback will remove the binding and credentials, if supported.',
+            cta: 'Disconnect',
+            onAccept: async () => {
+                if (!this.syncActions?.disconnect) {
+                    new Notice('Disconnect is not available until the plugin supplies a lifecycle callback.');
+                    return;
+                }
+                try {
+                    await this.syncActions.disconnect();
+                    this.plugin.settings.sync = {
+                        ...this.plugin.settings.sync,
+                        providerId: null,
+                        accountId: null,
+                        calendarId: null,
+                        syncMode: 'disabled',
+                    };
+                    await this.saveSyncSettings();
+                    new Notice('Calendar sync disconnected; notes and remote events were preserved.');
+                    this.display();
+                } catch (error) {
+                    new Notice(`Disconnect failed: ${sanitizeSyncUiError(error)}`);
+                }
+            },
+        });
+    }
+
+    private async loadConflicts(containerEl: HTMLElement): Promise<void> {
+        if (!this.syncActions?.getConflicts) {
+            containerEl.createEl('p', { text: 'No conflict provider is attached.', cls: 'setting-item-description' });
+            return;
+        }
+        try {
+            const conflicts = await this.syncActions.getConflicts();
+            if (conflicts.length === 0) {
+                containerEl.createEl('p', { text: 'No unresolved conflicts.', cls: 'setting-item-description' });
+                return;
+            }
+            for (const conflict of conflicts) this.renderConflictCard(containerEl, conflict);
+        } catch (error) {
+            containerEl.createEl('p', { text: `Conflicts could not be loaded: ${sanitizeSyncUiError(error)}`, cls: 'sync-form-error' });
+        }
+    }
+
+    private renderConflictCard(containerEl: HTMLElement, conflict: SyncUiConflict): void {
+        const card = containerEl.createDiv('sync-conflict-card');
+        card.createEl('strong', { text: conflict.local.title || 'Untitled event' });
+        card.createEl('p', { text: `Local: ${conflict.local.start} → ${conflict.local.end}` });
+        card.createEl('p', { text: `Remote: ${conflict.remote.start} → ${conflict.remote.end}` });
+        const controls = card.createDiv('sync-conflict-actions');
+        controls.createEl('button', { text: 'Compare all fields' }).addEventListener('click', () => {
+            openSyncConflictModal(this.app, {
+                key: conflict.key,
+                local: conflict.local,
+                remote: conflict.remote,
+                onResolve: async choice => {
+                    await this.syncActions?.resolveConflict?.(conflict.key, choice);
+                    this.display();
+                },
+            });
+        });
+        controls.createEl('button', { text: 'Keep local', cls: 'mod-cta' }).addEventListener('click', () => {
+            void this.resolveConflict(conflict.key, 'local');
+        });
+        controls.createEl('button', { text: 'Keep remote' }).addEventListener('click', () => {
+            void this.resolveConflict(conflict.key, 'remote');
+        });
+    }
+
+    private async resolveConflict(key: string, choice: 'local' | 'remote'): Promise<void> {
+        try {
+            await this.syncActions?.resolveConflict?.(key, choice);
+            new Notice(`Conflict resolved using ${choice} values`);
+            this.display();
+        } catch (error) {
+            new Notice(`Conflict resolution failed: ${sanitizeSyncUiError(error)}`);
+        }
     }
 
     private renderTasksTab(containerEl: HTMLElement): void {

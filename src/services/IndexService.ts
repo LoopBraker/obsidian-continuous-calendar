@@ -8,6 +8,32 @@ import { RangeManager } from './index/RangeManager';
 import { RecurrenceManager } from './index/RecurrenceManager';
 import { TaskManager } from './index/TaskManager';
 import { TaskNote } from './index/IndexTypes';
+import type { CalendarEventIndex } from './sync/notes/CalendarEventIndex';
+
+/**
+ * The sync read model is vault-scoped rather than view-scoped.  Bases creates
+ * a second IndexService instance, so an App-keyed registry lets both existing
+ * calendar projections observe the repository's one canonical event index.
+ * This registry stores no provider or credential objects.
+ */
+const calendarEventIndexes = new WeakMap<App, CalendarEventIndex>();
+const calendarIndexServices = new WeakMap<App, Set<IndexService>>();
+
+export function registerCalendarEventIndex(app: App, index: CalendarEventIndex): void {
+    calendarEventIndexes.set(app, index);
+}
+
+export function unregisterCalendarEventIndex(app: App, index: CalendarEventIndex): void {
+    if (calendarEventIndexes.get(app) === index) calendarEventIndexes.delete(app);
+}
+
+export function getCalendarEventIndex(app: App): CalendarEventIndex | undefined {
+    return calendarEventIndexes.get(app);
+}
+
+export function notifyCalendarEventIndexChanged(app: App): void {
+    for (const service of calendarIndexServices.get(app) ?? []) service.notifyListeners(null);
+}
 
 // Re-export types so external consumers don't break if they imported from here
 export type { DateMetadata, RangeNote, TaskNote };
@@ -21,6 +47,7 @@ export class IndexService {
     private rangeManager: RangeManager;
     private recurrenceManager: RecurrenceManager;
     private taskManager: TaskManager;
+    private syncEventIndex?: CalendarEventIndex;
 
     // Holiday tracking (Year -> Date -> Holiday[])
     holidays: Map<number, Map<string, Holiday[]>> = new Map();
@@ -44,6 +71,10 @@ export class IndexService {
         this.rangeManager = new RangeManager();
         this.recurrenceManager = new RecurrenceManager();
         this.taskManager = new TaskManager();
+        this.syncEventIndex = getCalendarEventIndex(app);
+        const services = calendarIndexServices.get(app) ?? new Set<IndexService>();
+        services.add(this);
+        calendarIndexServices.set(app, services);
     }
 
     // =================================================================================
@@ -68,6 +99,14 @@ export class IndexService {
     get cachedYears() { return this.recurrenceManager.cachedYears; }
     get fileToGeneratedDates() { return this.recurrenceManager.fileToGeneratedDates; }
 
+    /** Shared vault-backed projection for explicitly marked sync event notes. */
+    get calendarEventIndex(): CalendarEventIndex | undefined { return this.syncEventIndex; }
+
+    /** Attach the plugin-wide event projection to a view-created index. */
+    setCalendarEventIndex(index: CalendarEventIndex | undefined): void {
+        this.syncEventIndex = index;
+    }
+
     // =================================================================================
     // PUBLIC API
     // =================================================================================
@@ -83,6 +122,11 @@ export class IndexService {
         return () => {
             this.listeners = this.listeners.filter(l => l !== callback);
         };
+    }
+
+    dispose(): void {
+        this.listeners = [];
+        calendarIndexServices.get(this.app)?.delete(this);
     }
 
     // =================================================================================

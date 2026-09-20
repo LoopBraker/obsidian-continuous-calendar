@@ -4,6 +4,7 @@ import { Virtuoso, type VirtuosoHandle, type ListRange } from 'react-virtuoso';
 import { App } from 'obsidian';
 import { IndexService } from './services/IndexService';
 import { DayDetailView } from './DayDetailView';
+import type { SyncEventActions } from './components/SyncUi';
 
 // ==========================================
 // TYPES & HELPERS
@@ -1010,10 +1011,11 @@ export interface ContinuousCalendarProps {
     onOpenNote: (date: Date) => void;
     onCreateRange: (start: Date, end: Date) => void;
     onYearChange?: (year: number) => void;
+    syncEventActions?: SyncEventActions;
 }
 
 export const ContinuousCalendar = (props: ContinuousCalendarProps) => {
-    const { index, app, onOpenNote, onCreateRange, onYearChange } = props;
+    const { index, app, onOpenNote, onCreateRange, onYearChange, syncEventActions } = props;
 
     const virtuosoRef = useRef<VirtuosoHandle>(null);
     const containerRef = useRef<HTMLDivElement>(null);
@@ -1356,6 +1358,17 @@ export const ContinuousCalendar = (props: ContinuousCalendarProps) => {
             onOpenNote={(dateStr) => {
                 onOpenNote(new Date(dateStr + 'T00:00:00'));
             }}
+            onCreateSyncEvent={syncEventActions?.create}
+            canCreateSyncEvent={Boolean(
+                syncEventActions?.create &&
+                index.settings?.sync?.syncMode === 'bidirectional' &&
+                index.settings.sync.providerId !== null &&
+                index.settings.sync.accountId !== null &&
+                index.settings.sync.calendarId !== null,
+            )}
+            onEditSyncEvent={syncEventActions?.edit}
+            onDeleteSyncEvent={syncEventActions?.delete}
+            onResolveSyncConflict={syncEventActions?.resolveConflict}
         />
     ) : null;
 

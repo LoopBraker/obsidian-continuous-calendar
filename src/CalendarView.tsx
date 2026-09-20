@@ -1,4 +1,4 @@
-import { ItemView, WorkspaceLeaf } from 'obsidian';
+import { ItemView, WorkspaceLeaf, Notice, Platform } from 'obsidian';
 import * as React from "react";
 import { createRoot, Root } from "react-dom/client";
 import { ContinuousCalendar } from "./ContinuousCalendar";
@@ -6,6 +6,8 @@ import ContinuousCalendarPlugin from "./main";
 import { IndexService } from "./services/IndexService";
 import { createRangeNote } from './createRangeNote';
 import { createConfirmationDialog } from './modals/ConfirmationModal';
+import { openSyncEventModal } from './modals/SyncEventModal';
+import { sanitizeSyncUiError, type SyncUiActions } from './components/SyncUi';
 
 // Import Daily Note utilities
 import {
@@ -120,6 +122,58 @@ export class CalendarView extends ItemView {
             }
         };
 
+        const lifecycleActions = (this.plugin as unknown as { syncUiActions?: SyncUiActions }).syncUiActions;
+        const syncEventActions = Platform.isDesktopApp ? {
+            create: (dateKey: string) => {
+                const sync = this.plugin.settings.sync;
+                if (sync.syncMode !== 'bidirectional' || !sync.providerId || !sync.accountId || !sync.calendarId) {
+                    new Notice('Enable a connected bidirectional calendar before creating a synced event.');
+                    return;
+                }
+                openSyncEventModal(this.app, {
+                    dateKey,
+                    timezone: this.plugin.settings.sync.timezone,
+                    onSubmit: async event => {
+                        const created = await this.plugin.calendarEventRepository.create(event, { status: 'pending' });
+                        this.plugin.syncLifecycle.handleCreate(created.path);
+                    },
+                });
+            },
+            edit: (uid: string) => {
+                const existing = this.plugin.calendarEventRepository.getByUid(uid);
+                if (!existing) {
+                    new Notice('The synchronized event note is no longer indexed.');
+                    return;
+                }
+                openSyncEventModal(this.app, {
+                    initialEvent: existing.event,
+                    timezone: existing.event.timezone,
+                    onSubmit: async event => {
+                        await this.plugin.calendarEventRepository.update(uid, event, { status: 'pending' });
+                        this.plugin.syncLifecycle.handleModify(existing.path);
+                    },
+                });
+            },
+            delete: lifecycleActions?.deleteSyncedEvent ? async (uid: string) => new Promise<boolean>(resolve => {
+                createConfirmationDialog(this.app, {
+                    title: 'Delete synced event?',
+                    text: 'This first requests remote deletion. The local note is moved to system trash only after provider confirmation.',
+                    cta: 'Delete synced event',
+                    onAccept: async () => {
+                        try {
+                            const deleted = await lifecycleActions.deleteSyncedEvent?.(uid) ?? false;
+                            new Notice(deleted ? 'Synced event deleted' : 'Synced event was not fully deleted');
+                            resolve(deleted);
+                        } catch (error) {
+                            new Notice(`Synced event was not deleted: ${sanitizeSyncUiError(error)}`);
+                            resolve(false);
+                        }
+                    },
+                });
+            }) : undefined,
+            resolveConflict: lifecycleActions?.openConflict,
+        } : undefined;
+
         this.root = createRoot(reactRoot);
         this.root.render(
             <React.StrictMode>
@@ -131,6 +185,7 @@ export class CalendarView extends ItemView {
                     onYearChange={async (year: number) => {
                         await this.plugin.loadHolidaysForYear(year);
                     }}
+                    syncEventActions={syncEventActions}
                 />
             </React.StrictMode>
         );

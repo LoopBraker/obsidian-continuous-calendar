@@ -1585,3 +1585,175 @@
     color: var(--interactive-accent);
 }
 
+/* Synchronization UI: theme variables keep this surface native in light and dark modes. */
+.calendar-sync-settings {
+    max-width: 760px;
+}
+
+.sync-connection-card,
+.calendar-sync-settings .calendar-settings-card {
+    margin: 12px 0;
+}
+
+.sync-connection-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 14px 14px 4px;
+}
+
+.sync-connection-header h3 {
+    margin: 0;
+}
+
+.sync-connection-state,
+.sync-status-badge {
+    display: inline-flex;
+    align-items: center;
+    min-height: 20px;
+    padding: 2px 8px;
+    border-radius: var(--radius-round, 12px);
+    font-size: var(--font-ui-smaller, 12px);
+    font-weight: var(--font-semibold, 600);
+    white-space: nowrap;
+}
+
+.sync-connection-state.is-connected,
+.sync-status-synced {
+    color: var(--text-success);
+    background: color-mix(in srgb, var(--text-success) 12%, var(--background-secondary));
+}
+
+.sync-connection-state.is-disconnected,
+.sync-status-error,
+.sync-status-conflict,
+.sync-status-remote_deleted {
+    color: var(--text-error);
+    background: color-mix(in srgb, var(--text-error) 12%, var(--background-secondary));
+}
+
+.sync-status-pending,
+.sync-status-unsupported {
+    color: var(--text-warning);
+    background: color-mix(in srgb, var(--text-warning) 12%, var(--background-secondary));
+}
+
+.sync-conflict-settings {
+    margin-top: 18px;
+}
+
+.sync-conflict-settings h3 {
+    margin-bottom: 8px;
+}
+
+.sync-conflict-card {
+    padding: 12px;
+    margin: 8px 0;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: var(--radius-m, 6px);
+    background: var(--background-secondary);
+}
+
+.sync-conflict-card p {
+    margin: 4px 0;
+    color: var(--text-muted);
+    font-size: var(--font-ui-small);
+}
+
+.sync-conflict-actions,
+.sync-note-actions {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 8px;
+}
+
+.sync-conflict-actions button,
+.sync-note-action,
+.sync-event-create-btn {
+    padding: 4px 9px;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: var(--radius-s, 4px);
+    color: var(--text-normal);
+    background: var(--background-primary);
+    cursor: pointer;
+    font-size: var(--font-ui-smaller, 12px);
+}
+
+.sync-conflict-actions button:hover,
+.sync-note-action:hover,
+.sync-event-create-btn:hover {
+    border-color: var(--interactive-accent);
+    color: var(--text-accent);
+}
+
+.sync-note-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.sync-note-row > .internal-link {
+    min-width: 0;
+    flex: 1;
+}
+
+.sync-event-time {
+    color: var(--text-muted);
+    font-size: var(--font-ui-smaller, 12px);
+    overflow-wrap: anywhere;
+}
+
+.sync-note-action.mod-warning {
+    color: var(--text-error);
+}
+
+.sync-event-create-btn {
+    margin-top: 8px;
+    color: var(--text-accent);
+}
+
+.sync-event-modal .setting-item,
+.sync-conflict-modal .setting-item {
+    border-top: 0;
+}
+
+.sync-event-modal textarea {
+    min-height: 90px;
+}
+
+.sync-form-error {
+    margin: 8px 0;
+    color: var(--text-error);
+    font-size: var(--font-ui-small);
+}
+
+.sync-conflict-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 12px 0;
+}
+
+.sync-conflict-table th,
+.sync-conflict-table td {
+    padding: 6px 8px;
+    border: 1px solid var(--background-modifier-border);
+    text-align: left;
+    vertical-align: top;
+    overflow-wrap: anywhere;
+}
+
+.sync-conflict-table th {
+    color: var(--text-muted);
+    font-weight: var(--font-semibold, 600);
+}
+
+@media (max-width: 700px) {
+    .sync-note-row {
+        align-items: flex-start;
+        flex-direction: column;
+    }
+}
