@@ -301,11 +301,16 @@ export class CalendarSettingTab extends PluginSettingTab {
     }
 
     private renderGeneralTab(containerEl: HTMLElement): void {
-        // ========== DEFAULT COLORS & CONFIRMATIONS ==========
-        containerEl.createEl('h2', { text: 'Default Colors & Confirmations' });
+        const generalContainer = containerEl.createDiv('calendar-settings-container');
+
+        // Section 1: Default Visuals
+        const visualsHeader = generalContainer.createDiv('calendar-settings-section-header');
+        visualsHeader.createEl('h3', { text: 'Default Visuals' });
+
+        const visualsCard = generalContainer.createDiv('calendar-settings-card');
 
         // Default Dot Color
-        new Setting(containerEl)
+        new Setting(visualsCard)
             .setName('Default Event Dot Color')
             .setDesc('Fallback color for event dots if no color is specified')
             .addDropdown((dropdown) => {
@@ -316,11 +321,8 @@ export class CalendarSettingTab extends PluginSettingTab {
 
                 dropdown.setValue(this.plugin.settings.defaultDotColor);
 
-                const colorPreview = dropdown.selectEl.parentElement?.createEl('div', {
-                    attr: {
-                        style: 'display: inline-block; width: 15px; height: 15px; border-radius: 50%; margin-left: 8px; vertical-align: middle; background-color: ' + this.plugin.settings.defaultDotColor
-                    }
-                }) as HTMLDivElement;
+                const colorPreview = dropdown.selectEl.parentElement?.createDiv('calendar-settings-color-swatch');
+                if (colorPreview) colorPreview.style.backgroundColor = this.plugin.settings.defaultDotColor;
 
                 dropdown.onChange(async (value: string) => {
                     this.plugin.settings.defaultDotColor = value;
@@ -332,7 +334,7 @@ export class CalendarSettingTab extends PluginSettingTab {
             });
 
         // Default Bar Color
-        new Setting(containerEl)
+        new Setting(visualsCard)
             .setName('Default Range Bar Color')
             .setDesc('Fallback color for range bars if no color is specified')
             .addDropdown((dropdown) => {
@@ -343,11 +345,8 @@ export class CalendarSettingTab extends PluginSettingTab {
 
                 dropdown.setValue(this.plugin.settings.defaultBarColor);
 
-                const colorPreview = dropdown.selectEl.parentElement?.createEl('div', {
-                    attr: {
-                        style: 'display: inline-block; width: 15px; height: 15px; border-radius: 50%; margin-left: 8px; vertical-align: middle; background-color: ' + this.plugin.settings.defaultBarColor
-                    }
-                }) as HTMLDivElement;
+                const colorPreview = dropdown.selectEl.parentElement?.createDiv('calendar-settings-color-swatch');
+                if (colorPreview) colorPreview.style.backgroundColor = this.plugin.settings.defaultBarColor;
 
                 dropdown.onChange(async (value: string) => {
                     this.plugin.settings.defaultBarColor = value;
@@ -358,8 +357,14 @@ export class CalendarSettingTab extends PluginSettingTab {
                 });
             });
 
+        // Section 2: Creation Prompts & Behavior
+        const behaviorHeader = generalContainer.createDiv('calendar-settings-section-header');
+        behaviorHeader.createEl('h3', { text: 'Creation Prompts & Behavior' });
+
+        const behaviorCard = generalContainer.createDiv('calendar-settings-card');
+
         // Confirm before creating daily notes
-        new Setting(containerEl)
+        new Setting(behaviorCard)
             .setName('Confirm before creating daily notes')
             .setDesc('Show a confirmation dialog when creating a new daily note')
             .addToggle((toggle) =>
@@ -372,7 +377,7 @@ export class CalendarSettingTab extends PluginSettingTab {
             );
 
         // Confirm before creating range notes
-        new Setting(containerEl)
+        new Setting(behaviorCard)
             .setName('Confirm before creating range notes')
             .setDesc('Show a confirmation dialog when creating a note for a date range')
             .addToggle((toggle) =>
@@ -385,7 +390,7 @@ export class CalendarSettingTab extends PluginSettingTab {
             );
 
         // Collapse duplicate icons
-        new Setting(containerEl)
+        new Setting(behaviorCard)
             .setName('Collapse duplicate icons')
             .setDesc('Show just one icon per tag/property per day, even if several notes share that tag or property')
             .addToggle((toggle) =>
@@ -397,17 +402,11 @@ export class CalendarSettingTab extends PluginSettingTab {
                     })
             );
 
-        // Separator
-        containerEl.createEl('hr', { cls: 'settings-separator' });
+        // Section 3: Tag-Based Colors
+        this.renderTagColorSettings(generalContainer);
 
-        // ========== TAG-BASED COLORS ==========
-        this.renderTagColorSettings(containerEl);
-
-        // Separator
-        containerEl.createEl('hr', { cls: 'settings-separator' });
-
-        // ========== CUSTOM DATE PROPERTIES ==========
-        this.renderCustomDatePropertiesSettings(containerEl);
+        // Section 4: Custom Date Properties
+        this.renderCustomDatePropertiesSettings(generalContainer);
     }
 
     private renderTasksTab(containerEl: HTMLElement): void {
@@ -485,10 +484,20 @@ export class CalendarSettingTab extends PluginSettingTab {
     }
 
     private renderCustomDatePropertiesSettings(containerEl: HTMLElement): void {
-        containerEl.createEl("h2", { text: "Custom Date Properties" });
-        containerEl.createEl("p", {
-            text: "Define additional frontmatter properties that should be treated as dates by the calendar. Adding or removing properties here will trigger a full re-index of your vault.",
-            cls: "setting-item-description",
+        const header = containerEl.createDiv('calendar-settings-section-header');
+        header.createEl('h3', { text: 'Custom Date Properties' });
+        const propCount = this.plugin.settings.customDateProperties.length;
+        header.createSpan({
+            text: `${propCount} ${propCount === 1 ? 'property' : 'properties'}`,
+            cls: 'calendar-settings-count-badge',
+        });
+
+        // Info Callout
+        const callout = containerEl.createDiv('calendar-settings-callout');
+        const iconSpan = callout.createSpan();
+        setIcon(iconSpan, 'info');
+        callout.createSpan({
+            text: 'Frontmatter properties defined here are treated as dates. Adding or removing properties will trigger a full re-index of your vault.'
         });
 
         // --- Dots-only toggle for properties ---
@@ -505,24 +514,46 @@ export class CalendarSettingTab extends PluginSettingTab {
             );
 
         // --- Display Current Custom Properties ---
-        const propertiesListEl = containerEl.createDiv("custom-date-properties-list");
+        const propertiesListEl = containerEl.createDiv('custom-date-properties-list');
         if (this.plugin.settings.customDateProperties.length === 0) {
-            propertiesListEl.createEl("p", {
-                text: "No custom date properties defined.",
-                cls: "setting-item-description",
+            const emptyEl = propertiesListEl.createDiv('holiday-empty-state');
+            const emptyIconEl = emptyEl.createSpan('holiday-empty-state-icon');
+            setIcon(emptyIconEl, 'calendar-clock');
+            emptyEl.createDiv({ text: 'No Custom Date Properties Defined', cls: 'holiday-empty-state-title' });
+            emptyEl.createEl('p', {
+                text: 'Define custom frontmatter properties (e.g. birthday, anniversary) below.',
+                cls: 'holiday-empty-state-desc',
             });
         } else {
             this.renderCustomDateProperties(propertiesListEl);
         }
 
         // --- Add New Custom Property Controls ---
-        containerEl.createEl("h4", { text: "Add New Date Property" });
+        const addHeader = containerEl.createDiv('calendar-settings-section-header');
+        addHeader.createEl('h4', { text: 'Add New Date Property' });
         this.renderAddCustomDatePropertyControls(containerEl);
     }
 
     private renderCustomDateProperties(containerEl: HTMLElement): void {
         this.plugin.settings.customDateProperties.forEach((prop, index) => {
-            const settingItem = new Setting(containerEl).setName(prop.name);
+            const itemWrapper = containerEl.createDiv('calendar-mapping-item');
+            const settingItem = new Setting(itemWrapper);
+
+            // Left side: Name + Recurring Badge
+            settingItem.nameEl.empty();
+            settingItem.nameEl.createSpan({
+                text: prop.name,
+                cls: 'calendar-settings-prop-name',
+            });
+
+            if (prop.isRecurring) {
+                const recurringBadge = settingItem.nameEl.createSpan({
+                    cls: 'calendar-settings-recurring-badge',
+                });
+                const iconSpan = recurringBadge.createSpan();
+                setIcon(iconSpan, 'repeat');
+                recurringBadge.createSpan({ text: 'Annual' });
+            }
 
             // Color Dropdown
             settingItem.addDropdown((dd) => {
@@ -535,15 +566,11 @@ export class CalendarSettingTab extends PluginSettingTab {
                     prop.color = newVar;
                     colorPreview.style.backgroundColor = newVar;
                     await this.plugin.saveSettings();
-                    // Color change doesn't necessarily require re-index if we look it up dynamically,
-                    // but for consistency and to ensure cache is fresh, we can re-index or just notify listeners.
-                    // For now, let's just save. The index uses these settings dynamically if we implement it right.
-                    // But if we want to be safe:
                     this.plugin.calendarIndex.indexVault();
                 });
             });
 
-            // Symbol Textbox
+            // Symbol Textbox (compact)
             settingItem.addText((text) => {
                 text
                     .setPlaceholder("●")
@@ -553,36 +580,18 @@ export class CalendarSettingTab extends PluginSettingTab {
                         await this.plugin.saveSettings();
                         this.plugin.calendarIndex.indexVault();
                     });
+                text.inputEl.style.width = '55px';
+                text.inputEl.style.textAlign = 'center';
             });
 
-            // Recurring Toggle
-            if (prop.isRecurring) {
-                settingItem.addExtraButton(btn =>
-                    btn.setIcon("repeat")
-                        .setTooltip("Recurring annually")
-                        .setDisabled(true) // Just an indicator for now, or make it toggleable?
-                    // Let's make it an indicator here, and maybe editable if we want.
-                    // Actually, let's make it a toggle in the setting item if possible, but Setting only supports one main control usually.
-                    // We can add a toggle.
-                );
-            }
-
             // Color Preview Dot
-
-            // Color Preview Dot
-            const colorPreview = settingItem.controlEl.createEl("div");
-            colorPreview.style.display = "inline-block";
-            colorPreview.style.width = "15px";
-            colorPreview.style.height = "15px";
-            colorPreview.style.borderRadius = "50%";
-            colorPreview.style.marginLeft = "10px";
-            colorPreview.style.verticalAlign = "middle";
+            const colorPreview = settingItem.controlEl.createDiv('calendar-settings-color-swatch');
             colorPreview.style.backgroundColor = prop.color || AVAILABLE_COLOR_OPTIONS['Red pale'];
 
             // Remove Button
             settingItem.addButton((button) =>
                 button
-                    .setIcon("trash")
+                    .setIcon('trash')
                     .setTooltip(`Remove property ${prop.name}`)
                     .setWarning()
                     .onClick(async () => {
@@ -602,74 +611,97 @@ export class CalendarSettingTab extends PluginSettingTab {
         let selectedColorVar = AVAILABLE_COLOR_OPTIONS["Red pale"];
         let isRecurring = false;
 
-        const wrapper = containerEl.createDiv("add-custom-date-property-controls");
-        const row = new Setting(wrapper).setName("New Property");
+        const card = containerEl.createDiv('calendar-settings-card');
 
-        row.addText((text) => {
-            text
-                .setPlaceholder("Property Name (e.g. due_date)")
-                .onChange((v) => (newName = v.trim()));
-            new PropertySuggest(this.app, text.inputEl);
+        // Field 1: Property Name
+        new Setting(card)
+            .setName('Property Name')
+            .setDesc('Frontmatter property key to treat as a date (e.g. due_date)')
+            .addText((text) => {
+                text
+                    .setPlaceholder("due_date")
+                    .onChange((v) => (newName = v.trim()));
+                new PropertySuggest(this.app, text.inputEl);
+            });
+
+        // Field 2: Symbol
+        new Setting(card)
+            .setName('Display Symbol')
+            .setDesc('Symbol or emoji for this property (e.g. ⏰)')
+            .addText((text) => {
+                text
+                    .setPlaceholder("● / ⏰ / * …")
+                    .onChange((v) => (newSymbol = v.trim() || "●"));
+            });
+
+        // Field 3: Color
+        new Setting(card)
+            .setName('Property Color')
+            .setDesc('Indicator color on the calendar')
+            .addDropdown((dd) => {
+                for (const key of Object.keys(AVAILABLE_COLOR_OPTIONS)) {
+                    dd.addOption(AVAILABLE_COLOR_OPTIONS[key], key);
+                }
+                dd.setValue(selectedColorVar);
+                dd.onChange((v) => (selectedColorVar = v));
+            });
+
+        // Field 4: Recurring
+        new Setting(card)
+            .setName('Recurring Annually')
+            .setDesc('Repeat this date every year (e.g. birthdays or anniversaries)')
+            .addToggle((toggle) => {
+                toggle
+                    .setValue(isRecurring)
+                    .onChange((v) => (isRecurring = v));
+            });
+
+        // Action Footer
+        const footer = card.createDiv('calendar-settings-card-footer');
+        const addBtn = footer.createEl('button', {
+            cls: 'mod-cta',
+            text: 'Add Property',
         });
 
-        row.addText((text) => {
-            text
-                .setPlaceholder("Symbol (e.g. ⏰)")
-                .onChange((v) => (newSymbol = v.trim() || "●"));
-        });
-
-        row.addDropdown((dd) => {
-            for (const key of Object.keys(AVAILABLE_COLOR_OPTIONS)) {
-                dd.addOption(AVAILABLE_COLOR_OPTIONS[key], key);
+        addBtn.addEventListener('click', async () => {
+            if (!newName) {
+                new Notice("Enter a property name first");
+                return;
             }
-            dd.setValue(selectedColorVar);
-            dd.onChange((v) => (selectedColorVar = v));
+            if (this.plugin.settings.customDateProperties.some(p => p.name === newName)) {
+                new Notice(`Property "${newName}" already exists`);
+                return;
+            }
+
+            const newProp: DateProperty = {
+                name: newName,
+                color: selectedColorVar,
+                symbol: newSymbol,
+                isRecurring: isRecurring,
+            };
+
+            this.plugin.settings.customDateProperties.push(newProp);
+            await this.plugin.saveSettings();
+            this.display();
+
+            new Notice(`Added date property: ${newName}`);
+            this.plugin.calendarIndex.indexVault();
         });
-
-        row.addToggle((toggle) => {
-            toggle
-                .setTooltip("Recurring Annually (e.g. Birthday)")
-                .setValue(isRecurring)
-                .onChange((v) => (isRecurring = v));
-        });
-
-        row.addButton((btn) =>
-            btn
-                .setButtonText("Add Property")
-                .setCta()
-                .onClick(async () => {
-                    if (!newName) {
-                        new Notice("Enter a property name first");
-                        return;
-                    }
-                    if (this.plugin.settings.customDateProperties.some(p => p.name === newName)) {
-                        new Notice(`Property "${newName}" already exists`);
-                        return;
-                    }
-
-                    const newProp: DateProperty = {
-                        name: newName,
-                        color: selectedColorVar,
-                        symbol: newSymbol,
-                        isRecurring: isRecurring
-                    };
-
-                    this.plugin.settings.customDateProperties.push(newProp);
-                    await this.plugin.saveSettings();
-                    this.display();
-
-                    new Notice(`Added date property: ${newName}`);
-                    this.plugin.calendarIndex.indexVault();
-                })
-        );
     }
 
 
     private renderTagColorSettings(containerEl: HTMLElement): void {
-        containerEl.createEl("h2", { text: "Tag-Based Default Colors" });
-        containerEl.createEl("p", {
-            text: "Define default colors for notes based on their tags. This color will be used if a note has a matching tag but does *not* have an explicit `color` property defined in its frontmatter.",
-            cls: "setting-item-description",
+        const header = containerEl.createDiv('calendar-settings-section-header');
+        header.createEl('h3', { text: 'Tag-Based Default Colors' });
+        const tagCount = Object.keys(this.plugin.settings.tagAppearance).length;
+        header.createSpan({
+            text: `${tagCount} ${tagCount === 1 ? 'tag' : 'tags'}`,
+            cls: 'calendar-settings-count-badge',
+        });
+
+        containerEl.createEl('p', {
+            text: 'Define default colors and symbols for notes based on their tags when no explicit color property exists in frontmatter.',
+            cls: 'setting-item-description',
         });
 
         // --- Dots-only toggle for tags ---
@@ -686,26 +718,36 @@ export class CalendarSettingTab extends PluginSettingTab {
             );
 
         // --- Display Current Tag Mappings ---
-        const mappingsListEl = containerEl.createDiv("tag-color-mappings-list");
+        const mappingsListEl = containerEl.createDiv('tag-color-mappings-list');
         if (Object.keys(this.plugin.settings.tagAppearance).length === 0) {
-            mappingsListEl.createEl("p", {
-                text: "No tag-color mappings defined.",
-                cls: "setting-item-description",
+            const emptyEl = mappingsListEl.createDiv('holiday-empty-state');
+            const iconEl = emptyEl.createSpan('holiday-empty-state-icon');
+            setIcon(iconEl, 'tags');
+            emptyEl.createDiv({ text: 'No Tag-Color Mappings Defined', cls: 'holiday-empty-state-title' });
+            emptyEl.createEl('p', {
+                text: 'Add a tag mapping below to color-code calendar events by tag.',
+                cls: 'holiday-empty-state-desc',
             });
         } else {
             this.renderTagMappings(mappingsListEl);
         }
 
         // --- Add New Tag Mapping Controls ---
-        containerEl.createEl("h4", { text: "Add New Tag-Color Mapping" });
+        const addHeader = containerEl.createDiv('calendar-settings-section-header');
+        addHeader.createEl('h4', { text: 'Add New Tag-Color Mapping' });
         this.renderAddTagMappingControls(containerEl);
     }
 
     private renderHolidaySettings(containerEl: HTMLElement): void {
         const holidayContainer = containerEl.createDiv('holiday-settings-container');
-        holidayContainer.createEl('h2', { text: 'Holiday Settings' });
 
-        // Holiday folder setting
+        holidayContainer.createEl('h2', { text: 'Holiday Settings' });
+        holidayContainer.createEl('p', {
+            text: 'Manage national and custom holiday calendars to display celebrations and observances on your continuous calendar.',
+            cls: 'holiday-section-desc',
+        });
+
+        // Section 1: Storage Folder
         new Setting(holidayContainer)
             .setName('Holiday Definition Folder')
             .setDesc('Folder for holiday definition files. Type to search, "/" for root.')
@@ -725,24 +767,51 @@ export class CalendarSettingTab extends PluginSettingTab {
                 new FolderSuggest(this.app, text.inputEl);
             });
 
-        // Display current holiday sources
-        holidayContainer.createEl('h4', { text: 'Active Holiday Sources' });
+        // Section 2: Active Holiday Sources
+        const sourcesHeader = holidayContainer.createDiv('holiday-settings-section-header');
+        sourcesHeader.createEl('h4', { text: 'Active Holiday Sources' });
+        const sourceCount = this.plugin.settings.holidaySources?.length || 0;
+        sourcesHeader.createSpan({
+            text: `${sourceCount} ${sourceCount === 1 ? 'source' : 'sources'}`,
+            cls: 'holiday-count-badge',
+        });
+
         const sourcesListEl = holidayContainer.createDiv('holiday-sources-list');
 
         if (!this.plugin.settings.holidaySources || this.plugin.settings.holidaySources.length === 0) {
-            sourcesListEl.createEl('p', { text: 'No holiday sources configured.' });
+            const emptyEl = sourcesListEl.createDiv('holiday-empty-state');
+            const iconEl = emptyEl.createSpan('holiday-empty-state-icon');
+            setIcon(iconEl, 'calendar-off');
+            emptyEl.createDiv({ text: 'No Holiday Sources Configured', cls: 'holiday-empty-state-title' });
+            emptyEl.createEl('p', {
+                text: 'Add a national holiday calendar or create a custom holiday set below.',
+                cls: 'holiday-empty-state-desc',
+            });
         } else {
             this.renderHolidaySources(sourcesListEl);
         }
 
-        // Add new holiday source button
-        holidayContainer.createEl('h4', { text: 'Add New Holiday Source' });
+        // Section 3: Add New Holiday Source
+        const addHeader = holidayContainer.createDiv('holiday-settings-section-header');
+        addHeader.createEl('h4', { text: 'Add New Holiday Source' });
+        holidayContainer.createEl('p', {
+            text: 'Select a country calendar to import standard holidays, or create a custom set for personal events.',
+            cls: 'holiday-section-desc',
+        });
         this.renderAddHolidaySource(holidayContainer);
 
-        // Manual update button
+        // Section 4: Data Sync & Maintenance Card
+        const syncHeader = holidayContainer.createDiv('holiday-settings-section-header');
+        syncHeader.createEl('h4', { text: 'Holiday Data Synchronization' });
+        holidayContainer.createEl('p', {
+            text: 'Country holidays are stored locally per year. Select a target year to download or refresh definitions.',
+            cls: 'holiday-section-desc',
+        });
+
+        const syncCard = holidayContainer.createDiv('holiday-card');
         let targetYear = this.plugin.displayedYear || new Date().getFullYear();
 
-        new Setting(holidayContainer)
+        new Setting(syncCard)
             .setName('Target Year')
             .setDesc('Year to fetch holidays for (defaults to currently viewed year)')
             .addText((text) =>
@@ -756,9 +825,9 @@ export class CalendarSettingTab extends PluginSettingTab {
                     })
             );
 
-        new Setting(holidayContainer)
+        new Setting(syncCard)
             .setName('Update Country Holidays Now')
-            .setDesc('Fetch and update holiday data for the target year')
+            .setDesc('Fetch official holiday data from the library and update vault files')
             .addButton((button) =>
                 button
                     .setButtonText('Fetch & Update')
@@ -779,21 +848,24 @@ export class CalendarSettingTab extends PluginSettingTab {
 
     private renderHolidaySources(containerEl: HTMLElement): void {
         this.plugin.settings.holidaySources.forEach((source, index) => {
-            const settingItem = new Setting(containerEl).setName(
-                source.type === 'country'
-                    ? `Country: ${source.countryCode.toUpperCase()}`
-                    : `Custom: ${source.name}`
-            );
+            const itemWrapper = containerEl.createDiv('holiday-source-item');
+            const settingItem = new Setting(itemWrapper);
+
+            // Left side: Type badge + Name
+            const isCountry = source.type === 'country';
+            settingItem.nameEl.empty();
+            settingItem.nameEl.createSpan({
+                text: isCountry ? 'Country' : 'Custom',
+                cls: `holiday-source-pill ${isCountry ? 'is-country' : 'is-custom'}`,
+            });
+            settingItem.nameEl.createSpan({
+                text: isCountry ? source.countryCode.toUpperCase() : source.name,
+                cls: 'holiday-source-name',
+            });
 
             // Add color picker for country sources
             if (source.type === 'country') {
-                const colorPreview = settingItem.controlEl.createEl('div');
-                colorPreview.style.display = 'inline-block';
-                colorPreview.style.width = '15px';
-                colorPreview.style.height = '15px';
-                colorPreview.style.borderRadius = '3px';
-                colorPreview.style.marginLeft = '10px';
-                colorPreview.style.verticalAlign = 'middle';
+                const colorPreview = settingItem.controlEl.createDiv('holiday-color-swatch');
                 colorPreview.style.backgroundColor = source.color || AVAILABLE_COLOR_OPTIONS['Red pale'];
 
                 settingItem.addDropdown((dropdown) => {
@@ -851,11 +923,12 @@ export class CalendarSettingTab extends PluginSettingTab {
         let selectedColor = AVAILABLE_COLOR_OPTIONS['Red pale'];
         let customName = '';
 
-        const addControlsContainer = containerEl.createDiv('add-holiday-source-controls');
+        const card = containerEl.createDiv('holiday-card');
 
         // Type selector
-        new Setting(addControlsContainer)
+        new Setting(card)
             .setName('Source Type')
+            .setDesc('Choose between pre-configured national holidays or a custom holiday file')
             .addDropdown((dropdown) => {
                 dropdown
                     .addOption('country', 'Country (uses library)')
@@ -869,14 +942,14 @@ export class CalendarSettingTab extends PluginSettingTab {
 
         // Country-specific controls
         if (selectedType === 'country') {
-            const countrySetting = new Setting(addControlsContainer)
+            const countrySetting = new Setting(card)
                 .setName('Select Country')
                 .setDesc('Loading countries...');
 
             // Async load countries
             this.fetchAvailableCountries().then((countries) => {
                 if (countries.length > 0) {
-                    countrySetting.setDesc('');
+                    countrySetting.setDesc('Select the country whose holidays should be included');
                     countrySetting.addDropdown((dropdown) => {
                         dropdown.addOption('', 'Select a country...');
                         countries.forEach((country) => {
@@ -896,8 +969,9 @@ export class CalendarSettingTab extends PluginSettingTab {
             });
 
             // Color picker
-            new Setting(addControlsContainer)
+            new Setting(card)
                 .setName('Assign Color')
+                .setDesc('Dot/indicator color for this country’s holidays on the calendar')
                 .addDropdown((dropdown) => {
                     Object.keys(AVAILABLE_COLOR_OPTIONS).forEach((key) => {
                         dropdown.addOption(AVAILABLE_COLOR_OPTIONS[key], key);
@@ -909,7 +983,7 @@ export class CalendarSettingTab extends PluginSettingTab {
                 });
         } else {
             // Custom name input
-            new Setting(addControlsContainer)
+            new Setting(card)
                 .setName('Custom Set Name')
                 .setDesc('A short name for this custom set (e.g., "Family", "Work Events")')
                 .addText((text) => {
@@ -922,59 +996,60 @@ export class CalendarSettingTab extends PluginSettingTab {
                 });
         }
 
-        // Add button
-        new Setting(addControlsContainer).addButton((button) =>
-            button
-                .setButtonText('Add Source')
-                .setCta()
-                .onClick(async () => {
-                    let newSource: HolidaySource | null = null;
+        // Action Footer for Add Button
+        const footer = card.createDiv('holiday-card-footer');
+        const addBtn = footer.createEl('button', {
+            cls: 'mod-cta',
+            text: 'Add Source',
+        });
 
-                    if (selectedType === 'country') {
-                        if (!selectedCountryCode) {
-                            new Notice('Please select a country');
-                            return;
-                        }
-                        if (this.plugin.settings.holidaySources.some(
-                            (s) => s.type === 'country' && s.countryCode.toUpperCase() === selectedCountryCode.toUpperCase()
-                        )) {
-                            new Notice(`Country source '${selectedCountryCode.toUpperCase()}' already exists`);
-                            return;
-                        }
-                        newSource = {
-                            type: 'country',
-                            countryCode: selectedCountryCode,
-                            color: selectedColor,
-                        };
-                    } else {
-                        if (!customName) {
-                            new Notice('Please enter a name for the custom set');
-                            return;
-                        }
-                        const sourceId = this.plugin.holidayService.getHolidaySourceId({
-                            type: 'custom',
-                            name: customName,
-                        });
-                        if (this.plugin.settings.holidaySources.some(
-                            (s) => s.type === 'custom' && this.plugin.holidayService.getHolidaySourceId(s) === sourceId
-                        )) {
-                            new Notice(`A custom source with ID '${sourceId}' already exists`);
-                            return;
-                        }
-                        newSource = { type: 'custom', name: customName };
-                    }
+        addBtn.addEventListener('click', async () => {
+            let newSource: HolidaySource | null = null;
 
-                    if (newSource) {
-                        this.plugin.settings.holidaySources.push(newSource);
-                        await this.plugin.saveSettings();
-                        const currentYear = new Date().getFullYear();
-                        await this.plugin.holidayService.ensureHolidayFileExists(currentYear, newSource);
-                        new Notice('Added holiday source');
-                        this.display();
-                        await this.plugin.loadHolidaysForYear(currentYear);
-                    }
-                })
-        );
+            if (selectedType === 'country') {
+                if (!selectedCountryCode) {
+                    new Notice('Please select a country');
+                    return;
+                }
+                if (this.plugin.settings.holidaySources.some(
+                    (s) => s.type === 'country' && s.countryCode.toUpperCase() === selectedCountryCode.toUpperCase()
+                )) {
+                    new Notice(`Country source '${selectedCountryCode.toUpperCase()}' already exists`);
+                    return;
+                }
+                newSource = {
+                    type: 'country',
+                    countryCode: selectedCountryCode,
+                    color: selectedColor,
+                };
+            } else {
+                if (!customName) {
+                    new Notice('Please enter a name for the custom set');
+                    return;
+                }
+                const sourceId = this.plugin.holidayService.getHolidaySourceId({
+                    type: 'custom',
+                    name: customName,
+                });
+                if (this.plugin.settings.holidaySources.some(
+                    (s) => s.type === 'custom' && this.plugin.holidayService.getHolidaySourceId(s) === sourceId
+                )) {
+                    new Notice(`A custom source with ID '${sourceId}' already exists`);
+                    return;
+                }
+                newSource = { type: 'custom', name: customName };
+            }
+
+            if (newSource) {
+                this.plugin.settings.holidaySources.push(newSource);
+                await this.plugin.saveSettings();
+                const currentYear = new Date().getFullYear();
+                await this.plugin.holidayService.ensureHolidayFileExists(currentYear, newSource);
+                new Notice('Added holiday source');
+                this.display();
+                await this.plugin.loadHolidaysForYear(currentYear);
+            }
+        });
     }
 
     private renderTagMappings(containerEl: HTMLElement): void {
@@ -983,8 +1058,15 @@ export class CalendarSettingTab extends PluginSettingTab {
 
         sortedTags.forEach((tag) => {
             const currentAppearance = mappings[tag];
+            const itemWrapper = containerEl.createDiv('calendar-mapping-item');
+            const settingItem = new Setting(itemWrapper);
 
-            const settingItem = new Setting(containerEl).setName(tag);
+            // Left side: tag pill
+            settingItem.nameEl.empty();
+            settingItem.nameEl.createSpan({
+                text: tag,
+                cls: 'calendar-settings-tag-pill',
+            });
 
             // Color Dropdown
             settingItem.addDropdown((dd) => {
@@ -1000,7 +1082,7 @@ export class CalendarSettingTab extends PluginSettingTab {
                 });
             });
 
-            // Symbol Textbox
+            // Symbol Textbox (compact)
             settingItem.addText((text) => {
                 text
                     .setPlaceholder("●")
@@ -1010,16 +1092,12 @@ export class CalendarSettingTab extends PluginSettingTab {
                         appearance.symbol = val.trim() || undefined;
                         await this.plugin.saveSettings();
                     });
+                text.inputEl.style.width = '55px';
+                text.inputEl.style.textAlign = 'center';
             });
 
             // Color Preview Dot
-            const colorPreview = settingItem.controlEl.createEl("div");
-            colorPreview.style.display = "inline-block";
-            colorPreview.style.width = "15px";
-            colorPreview.style.height = "15px";
-            colorPreview.style.borderRadius = "50%";
-            colorPreview.style.marginLeft = "10px";
-            colorPreview.style.verticalAlign = "middle";
+            const colorPreview = settingItem.controlEl.createDiv('calendar-settings-color-swatch');
             colorPreview.style.backgroundColor = currentAppearance.color || AVAILABLE_COLOR_OPTIONS['Red pale'];
 
             // Remove Button
@@ -1041,63 +1119,72 @@ export class CalendarSettingTab extends PluginSettingTab {
     private renderAddTagMappingControls(containerEl: HTMLElement): void {
         let newSymbol = "●";
         let selectedColorVar = AVAILABLE_COLOR_OPTIONS["Red pale"];
-
-        const wrapper = containerEl.createDiv("add-tag-mapping-controls");
-        const row = new Setting(wrapper).setName("New Tag Mapping");
-
         let tagInputComponent: TextComponent | null = null;
 
-        row.addText((text) => {
-            tagInputComponent = text;
-            text.setPlaceholder("#your/tag").onChange(() => { });
-            new TagSuggest(this.app, text.inputEl);
+        const card = containerEl.createDiv('calendar-settings-card');
+
+        // Field 1: Tag Name
+        new Setting(card)
+            .setName('Tag')
+            .setDesc('Vault tag to associate with color and symbol (must start with #)')
+            .addText((text) => {
+                tagInputComponent = text;
+                text.setPlaceholder("#your/tag");
+                new TagSuggest(this.app, text.inputEl);
+            });
+
+        // Field 2: Symbol
+        new Setting(card)
+            .setName('Display Symbol')
+            .setDesc('Emoji, character, or dot to display on calendar dates')
+            .addText((text) => {
+                text
+                    .setPlaceholder("● / 😎 / * …")
+                    .onChange((v) => (newSymbol = v.trim() || "●"));
+            });
+
+        // Field 3: Color Dropdown
+        new Setting(card)
+            .setName('Default Color')
+            .setDesc('Fallback color for notes with this tag')
+            .addDropdown((dd) => {
+                for (const key of Object.keys(AVAILABLE_COLOR_OPTIONS)) {
+                    dd.addOption(AVAILABLE_COLOR_OPTIONS[key], key);
+                }
+                dd.setValue(selectedColorVar);
+                dd.onChange((v) => (selectedColorVar = v));
+            });
+
+        // Action Footer
+        const footer = card.createDiv('calendar-settings-card-footer');
+        const addBtn = footer.createEl('button', {
+            cls: 'mod-cta',
+            text: 'Add Tag Mapping',
         });
 
-        row.addText((text) => {
-            text
-                .setPlaceholder("● / 😎 / * …")
-                .onChange((v) => (newSymbol = v.trim() || "●"));
-        });
-
-        row.addDropdown((dd) => {
-            for (const key of Object.keys(AVAILABLE_COLOR_OPTIONS)) {
-                dd.addOption(AVAILABLE_COLOR_OPTIONS[key], key);
+        addBtn.addEventListener('click', async () => {
+            const tag = tagInputComponent?.getValue().trim() ?? "";
+            if (!tag) {
+                new Notice("Enter a tag first");
+                return;
             }
-            dd.setValue(selectedColorVar);
-            dd.onChange((v) => (selectedColorVar = v));
+            if (!tag.startsWith("#")) {
+                new Notice("Tag must start with '#'");
+                return;
+            }
+            if (this.plugin.settings.tagAppearance?.[tag]) {
+                new Notice(`Mapping for "${tag}" already exists`);
+                return;
+            }
+
+            this.plugin.settings.tagAppearance[tag] = {
+                color: selectedColorVar,
+                symbol: newSymbol,
+            };
+
+            await this.plugin.saveSettings();
+            this.display();
+            new Notice(`Added color mapping for ${tag}`);
         });
-
-        row.addButton((btn) =>
-            btn
-                .setButtonText("Add Mapping")
-                .setCta()
-                .onClick(async () => {
-                    const tag = tagInputComponent?.getValue().trim() ?? "";
-                    if (!tag) {
-                        new Notice("Enter a tag first");
-                        return;
-                    }
-                    if (!tag.startsWith("#")) {
-                        new Notice("Tag must start with '#'");
-                        return;
-                    }
-                    if (this.plugin.settings.tagAppearance?.[tag]) {
-                        new Notice(`Mapping for "${tag}" already exists`);
-                        return;
-                    }
-
-                    this.plugin.settings.tagAppearance[tag] = {
-                        color: selectedColorVar,
-                        symbol: newSymbol,
-                    };
-
-                    await this.plugin.saveSettings();
-                    this.display();
-
-                    tagInputComponent?.setValue("");
-                    newSymbol = "●";
-                    selectedColorVar = AVAILABLE_COLOR_OPTIONS["Red pale"];
-                })
-        );
     }
 }
