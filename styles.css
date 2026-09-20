@@ -66,7 +66,7 @@
     --phi-14: 13488px;
     --phi-15: 21840px;
 
-    --cell-height: 60px;
+    --cell-height: 68px;
     /* INCREASED to fit ranges */
     --range-bar-height: 4px;
     --range-bar-spacing: 1px;
@@ -100,7 +100,7 @@
         background-color: var(--background-primary);
         display: flex;
         flex-direction: column;
-        max-width: var(--phi-7-25);
+        max-width: 100%;
         min-width: 370px;
         /* Widened slightly for breathing room */
         margin: 0 auto;
@@ -109,6 +109,8 @@
         border-right: 1px solid var(--c-gray-100);
         overflow: hidden;
         font-family: sans-serif;
+        container-type: inline-size;
+        container-name: calendar;
     }
 
     /* --- HEADER --- */
@@ -153,7 +155,7 @@
         text-align: center;
         font-weight: 500;
         color: var(--c-gray-400);
-        font-size: 0.875rem;
+        font-size: clamp(0.75rem, 0.6rem + 0.5cqw, 0.95rem);
     }
 
     /* --- LIST AREA --- */
@@ -200,14 +202,14 @@
 
     .week-num-text {
         font-weight: 500;
-        font-size: 0.8rem;
+        font-size: clamp(0.8rem, 0.15rem + 2.5cqw, 1.0rem);
         color: var(--color-grey-text);
         transition: all 0.2s;
     }
 
     .week-num-text.is-today {
         font-weight: 900;
-        font-size: 0.9rem;
+        font-size: clamp(0.9rem, 0.25rem + 2.5cqw, 1.1rem);
     }
 
     /* .week-num-text.is-active {
@@ -322,19 +324,19 @@
 
     /* Top Content: Number */
     .top-content {
-        flex: 0 0 20px;
+        flex: 0 0 24px;
         width: 100%;
         text-align: center;
-        padding-top: 2px;
-        height: 20px;
-        min-height: 20px;
+        padding-top: 5px;
+        height: 24px;
+        min-height: 24px;
         /* Ensure space for number */
         z-index: 2;
     }
 
     .day-number {
         display: inline-block;
-        font-size: 1rem;
+        font-size: clamp(1rem, 0.2rem + 3.08cqw, 1.25rem);
         font-weight: 500;
         padding: 0px 4px;
         border-radius: 4px;
@@ -379,7 +381,8 @@
 
     .day-number.has-holiday {
         color: white;
-        padding-bottom: 1px;
+        padding: 1px 5px;
+        line-height: 1.1;
         /* text-shadow: 0 0 2px rgba(0, 0, 0, 0.2); */
     }
 
@@ -414,7 +417,7 @@
     .dot-area {
         flex: 0 0 10px;
         text-align: center;
-        margin: 4px 0;
+        margin: 5px 0 4px 0;
         height: 10px;
         min-height: 10px;
         width: 100%;
@@ -554,6 +557,15 @@
         width: 100%;
         height: 100%;
         overflow: visible;
+    }
+
+    .calendar-month-separator {
+        opacity: 1;
+        transition: opacity 0.2s ease, stroke 0.2s ease;
+    }
+
+    .calendar-month-border {
+        stroke: var(--text-normal);
     }
 
     /* 3. Sidebar Column */
@@ -1114,15 +1126,15 @@
 
     /* 1. Reduce cell height */
     .calendar-container.is-compact-mode {
-        --cell-height: 39px;
+        --cell-height: 43px;
     }
 
     /* 2. Adjust Day Number */
     .calendar-container.is-compact-mode .top-content {
-        flex: 0 0 16px;
-        height: 16px;
-        min-height: 16px;
-        padding-top: 1px;
+        flex: 0 0 18px;
+        height: 18px;
+        min-height: 18px;
+        padding-top: 3px;
         font-size: 0.85em;
     }
 

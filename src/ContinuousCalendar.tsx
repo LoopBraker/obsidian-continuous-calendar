@@ -732,6 +732,7 @@ const WeekRow: React.FC<WeekRowProps> = ({
                     <svg viewBox="0 -2 700 100" className="svg-content" preserveAspectRatio="none">
                         {borderPath && (
                             <path
+                                className="calendar-month-border"
                                 d={borderPath}
                                 fill="none"
                                 stroke="var(--text-normal)"
@@ -742,12 +743,13 @@ const WeekRow: React.FC<WeekRowProps> = ({
                         )}
                         {separatorPath && (
                             <path
+                                className="calendar-month-separator"
                                 d={separatorPath}
                                 fill="none"
-                                stroke="var(--text-normal)"
+                                stroke="var(--text-muted)"
                                 strokeWidth="1"
-                                strokeDasharray={isCompact ? '10 6' : '6 8'} //the first number is the length of the dash, the second is the length of the gap
-                                strokeLinecap="round"
+                                strokeDasharray="3 3"
+                                strokeLinecap="butt"
                                 vectorEffect="non-scaling-stroke"
                             />
                         )}
@@ -1078,7 +1080,7 @@ export const ContinuousCalendar = (props: ContinuousCalendarProps) => {
 
     useEffect(() => {
         const updateWeeks = () => {
-            const weeks = Math.ceil(window.innerHeight / 62) + 2;
+            const weeks = Math.ceil(window.innerHeight / 70) + 2;
             setMinWeeksToFill(weeks);
         };
         updateWeeks();
@@ -1397,7 +1399,7 @@ export const ContinuousCalendar = (props: ContinuousCalendarProps) => {
                         )}
                         <Virtuoso
                             ref={virtuosoRef}
-                            defaultItemHeight={isCompact ? 39 : 60}
+                            defaultItemHeight={isCompact ? 43 : 68}
                             rangeChanged={setVisibleRange}
                             context={{ dataVersion }}
                             style={{
