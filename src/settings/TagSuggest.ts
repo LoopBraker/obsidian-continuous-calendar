@@ -1,4 +1,4 @@
-import { App, AbstractInputSuggest, TFile, prepareFuzzySearch } from 'obsidian';
+import { App, AbstractInputSuggest, TFile } from 'obsidian';
 
 /**
  * Tag suggester for auto-completing tag names

@@ -1,7 +1,7 @@
-import { App, PluginSettingTab, Setting, AbstractInputSuggest, prepareFuzzySearch, TextComponent, Notice, TFolder, DropdownComponent } from 'obsidian';
-import type SamplePlugin from '../main';
-import type { CalendarPluginSettings, DateProperty } from './settings';
-import { HolidaySource, CountryHolidaySource } from '../services/holiday/HolidayTypes';
+import { App, PluginSettingTab, Setting, AbstractInputSuggest, prepareFuzzySearch, TextComponent, Notice, TFolder, setIcon } from 'obsidian';
+import type ContinuousCalendarPlugin from '../main';
+import type { DateProperty } from './settings';
+import { HolidaySource } from '../services/holiday/HolidayTypes';
 
 // Helper function to get all folder paths
 function getAllFolderPaths(app: App): string[] {
@@ -238,10 +238,13 @@ class PropertySuggest extends AbstractInputSuggest<string> {
     }
 }
 
-export class CalendarSettingTab extends PluginSettingTab {
-    plugin: SamplePlugin;
+export type SettingsTabId = 'general' | 'tasks' | 'holidays';
 
-    constructor(app: App, plugin: SamplePlugin) {
+export class CalendarSettingTab extends PluginSettingTab {
+    plugin: ContinuousCalendarPlugin;
+    private activeTab: SettingsTabId = 'general';
+
+    constructor(app: App, plugin: ContinuousCalendarPlugin) {
         super(app, plugin);
         this.plugin = plugin;
     }
@@ -252,6 +255,52 @@ export class CalendarSettingTab extends PluginSettingTab {
 
         containerEl.createEl('h1', { text: 'Calendar Plugin Settings' });
 
+        this.renderTabNav(containerEl);
+
+        const contentEl = containerEl.createDiv('calendar-settings-tab-content');
+
+        switch (this.activeTab) {
+            case 'general':
+                this.renderGeneralTab(contentEl);
+                break;
+            case 'tasks':
+                this.renderTasksTab(contentEl);
+                break;
+            case 'holidays':
+                this.renderHolidaysTab(contentEl);
+                break;
+        }
+    }
+
+    private renderTabNav(containerEl: HTMLElement): void {
+        const navEl = containerEl.createDiv('calendar-settings-tab-nav');
+
+        const tabs: { id: SettingsTabId; label: string; icon: string }[] = [
+            { id: 'general', label: 'General', icon: 'sliders-horizontal' },
+            { id: 'tasks', label: 'Tasks', icon: 'check-square' },
+            { id: 'holidays', label: 'Holidays', icon: 'calendar' },
+        ];
+
+        tabs.forEach((tab) => {
+            const btn = navEl.createEl('button', {
+                cls: `calendar-settings-tab-btn ${this.activeTab === tab.id ? 'is-active' : ''}`,
+            });
+
+            const iconSpan = btn.createSpan('calendar-settings-tab-icon');
+            setIcon(iconSpan, tab.icon);
+
+            btn.createSpan({ text: tab.label });
+
+            btn.addEventListener('click', () => {
+                if (this.activeTab !== tab.id) {
+                    this.activeTab = tab.id;
+                    this.display();
+                }
+            });
+        });
+    }
+
+    private renderGeneralTab(containerEl: HTMLElement): void {
         // ========== DEFAULT COLORS & CONFIRMATIONS ==========
         containerEl.createEl('h2', { text: 'Default Colors & Confirmations' });
 
@@ -260,14 +309,18 @@ export class CalendarSettingTab extends PluginSettingTab {
             .setName('Default Event Dot Color')
             .setDesc('Fallback color for event dots if no color is specified')
             .addDropdown((dropdown) => {
-                let colorPreview: HTMLDivElement;
-
                 Object.keys(AVAILABLE_COLOR_OPTIONS).forEach((friendlyName) => {
                     const cssVar = AVAILABLE_COLOR_OPTIONS[friendlyName];
                     dropdown.addOption(cssVar, friendlyName);
                 });
 
                 dropdown.setValue(this.plugin.settings.defaultDotColor);
+
+                const colorPreview = dropdown.selectEl.parentElement?.createEl('div', {
+                    attr: {
+                        style: 'display: inline-block; width: 15px; height: 15px; border-radius: 50%; margin-left: 8px; vertical-align: middle; background-color: ' + this.plugin.settings.defaultDotColor
+                    }
+                }) as HTMLDivElement;
 
                 dropdown.onChange(async (value: string) => {
                     this.plugin.settings.defaultDotColor = value;
@@ -276,13 +329,6 @@ export class CalendarSettingTab extends PluginSettingTab {
                         colorPreview.style.backgroundColor = value;
                     }
                 });
-
-                // Create color preview dot
-                colorPreview = dropdown.selectEl.parentElement?.createEl('div', {
-                    attr: {
-                        style: 'display: inline-block; width: 15px; height: 15px; border-radius: 50%; margin-left: 8px; vertical-align: middle; background-color: ' + this.plugin.settings.defaultDotColor
-                    }
-                }) as HTMLDivElement;
             });
 
         // Default Bar Color
@@ -290,14 +336,18 @@ export class CalendarSettingTab extends PluginSettingTab {
             .setName('Default Range Bar Color')
             .setDesc('Fallback color for range bars if no color is specified')
             .addDropdown((dropdown) => {
-                let colorPreview: HTMLDivElement;
-
                 Object.keys(AVAILABLE_COLOR_OPTIONS).forEach((friendlyName) => {
                     const cssVar = AVAILABLE_COLOR_OPTIONS[friendlyName];
                     dropdown.addOption(cssVar, friendlyName);
                 });
 
                 dropdown.setValue(this.plugin.settings.defaultBarColor);
+
+                const colorPreview = dropdown.selectEl.parentElement?.createEl('div', {
+                    attr: {
+                        style: 'display: inline-block; width: 15px; height: 15px; border-radius: 50%; margin-left: 8px; vertical-align: middle; background-color: ' + this.plugin.settings.defaultBarColor
+                    }
+                }) as HTMLDivElement;
 
                 dropdown.onChange(async (value: string) => {
                     this.plugin.settings.defaultBarColor = value;
@@ -306,13 +356,6 @@ export class CalendarSettingTab extends PluginSettingTab {
                         colorPreview.style.backgroundColor = value;
                     }
                 });
-
-                // Create color preview dot
-                colorPreview = dropdown.selectEl.parentElement?.createEl('div', {
-                    attr: {
-                        style: 'display: inline-block; width: 15px; height: 15px; border-radius: 50%; margin-left: 8px; vertical-align: middle; background-color: ' + this.plugin.settings.defaultBarColor
-                    }
-                }) as HTMLDivElement;
             });
 
         // Confirm before creating daily notes
@@ -365,17 +408,13 @@ export class CalendarSettingTab extends PluginSettingTab {
 
         // ========== CUSTOM DATE PROPERTIES ==========
         this.renderCustomDatePropertiesSettings(containerEl);
+    }
 
-        // Separator
-        containerEl.createEl('hr', { cls: 'settings-separator' });
-
-        // ========== TASK SETTINGS ==========
+    private renderTasksTab(containerEl: HTMLElement): void {
         this.renderTaskSettings(containerEl);
+    }
 
-        // Separator
-        containerEl.createEl('hr', { cls: 'settings-separator' });
-
-        // ========== HOLIDAYS ==========
+    private renderHolidaysTab(containerEl: HTMLElement): void {
         this.renderHolidaySettings(containerEl);
     }
 

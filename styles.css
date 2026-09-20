@@ -1226,3 +1226,50 @@
         line-height: 6px;
     }
 }
+
+/* --- Settings Tabs UI --- */
+.calendar-settings-tab-nav {
+    display: flex;
+    gap: 8px;
+    border-bottom: 1px solid var(--background-modifier-border);
+    margin-top: 12px;
+    margin-bottom: 20px;
+    padding-bottom: 8px;
+}
+
+.calendar-settings-tab-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: transparent;
+    border: none;
+    border-radius: var(--radius-m, 6px);
+    padding: 6px 14px;
+    font-size: var(--font-ui-medium, 14px);
+    font-weight: var(--font-medium, 500);
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: background 0.15s ease, color 0.15s ease;
+}
+
+.calendar-settings-tab-btn:hover {
+    background-color: var(--background-modifier-hover);
+    color: var(--text-normal);
+}
+
+.calendar-settings-tab-btn.is-active {
+    background-color: var(--background-modifier-active-hover, var(--background-secondary));
+    color: var(--interactive-accent);
+    font-weight: var(--font-semibold, 600);
+}
+
+.calendar-settings-tab-btn .calendar-settings-tab-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.calendar-settings-tab-btn .calendar-settings-tab-icon svg {
+    width: 16px;
+    height: 16px;
+}
