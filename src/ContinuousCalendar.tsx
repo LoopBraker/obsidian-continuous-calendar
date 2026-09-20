@@ -1367,7 +1367,6 @@ export const ContinuousCalendar = (props: ContinuousCalendarProps) => {
                     className="day-detail-overlay"
                     role="dialog"
                     aria-modal="true"
-                    aria-label="Day details"
                     onClick={(e) => {
                         // Close when clicking the background
                         if (e.target === e.currentTarget) {
