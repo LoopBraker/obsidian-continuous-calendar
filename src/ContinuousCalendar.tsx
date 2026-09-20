@@ -32,6 +32,28 @@ const toDateKey = (date: Date): string => {
     return `${y}-${m}-${d}`;
 };
 
+const isSameMonth = (first: Date, second: Date): boolean => {
+    return first.getFullYear() === second.getFullYear() &&
+        first.getMonth() === second.getMonth();
+};
+
+const getInitialMonthDetailDate = (monthDate: Date): Date => {
+    const today = new Date();
+    if (isSameMonth(monthDate, today)) {
+        return new Date(today.getFullYear(), today.getMonth(), today.getDate());
+    }
+    return new Date(monthDate.getFullYear(), monthDate.getMonth(), 1);
+};
+
+const moveDateToMonth = (date: Date, monthDate: Date): Date => {
+    const lastDay = new Date(monthDate.getFullYear(), monthDate.getMonth() + 1, 0).getDate();
+    return new Date(
+        monthDate.getFullYear(),
+        monthDate.getMonth(),
+        Math.min(date.getDate(), lastDay)
+    );
+};
+
 const getWeekNumber = (d: Date): number => {
     const target = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
     target.setUTCDate(target.getUTCDate() + 4 - (target.getUTCDay() || 7));
@@ -393,12 +415,20 @@ const CalendarFooter: React.FC<CalendarFooterProps> = ({
         </button>
 
         <div className="footer-controls">
-            <button className="footer-arrow" onClick={() => onYearChange(year - 1)}>
-                <span className="arrow-icon">&larr;</span>
+            <button
+                className="footer-year-link"
+                aria-label={`Go to ${year - 1}`}
+                onClick={() => onYearChange(year - 1)}
+            >
+                {year - 1}
             </button>
             <div className="year-display">{year}</div>
-            <button className="footer-arrow" onClick={() => onYearChange(year + 1)}>
-                <span className="arrow-icon">&rarr;</span>
+            <button
+                className="footer-year-link"
+                aria-label={`Go to ${year + 1}`}
+                onClick={() => onYearChange(year + 1)}
+            >
+                {year + 1}
             </button>
         </div>
 
@@ -725,54 +755,52 @@ const WeekRow: React.FC<WeekRowProps> = ({
                 </div>
             </div>
 
-            {viewMode === 'Continuous' && (
-                <div className="sidebar-col">
-                    {shouldShowLabel && (
-                        <div className="month-label-group">
-                            <div className="month-header-row">
-                                <span
-                                    className={`month-name ${viewMode === 'Continuous' ? 'clickable' : ''}`}
-                                    onClick={() => {
-                                        if (viewMode === 'Continuous' && onMonthNameClick) {
-                                            onMonthNameClick(firstDayOfMonth.date);
-                                        }
+            <div className="sidebar-col">
+                {shouldShowLabel && (
+                    <div className="month-label-group">
+                        <div className="month-header-row">
+                            <span
+                                className={`month-name ${viewMode === 'Continuous' ? 'clickable' : ''}`}
+                                onClick={() => {
+                                    if (viewMode === 'Continuous' && onMonthNameClick) {
+                                        onMonthNameClick(firstDayOfMonth.date);
+                                    }
+                                }}
+                            >
+                                {monthNames[firstDayOfMonth.date.getMonth()]}
+                            </span>
+                            {viewMode === 'Continuous' && onPinClick && firstDayOfMonth.date.getFullYear() <= (currentYear ?? today.getFullYear()) && (
+                                <button
+                                    className={`pin-btn ${isPinned ? 'pinned' : ''}`}
+                                    onClick={(e) => {
+                                        e.stopPropagation();
+                                        onPinClick(firstDayOfMonth.date);
                                     }}
+                                    title={isPinned ? "Unpin Month" : "Pin Month"}
                                 >
-                                    {monthNames[firstDayOfMonth.date.getMonth()]}
-                                </span>
-                                {viewMode === 'Continuous' && onPinClick && firstDayOfMonth.date.getFullYear() <= (currentYear ?? today.getFullYear()) && (
-                                    <button
-                                        className={`pin-btn ${isPinned ? 'pinned' : ''}`}
-                                        onClick={(e) => {
-                                            e.stopPropagation();
-                                            onPinClick(firstDayOfMonth.date);
-                                        }}
-                                        title={isPinned ? "Unpin Month" : "Pin Month"}
-                                    >
-                                        <svg viewBox="0 0 24 24" fill="currentColor" className="pin-icon-svg">
-                                            <path d="M16,12V4H17V2H7V4H8V12L6,14V16H11.2V22H12.8V16H18V14L16,12Z" />
-                                        </svg>
-                                    </button>
-                                )}
-                            </div>
-                            {viewMode === 'Continuous' && (
-                                isRealCurrentMonth ? (
-                                    focusedMonths.size > 0 && (
-                                        <button onClick={resetFocus} className="btn-focus reset">RESET</button>
-                                    )
-                                ) : (
-                                    <button
-                                        onClick={() => toggleMonthFocus(firstDayOfMonth.date.getFullYear(), firstDayOfMonth.date.getMonth())}
-                                        className={`btn-focus ${isMonthFocused ? 'active' : 'inactive'}`}
-                                    >
-                                        {isMonthFocused ? 'Active' : 'Focus'}
-                                    </button>
-                                )
+                                    <svg viewBox="0 0 24 24" fill="currentColor" className="pin-icon-svg">
+                                        <path d="M16,12V4H17V2H7V4H8V12L6,14V16H11.2V22H12.8V16H18V14L16,12Z" />
+                                    </svg>
+                                </button>
                             )}
                         </div>
-                    )}
-                </div>
-            )}
+                        {viewMode === 'Continuous' && (
+                            isRealCurrentMonth ? (
+                                focusedMonths.size > 0 && (
+                                    <button onClick={resetFocus} className="btn-focus reset">RESET</button>
+                                )
+                            ) : (
+                                <button
+                                    onClick={() => toggleMonthFocus(firstDayOfMonth.date.getFullYear(), firstDayOfMonth.date.getMonth())}
+                                    className={`btn-focus ${isMonthFocused ? 'active' : 'inactive'}`}
+                                >
+                                    {isMonthFocused ? 'Active' : 'Focus'}
+                                </button>
+                            )
+                        )}
+                    </div>
+                )}
+            </div>
         </div>
     );
 };
@@ -815,6 +843,7 @@ const getWeeksForSingleMonth = (date: Date): WeekData[] => {
 interface TraditionalMonthViewProps {
     currentDate: Date;
     onMonthChange: (d: Date) => void;
+    onGoToToday: () => void;
     onClose: () => void;
     focusedMonths: Set<string>;
     selectedWeekIndex: number | null;
@@ -824,6 +853,7 @@ interface TraditionalMonthViewProps {
     onNumberClick: (date: Date, e: React.MouseEvent) => void;
     indexService: IndexService;
     isCompact: boolean;
+    dayDetail: React.ReactNode;
 }
 
 type MonthToolbarIconName = 'arrow-left' | 'chevron-left' | 'chevron-right';
@@ -855,6 +885,7 @@ const MonthToolbarIcon = ({ name }: { name: MonthToolbarIconName }) => {
 const TraditionalMonthView: React.FC<TraditionalMonthViewProps> = ({
     currentDate,
     onMonthChange,
+    onGoToToday,
     onClose,
     focusedMonths,
     selectedWeekIndex,
@@ -863,7 +894,8 @@ const TraditionalMonthView: React.FC<TraditionalMonthViewProps> = ({
     onCellClick,
     onNumberClick,
     indexService,
-    isCompact
+    isCompact,
+    dayDetail
 }) => {
     const monthNames = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
     const weeks = useMemo(() => getWeeksForSingleMonth(currentDate), [currentDate]);
@@ -873,11 +905,6 @@ const TraditionalMonthView: React.FC<TraditionalMonthViewProps> = ({
     const handleNav = (direction: -1 | 1) => {
         onMonthChange(new Date(currentDate.getFullYear(), currentDate.getMonth() + direction, 1));
     };
-    const handleToday = () => {
-        const today = new Date();
-        onMonthChange(new Date(today.getFullYear(), today.getMonth(), 1));
-    };
-
     return (
         <div className="month-view-container">
             <div className="month-view-header">
@@ -908,7 +935,7 @@ const TraditionalMonthView: React.FC<TraditionalMonthViewProps> = ({
                     <button
                         type="button"
                         className="month-toolbar-button month-today-button"
-                        onClick={handleToday}
+                        onClick={onGoToToday}
                         aria-label="Go to current month"
                         title="Go to current month"
                     >
@@ -934,6 +961,7 @@ const TraditionalMonthView: React.FC<TraditionalMonthViewProps> = ({
                             <div key={i} className="header-day-label">{d}</div>
                         ))}
                     </div>
+                    <div className="header-spacer-right"></div>
                 </div>
             </div>
             <div className="month-view-list-wrapper">
@@ -956,6 +984,15 @@ const TraditionalMonthView: React.FC<TraditionalMonthViewProps> = ({
                         isCompact={isCompact}
                     />
                 ))}
+            </div>
+            <div className="month-day-detail-region">
+                {dayDetail ? (
+                    <div className="day-detail-surface day-detail-surface--inline">
+                        {dayDetail}
+                    </div>
+                ) : (
+                    <p className="month-day-detail-placeholder">Select a day to see its details.</p>
+                )}
             </div>
         </div>
     );
@@ -1064,21 +1101,27 @@ export const ContinuousCalendar = (props: ContinuousCalendarProps) => {
         }
     };
 
-    const handlePrevDay = () => {
+    const handleMonthCellClick = (date: Date) => {
+        setSelection({ date, type: 'cell' });
+    };
+
+    const moveDetailDay = (offset: -1 | 1) => {
         if (selection && selection.type === 'cell') {
-            const prev = new Date(selection.date);
-            prev.setDate(prev.getDate() - 1);
-            setSelection({ date: prev, type: 'cell' });
+            const next = new Date(selection.date);
+            next.setDate(next.getDate() + offset);
+            setSelection({ date: next, type: 'cell' });
+
+            if (viewMode === 'month' && !isSameMonth(next, monthViewDate)) {
+                setMonthViewDate(new Date(next.getFullYear(), next.getMonth(), 1));
+                if (next.getFullYear() !== currentYear) {
+                    handleYearChange(next.getFullYear());
+                }
+            }
         }
     };
 
-    const handleNextDay = () => {
-        if (selection && selection.type === 'cell') {
-            const next = new Date(selection.date);
-            next.setDate(next.getDate() + 1);
-            setSelection({ date: next, type: 'cell' });
-        }
-    };
+    const handlePrevDay = () => moveDetailDay(-1);
+    const handleNextDay = () => moveDetailDay(1);
 
     const handleYearChange = (newYear: number) => {
         setCurrentYear(newYear);
@@ -1109,6 +1152,14 @@ export const ContinuousCalendar = (props: ContinuousCalendarProps) => {
         } else {
             setSelection({ date, type: 'number' });
         }
+    };
+
+    const handleMonthNumberClick = (date: Date, e: React.MouseEvent) => {
+        if ((e.ctrlKey || e.metaKey) && selection) {
+            handleNumberClick(date, e);
+            return;
+        }
+        setSelection({ date, type: 'cell' });
     };
 
     const toggleMonthFocus = (year: number, month: number) => {
@@ -1223,7 +1274,10 @@ export const ContinuousCalendar = (props: ContinuousCalendarProps) => {
         const now = new Date();
         if (viewMode === 'month') {
             setMonthViewDate(now);
-            setCurrentYear(now.getFullYear());
+            setSelection({ date: now, type: 'cell' });
+            if (now.getFullYear() !== currentYear) {
+                handleYearChange(now.getFullYear());
+            }
         } else {
             const thisYear = now.getFullYear();
             if (thisYear !== currentYear) {
@@ -1263,14 +1317,22 @@ export const ContinuousCalendar = (props: ContinuousCalendarProps) => {
     };
 
     const handleMonthNameClick = (date: Date) => {
-        setMonthViewDate(date);
+        const monthDate = new Date(date.getFullYear(), date.getMonth(), 1);
+        setMonthViewDate(monthDate);
+        setSelection({ date: getInitialMonthDetailDate(monthDate), type: 'cell' });
         setViewMode('month');
     };
 
     const handleMonthViewNav = (newDate: Date) => {
         setMonthViewDate(newDate);
+        setSelection((currentSelection) => ({
+            date: currentSelection?.type === 'cell'
+                ? moveDateToMonth(currentSelection.date, newDate)
+                : getInitialMonthDetailDate(newDate),
+            type: 'cell'
+        }));
         if (newDate.getFullYear() !== currentYear) {
-            setCurrentYear(newDate.getFullYear());
+            handleYearChange(newDate.getFullYear());
         }
     };
 
@@ -1280,10 +1342,25 @@ export const ContinuousCalendar = (props: ContinuousCalendarProps) => {
         }
     }, []);
 
+    const dayDetail = selection?.type === 'cell' ? (
+        <DayDetailView
+            dateKey={toDateKey(selection.date)}
+            index={index}
+            app={app}
+            settings={index.settings}
+            onClose={() => setSelection(null)}
+            onPrev={handlePrevDay}
+            onNext={handleNextDay}
+            onOpenNote={(dateStr) => {
+                onOpenNote(new Date(dateStr + 'T00:00:00'));
+            }}
+        />
+    ) : null;
+
     return (
         <SymbolLayoutContext.Provider value={symbolLayout}>
         <div ref={containerRef} className={`calendar-container${isCompact ? ' is-compact-mode' : ''}`} style={{ position: 'relative' }}>
-            {selection?.type === 'cell' && (
+            {viewMode === 'Continuous' && dayDetail && (
                 <div
                     className="day-detail-overlay"
                     onClick={(e) => {
@@ -1293,22 +1370,9 @@ export const ContinuousCalendar = (props: ContinuousCalendarProps) => {
                         }
                     }}
                 >
-                    <DayDetailView
-                        dateKey={toDateKey(selection.date)}
-                        index={index}
-                        app={app}
-                        settings={index.settings} // Pass settings from index
-                        onClose={() => setSelection(null)}
-                        onPrev={handlePrevDay}
-                        onNext={handleNextDay}
-                        onOpenNote={(dateStr) => {
-                            // Convert string back to Date for handler
-                            const d = new Date(dateStr + 'T00:00:00');
-                            onOpenNote(d);
-                            // Optional: close after opening
-                            // setSelection(null); 
-                        }}
-                    />
+                    <div className="day-detail-surface day-detail-surface--overlay">
+                        {dayDetail}
+                    </div>
                 </div>
             )}
             {viewMode === 'Continuous' && (
@@ -1371,21 +1435,24 @@ export const ContinuousCalendar = (props: ContinuousCalendarProps) => {
                     <TraditionalMonthView
                         currentDate={monthViewDate}
                         onMonthChange={handleMonthViewNav}
+                        onGoToToday={handleGoToToday}
                         onClose={() => {
                             if (pinnedMonth) {
                                 const [pYear] = pinnedMonth.split('-').map(Number);
                                 if (pYear !== currentYear) setCurrentYear(pYear);
                             }
+                            setSelection(null);
                             setViewMode('Continuous');
                         }}
                         focusedMonths={focusedMonths}
                         selectedWeekIndex={selectedWeekIndex}
                         onWeekClick={handleWeekClick}
                         selection={selection}
-                        onCellClick={handleCellClick}
-                        onNumberClick={handleNumberClick}
+                        onCellClick={handleMonthCellClick}
+                        onNumberClick={handleMonthNumberClick}
                         indexService={index}
                         isCompact={isCompact}
+                        dayDetail={dayDetail}
                     />
                 )}
             </div>

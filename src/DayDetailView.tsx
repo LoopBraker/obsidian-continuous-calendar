@@ -192,7 +192,7 @@ export const DayDetailView = ({ dateKey, index, app, settings, onClose, onPrev, 
     const filteredNotes = notes.filter(n => !displayTaskPaths.has(n.path));
 
     return (
-        <div className="day-detail-card">
+        <div className="day-detail-view">
             <div className="day-detail-nav">
                 <div className="nav-buttons">
                     <button onClick={onPrev} className="control-btn" title="Previous Day">

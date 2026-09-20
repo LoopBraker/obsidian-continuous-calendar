@@ -31,6 +31,12 @@ export class CalendarBasesView extends BasesView {
         // Fallback to plugin.app if this.app isn't available in BasesView context
         const app = this.app || plugin.app;
 
+        // Reset padding/margin on parent host element if present
+        parentEl.style.padding = "0";
+        parentEl.style.margin = "0";
+        parentEl.style.height = "100%";
+        parentEl.style.overflow = "hidden";
+
         this.containerEl = parentEl.createDiv('calendar-bases-view-container');
         this.plugin = plugin;
 
@@ -41,6 +47,8 @@ export class CalendarBasesView extends BasesView {
         // 2. Setup Container Styles
         this.containerEl.style.height = "100%";
         this.containerEl.style.width = "100%";
+        this.containerEl.style.padding = "0";
+        this.containerEl.style.margin = "0";
         this.containerEl.style.display = "flex";
         this.containerEl.style.flexDirection = "column";
         this.containerEl.style.overflow = "hidden";
