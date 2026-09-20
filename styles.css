@@ -1,4 +1,7 @@
 .Continuous-calendar-plugin {
+    height: 100%;
+    width: 100%;
+    overflow-x: hidden;
     /* --- THEME VARIABLES --- */
     --c-white: #ffffff;
     --c-slate-900: #0f172a;
@@ -101,8 +104,8 @@
         display: flex;
         flex-direction: column;
         max-width: 100%;
-        min-width: 370px;
-        /* Widened slightly for breathing room */
+        min-width: 0;
+        /* Allow container to fit narrow sidebars without horizontal scrolling */
         margin: 0 auto;
         box-shadow: var(--shadow-2xl);
         border-left: 1px solid var(--c-gray-100);
@@ -229,6 +232,7 @@
     /* 2. Grid Area */
     .day-grid-container {
         flex: 1;
+        min-width: 0;
         position: relative;
     }
 

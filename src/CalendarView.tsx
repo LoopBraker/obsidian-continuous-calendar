@@ -44,11 +44,13 @@ export class CalendarView extends ItemView {
     async onOpen() {
         const container = this.containerEl;
         container.empty();
+        container.style.overflowX = "hidden";
 
         // Create a wrapper div for React
         const reactRoot = container.createDiv({ cls: "Continuous-calendar-plugin" });
         reactRoot.style.height = "100%";
         reactRoot.style.width = "100%";
+        reactRoot.style.overflowX = "hidden";
 
         // --- THE OPEN/CREATE LOGIC ---
         const handleOpenNote = async (date: Date) => {

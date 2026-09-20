@@ -1405,6 +1405,7 @@ export const ContinuousCalendar = (props: ContinuousCalendarProps) => {
                             style={{
                                 height: '100%',
                                 paddingTop: '2px',
+                                overflowX: 'hidden',
                                 overflowY: pinnedMonth ? 'hidden' : 'auto',
                                 scrollbarGutter: 'stable'
                             }}
