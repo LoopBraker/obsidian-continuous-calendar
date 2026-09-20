@@ -1,4 +1,4 @@
-import { Plugin, ItemView, WorkspaceLeaf, TFile } from 'obsidian';
+import { ItemView, WorkspaceLeaf } from 'obsidian';
 import * as React from "react";
 import { createRoot, Root } from "react-dom/client";
 import { ContinuousCalendar } from "./ContinuousCalendar";
@@ -128,6 +128,9 @@ export class CalendarView extends ItemView {
                     app={this.app}
                     onOpenNote={handleOpenNote}
                     onCreateRange={handleCreateRange}
+                    onYearChange={async (year: number) => {
+                        await this.plugin.loadHolidaysForYear(year);
+                    }}
                 />
             </React.StrictMode>
         );

@@ -1,4 +1,4 @@
-import { App, TFile, Notice, normalizePath, stringifyYaml } from 'obsidian';
+import { App, TFile, Notice, normalizePath, stringifyYaml, parseYaml } from 'obsidian';
 import type ContinuousCalendarPlugin from '../../main'; // Adjust path to main.ts
 import { HolidaySource, Holiday, HolidayFileFrontMatter, CountryHolidaySource } from './HolidayTypes';
 
@@ -136,7 +136,19 @@ export class HolidayStorage {
 
             try {
                 const cache = this.app.metadataCache.getFileCache(file);
-                const fm = cache?.frontmatter;
+                let fm = cache?.frontmatter;
+
+                if (!fm) {
+                    try {
+                        const content = await this.app.vault.read(file);
+                        const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+                        if (match) {
+                            fm = parseYaml(match[1]);
+                        }
+                    } catch (readErr) {
+                        console.error(`[HolidayStorage] Error reading file content directly from ${filePath}:`, readErr);
+                    }
+                }
 
                 if (fm && typeof fm === 'object' && fm.holidays && Array.isArray(fm.holidays) && fm.year === year) {
                     const holidaysFromFile = fm.holidays as any[];

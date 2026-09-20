@@ -1,4 +1,4 @@
-import { Plugin, ItemView, WorkspaceLeaf, TFile } from 'obsidian';
+import { Plugin, WorkspaceLeaf, TFile } from 'obsidian';
 import { CalendarView, VIEW_TYPE_CALENDAR } from "./CalendarView";
 import { IndexService } from "./services/IndexService";
 import { DEFAULT_SETTINGS, type CalendarPluginSettings } from "./settings/settings";
@@ -84,6 +84,13 @@ export default class ContinuousCalendarPlugin extends Plugin {
             })
         );
 
+        // Listen for metadata cache resolution to ensure holiday files are loaded if they were not cached yet on startup
+        this.registerEvent(
+            this.app.metadataCache.on("resolved", async () => {
+                await this.loadHolidaysForYear(new Date().getFullYear());
+            })
+        );
+
         // Listen for file deletions
         this.registerEvent(
             this.app.vault.on("delete", (file) => {
@@ -105,14 +112,15 @@ export default class ContinuousCalendarPlugin extends Plugin {
 
     }
 
-    async loadHolidaysForYear(year: number) {
+    async loadHolidaysForYear(year: number, targetIndex?: IndexService) {
+        const index = targetIndex || this.calendarIndex;
         // Load holidays for the requested year, plus previous and next year to handle scrolling
         const yearsToLoad = [year - 1, year, year + 1];
 
         // We can load them in parallel
         await Promise.all(yearsToLoad.map(async (y) => {
             const holidayMap = await this.holidayService.getAggregatedHolidays(y);
-            this.calendarIndex.setHolidaysForYear(y, holidayMap);
+            index.setHolidaysForYear(y, holidayMap);
         }));
     }
     async loadSettings() {

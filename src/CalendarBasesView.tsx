@@ -43,6 +43,7 @@ export class CalendarBasesView extends BasesView {
         // 1. Initialize Service
         this.calendarIndex = new IndexService(app);
         this.calendarIndex.setSettings(plugin.settings);
+        void this.loadHolidaysForYear(new Date().getFullYear());
 
         // 2. Setup Container Styles
         this.containerEl.style.height = "100%";
@@ -55,6 +56,10 @@ export class CalendarBasesView extends BasesView {
 
         // 3. RENDER IMMEDIATELY
         this.mountReact();
+    }
+
+    private async loadHolidaysForYear(year: number): Promise<void> {
+        await this.plugin.loadHolidaysForYear(year, this.calendarIndex);
     }
 
     private mountReact() {
@@ -117,13 +122,7 @@ export class CalendarBasesView extends BasesView {
                 }}
 
                 onYearChange={async (year: number) => {
-                    if (this.plugin.holidayService) {
-                        const yearsToLoad = [year - 1, year, year + 1];
-                        await Promise.all(yearsToLoad.map(async (y) => {
-                            const holidays = await this.plugin.holidayService.getAggregatedHolidays(y);
-                            this.calendarIndex.setHolidaysForYear(y, holidays);
-                        }));
-                    }
+                    await this.loadHolidaysForYear(year);
                 }}
             />
         );
