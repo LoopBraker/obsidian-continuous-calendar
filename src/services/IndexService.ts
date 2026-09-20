@@ -27,6 +27,16 @@ export class IndexService {
 
     // Observer pattern
     listeners: Array<(changedDates: string[] | null) => void> = [];
+    private pendingDates = new Set<string>();
+    private pendingFullRefresh = false;
+    private notificationQueued = false;
+    private displaySymbolsCache = new Map<string, {
+        signature: string;
+        symbols: Array<{ symbol?: string; color?: string }>;
+    }>();
+    private tagSettingsIds = new WeakMap<object, number>();
+    private nextTagSettingsId = 1;
+    private settingsGeneration = 0;
 
     constructor(app: App) {
         this.app = app;
@@ -64,6 +74,8 @@ export class IndexService {
 
     setSettings(settings: CalendarPluginSettings) {
         this.settings = settings;
+        this.settingsGeneration++;
+        this.displaySymbolsCache.clear();
     }
 
     subscribe(callback: (changedDates: string[] | null) => void) {
@@ -113,7 +125,9 @@ export class IndexService {
         // --- Task Properties Dots ---
         if (this.settings && this.settings.taskSettings) {
             const taskSettings = this.settings.taskSettings;
-            const tasks = this.taskManager.getTasksForDate(dateStr);
+            // Dots only describe exact scheduled/due/completed dates. Carry-forward
+            // tasks are needed by the detail view, not by calendar symbols.
+            const tasks = this.taskManager.getIndexedTasksForDate(dateStr);
             // console.log(`DEBUG: Retrieving tasks for ${dateStr}. Found: ${tasks.length}`, tasks);
 
             tasks.forEach(task => {
@@ -183,6 +197,16 @@ export class IndexService {
     }
 
     getDisplaySymbols(dateStr: string, tagSettings: any, defaultDotColor: string, collapseDuplicates: boolean = false, maxCount: number = 5, useDotsOnlyForTags: boolean = false, useDotsOnlyForProperties: boolean = false): Array<{ symbol?: string, color?: string }> {
+        let tagSettingsId = 0;
+        if (tagSettings && typeof tagSettings === 'object') {
+            const settingsObject = tagSettings as object;
+            tagSettingsId = this.tagSettingsIds.get(settingsObject) || this.nextTagSettingsId++;
+            this.tagSettingsIds.set(settingsObject, tagSettingsId);
+        }
+        const signature = [this.settingsGeneration, tagSettingsId, defaultDotColor, collapseDuplicates,
+            maxCount, useDotsOnlyForTags, useDotsOnlyForProperties].join('|');
+        const cached = this.displaySymbolsCache.get(dateStr);
+        if (cached?.signature === signature) return cached.symbols.map(symbol => ({ ...symbol }));
         // Presentation logic remains here as it acts as a View Model
         const notes = this.getNotesForDate(dateStr);
 
@@ -250,7 +274,13 @@ export class IndexService {
             return 0;
         });
 
-        return noteDisplays.slice(0, maxCount).map(({ symbol, color }) => ({ symbol, color }));
+        const symbols = noteDisplays.slice(0, maxCount).map(({ symbol, color }) => ({ symbol, color }));
+        if (this.displaySymbolsCache.size >= 256 && !this.displaySymbolsCache.has(dateStr)) {
+            const oldest = this.displaySymbolsCache.keys().next().value;
+            if (oldest !== undefined) this.displaySymbolsCache.delete(oldest);
+        }
+        this.displaySymbolsCache.set(dateStr, { signature, symbols });
+        return symbols.map(symbol => ({ ...symbol }));
     }
 
     // =================================================================================
@@ -266,7 +296,8 @@ export class IndexService {
     }
 
     indexFile(file: TFile) {
-        const wasRecurring = this.fileToRecurringDates.has(file.path);
+        const wasRecurring = this.fileToRecurringDates.has(file.path) || this.fileToRRule.has(file.path);
+        const wasTask = this.taskManager.hasTask(file.path);
         const affectedDates = this.cleanupFile(file.path);
 
         const isDailyNote = /^\d{4}-\d{2}-\d{2}$/.test(file.basename);
@@ -333,7 +364,8 @@ export class IndexService {
         }
 
         // Process Tasks (Delegate to TaskManager)
-        if (tags.some(t => t.toLowerCase() === '#task')) {
+        const isTask = tags.some(t => t.toLowerCase() === '#task');
+        if (isTask) {
             const taskNote: TaskNote = {
                 path: file.path,
                 name: file.basename,
@@ -355,28 +387,24 @@ export class IndexService {
         // Collect changed dates for notification
         const changedDates = Array.from(new Set([...affectedDates]));
         if (dateFromFilename) changedDates.push(dateFromFilename);
+        this.noteManager.fileToDates.get(file.path)?.forEach(d => changedDates.push(d));
 
-        // Note: we can't easily get exactly which dates were just added to noteManager inside this method without changing signature,
-        // so we rely on invalidating listeners either fully or with what we know.
-        // For strict "don't change logic", we might need to peek into noteManager, but usually listeners handle re-render.
-
-        if ((hasRangeDates || hasScheduled) || recurringChanged || wasRecurring) {
+        // Carry-forward tasks and recurrence can affect dates outside a finite
+        // explicit date set, so their notifications must invalidate globally.
+        if ((hasRangeDates || hasScheduled) || recurringChanged || wasRecurring || isTask || wasTask) {
             if (hasRangeDates || hasScheduled) this.assignRangeSlots();
             this.notifyListeners(null);
         } else if (changedDates.length > 0) {
-            // Append currently known dates for this file
-            if (this.noteManager.fileToDates.has(file.path)) {
-                this.noteManager.fileToDates.get(file.path)!.forEach(d => changedDates.push(d));
-            }
             this.notifyListeners(changedDates);
         }
     }
 
     removeFile(path: string) {
-        const wasRecurring = this.fileToRecurringDates.has(path);
+        const wasRecurring = this.fileToRecurringDates.has(path) || this.fileToRRule.has(path);
+        const wasTask = this.taskManager.hasTask(path);
         const affectedDates = this.cleanupFile(path);
 
-        if (wasRecurring) {
+        if (wasRecurring || wasTask) {
             this.notifyListeners(null);
         } else if (affectedDates.length > 0) {
             this.notifyListeners(affectedDates);
@@ -394,6 +422,7 @@ export class IndexService {
     // =================================================================================
 
     clearIndexedFiles() {
+        this.displaySymbolsCache.clear();
         this.noteManager.clear();
         this.rangeManager.clear();
         this.recurrenceManager.clear();
@@ -401,6 +430,7 @@ export class IndexService {
     }
 
     clear() {
+        this.displaySymbolsCache.clear();
         this.noteManager.clear();
         this.rangeManager.clear();
         this.recurrenceManager.clear();
@@ -453,8 +483,10 @@ export class IndexService {
     // =================================================================================
 
     setHolidaysForYear(year: number, holidayMap: Map<string, Holiday[]>) {
+        const changedDates = new Set(this.holidays.get(year)?.keys());
+        holidayMap.forEach((_, date) => changedDates.add(date));
         this.holidays.set(year, holidayMap);
-        this.notifyListeners(null);
+        this.notifyListeners(Array.from(changedDates));
     }
 
     // =================================================================================
@@ -462,7 +494,25 @@ export class IndexService {
     // =================================================================================
 
     notifyListeners(changedDates: string[] | null) {
-        this.listeners.forEach(l => l(changedDates));
+        if (changedDates === null) this.displaySymbolsCache.clear();
+        else changedDates.forEach(date => this.displaySymbolsCache.delete(date));
+        if (changedDates === null) {
+            this.pendingFullRefresh = true;
+            this.pendingDates.clear();
+        } else if (!this.pendingFullRefresh) {
+            changedDates.forEach(date => this.pendingDates.add(date));
+        }
+        if (this.notificationQueued) return;
+        this.notificationQueued = true;
+        // Coalesce synchronous metadata bursts and full-vault indexing without
+        // a timer that could outlive the plugin or delay data indexing itself.
+        void Promise.resolve().then(() => {
+            const dates = this.pendingFullRefresh ? null : Array.from(this.pendingDates);
+            this.notificationQueued = false;
+            this.pendingFullRefresh = false;
+            this.pendingDates.clear();
+            this.listeners.slice().forEach(listener => listener(dates));
+        });
     }
 
     private normalizeDate(dateValue: any): string {

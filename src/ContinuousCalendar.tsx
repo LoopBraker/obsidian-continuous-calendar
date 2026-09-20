@@ -56,6 +56,11 @@ const NORMAL_ICON_WIDTH = 6;
 const GAP_WIDTH = 2;
 const OVERFLOW_MIN_WIDTH = 20;
 
+const SymbolLayoutContext = React.createContext({
+    cellWidth: 0,
+    registerGrid: (_element: HTMLDivElement): (() => void) => () => { }
+});
+
 const DotArea = ({
     symbols,
     isCompact = false
@@ -63,64 +68,18 @@ const DotArea = ({
     symbols: Array<{ symbol?: string; color?: string }>;
     isCompact?: boolean;
 }) => {
-    const containerRef = useRef<HTMLDivElement>(null);
-    const [visibleCount, setVisibleCount] = useState(0);
-
-    const calculateVisibleCount = useCallback(() => {
-        if (!containerRef.current) return;
-
-        // Because of the CSS fix (minmax(0, 1fr)), this will now report 
-        // the TRUE available space, not the stretched space.
-        const containerWidth = containerRef.current.offsetWidth;
-        const totalSymbols = symbols.length;
-
-        if (totalSymbols === 0 || containerWidth === 0) {
-            setVisibleCount(0);
-            return;
-        }
-
-        const itemWidth = isCompact ? COMPACT_ICON_WIDTH : NORMAL_ICON_WIDTH;
-        const itemTotalWidth = itemWidth + GAP_WIDTH;
-
-        // 1. Calculate how many fit nicely
-        let maxFit = Math.floor((containerWidth + GAP_WIDTH) / itemTotalWidth);
-        maxFit = Math.max(0, maxFit);
-
-        if (maxFit >= totalSymbols) {
-            setVisibleCount(totalSymbols);
-        } else {
-            // 2. Reserve space for the "+N" indicator
-            const availableForIcons = containerWidth - OVERFLOW_MIN_WIDTH;
-            let iconsToShow = Math.floor((availableForIcons + GAP_WIDTH) / itemTotalWidth);
-            iconsToShow = Math.max(0, iconsToShow);
-            setVisibleCount(iconsToShow);
-        }
-    }, [symbols.length, isCompact]);
-
-    useLayoutEffect(() => {
-        // Reset to 0 to allow CSS to snap back if it was stretched
-        setVisibleCount(0);
-
-        // Wait for next frame to measure
-        requestAnimationFrame(() => {
-            calculateVisibleCount();
-        });
-    }, [isCompact, calculateVisibleCount, symbols.length]);
-
-    useLayoutEffect(() => {
-        if (!containerRef.current) return;
-        const resizeObserver = new ResizeObserver(() => {
-            calculateVisibleCount();
-        });
-        resizeObserver.observe(containerRef.current);
-        return () => resizeObserver.disconnect();
-    }, [calculateVisibleCount]);
+    const { cellWidth } = React.useContext(SymbolLayoutContext);
+    const itemTotalWidth = (isCompact ? COMPACT_ICON_WIDTH : NORMAL_ICON_WIDTH) + GAP_WIDTH;
+    const maxFit = Math.max(0, Math.floor((cellWidth + GAP_WIDTH) / itemTotalWidth));
+    const visibleCount = maxFit >= symbols.length
+        ? symbols.length
+        : Math.max(0, Math.floor((cellWidth - OVERFLOW_MIN_WIDTH + GAP_WIDTH) / itemTotalWidth));
 
     const overflowCount = symbols.length - visibleCount;
     const visibleSymbols = symbols.slice(0, visibleCount);
 
     return (
-        <div ref={containerRef} className="dot-area">
+        <div className="dot-area">
             {visibleSymbols.map((item, idx) => {
                 const showAsSymbol = item.symbol && !isCompact;
                 if (showAsSymbol) {
@@ -455,7 +414,8 @@ const CalendarFooter: React.FC<CalendarFooterProps> = ({
 
 const getBorderSegment = (
     weekData: WeekData,
-    isActiveFn: (d: Date) => boolean
+    isActiveFn: (d: Date) => boolean,
+    activeDays: boolean[]
 ): BorderResult => {
     const cellW = 100;
     const radius = 24;
@@ -463,7 +423,7 @@ const getBorderSegment = (
     const r = radius;
 
     const validIndices = weekData
-        .map((d, i) => (isActiveFn(d.date) ? i : -1))
+        .map((_d, i) => (activeDays[i] ? i : -1))
         .filter((i) => i !== -1);
 
     if (validIndices.length === 0) return { path: null, separator: null };
@@ -552,7 +512,7 @@ const getBorderSegment = (
     let separator = '';
     const firstOfMonthIndex = weekData.findIndex((d) => d.date.getDate() === 1);
 
-    if (firstOfMonthIndex !== -1 && isActiveFn(weekData[firstOfMonthIndex].date)) {
+    if (firstOfMonthIndex !== -1 && activeDays[firstOfMonthIndex]) {
         const pxX = firstOfMonthIndex * cellW;
         if (firstOfMonthIndex > 0) {
             const dayLeftDate = new Date(weekData[firstOfMonthIndex].date);
@@ -622,6 +582,8 @@ const WeekRow: React.FC<WeekRowProps> = ({
     isCompact = false
 }) => {
     // --- Active Logic ---
+    const { registerGrid } = React.useContext(SymbolLayoutContext);
+    const today = new Date();
     const checkIsActive = (date: Date) => {
         if (customIsActiveFn) {
             return customIsActiveFn(date);
@@ -629,14 +591,14 @@ const WeekRow: React.FC<WeekRowProps> = ({
         const y = date.getFullYear();
         const m = date.getMonth();
         const key = `${y}-${m}`;
-        const now = new Date();
-        if (y === now.getFullYear() && m === now.getMonth()) return true;
+        if (y === today.getFullYear() && m === today.getMonth()) return true;
         if (focusedMonths.has(key)) return true;
         return false;
     };
 
+    const activeDays = weekData.map(d => checkIsActive(d.date));
     const { path: borderPath, separator: separatorPath } =
-        getBorderSegment(weekData, checkIsActive);
+        getBorderSegment(weekData, checkIsActive, activeDays);
 
     const firstDayOfMonth = weekData.find((d) => d.date.getDate() === 1);
     const monthNames = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
@@ -647,7 +609,6 @@ const WeekRow: React.FC<WeekRowProps> = ({
         ? focusedMonths.has(`${firstDayOfMonth.date.getFullYear()}-${firstDayOfMonth.date.getMonth()}`)
         : false;
 
-    const today = new Date();
     const isRealCurrentMonth = firstDayOfMonth
         ? firstDayOfMonth.date.getFullYear() === today.getFullYear() &&
         firstDayOfMonth.date.getMonth() === today.getMonth()
@@ -673,7 +634,7 @@ const WeekRow: React.FC<WeekRowProps> = ({
         d.date.getFullYear() === today.getFullYear()
     );
 
-    const isWeekActive = weekData.some(d => checkIsActive(d.date));
+    const isWeekActive = activeDays.some(Boolean);
     let weekTextClass = 'week-num-text';
     if (isWeekToday) weekTextClass += ' is-today';
     else if (isWeekActive) weekTextClass += ' is-active';
@@ -693,11 +654,11 @@ const WeekRow: React.FC<WeekRowProps> = ({
                 <span className={weekTextClass}>{weekLabel}</span>
             </div>
 
-            <div className="day-grid-container">
+            <div className="day-grid-container" ref={registerGrid}>
                 <div className="grid-layer background">
                     {weekData.map((d, i) => {
                         const isWeekend = d.date.getDay() === 0 || d.date.getDay() === 6;
-                        const isActive = checkIsActive(d.date);
+                        const isActive = activeDays[i];
                         return (
                             <div
                                 key={i}
@@ -710,7 +671,7 @@ const WeekRow: React.FC<WeekRowProps> = ({
 
                 <div className="grid-layer foreground">
                     {weekData.map((d, i) => {
-                        const isActive = checkIsActive(d.date);
+                        const isActive = activeDays[i];
                         const isToday =
                             d.date.getDate() === today.getDate() &&
                             d.date.getMonth() === today.getMonth() &&
@@ -1033,22 +994,49 @@ export const ContinuousCalendar = (props: ContinuousCalendarProps) => {
     // Compact mode state - triggers when container width approaches min-width
     const COMPACT_MODE_THRESHOLD = 420; // Width at which we switch to compact mode
     const [isCompact, setIsCompact] = useState<boolean>(false);
+    const [cellWidth, setCellWidth] = useState(0);
+    const gridElements = useRef(new Set<HTMLDivElement>());
+    const layoutObserver = useRef<ResizeObserver | null>(null);
+    const registerGrid = useCallback((element: HTMLDivElement) => {
+        const grids = gridElements.current;
+        grids.add(element);
+        if (grids.size === 1) layoutObserver.current?.observe(element);
+        return () => {
+            const wasMeasured = grids.values().next().value === element;
+            grids.delete(element);
+            if (wasMeasured) {
+                layoutObserver.current?.unobserve(element);
+                const next = grids.values().next().value;
+                if (next) layoutObserver.current?.observe(next);
+            }
+        };
+    }, []);
+    const symbolLayout = useMemo(() => ({ cellWidth, registerGrid }), [cellWidth, registerGrid]);
 
-    // Detect compact mode based on container width
+    // One observer tracks the container and one representative seven-column grid.
+    // Measuring the grid accounts for sidebars, scrollbars, and theme sizing.
     useLayoutEffect(() => {
-        const checkCompactMode = () => {
+        const measureLayout = () => {
             if (containerRef.current) {
                 const width = containerRef.current.offsetWidth;
                 setIsCompact(width <= COMPACT_MODE_THRESHOLD);
             }
+            const grid = gridElements.current.values().next().value;
+            if (grid) setCellWidth(Math.round(grid.getBoundingClientRect().width / 7));
         };
 
-        checkCompactMode();
-        const resizeObserver = new ResizeObserver(() => checkCompactMode());
+        measureLayout();
+        const resizeObserver = new ResizeObserver(measureLayout);
+        layoutObserver.current = resizeObserver;
         if (containerRef.current) {
             resizeObserver.observe(containerRef.current);
         }
-        return () => resizeObserver.disconnect();
+        const grid = gridElements.current.values().next().value;
+        if (grid) resizeObserver.observe(grid);
+        return () => {
+            resizeObserver.disconnect();
+            layoutObserver.current = null;
+        };
     }, []);
 
     useEffect(() => {
@@ -1145,7 +1133,6 @@ export const ContinuousCalendar = (props: ContinuousCalendarProps) => {
 
     const allWeeks = useMemo<WeekData[]>(() => {
         if (viewMode === 'month') return [];
-        setSelectedWeekIndex(null);
         const start = new Date(currentYear - 1, 11, 1);
         const day = start.getDay();
         const diff = start.getDate() - day + (day === 0 ? -6 : 1);
@@ -1163,6 +1150,10 @@ export const ContinuousCalendar = (props: ContinuousCalendarProps) => {
             weeks.push(week);
         }
         return weeks;
+    }, [currentYear, viewMode, minWeeksToFill]);
+
+    useEffect(() => {
+        if (viewMode === 'Continuous') setSelectedWeekIndex(null);
     }, [currentYear, viewMode, minWeeksToFill]);
 
     const [visibleRange, setVisibleRange] = useState<ListRange>({ startIndex: 0, endIndex: 0 });
@@ -1290,6 +1281,7 @@ export const ContinuousCalendar = (props: ContinuousCalendarProps) => {
     }, []);
 
     return (
+        <SymbolLayoutContext.Provider value={symbolLayout}>
         <div ref={containerRef} className={`calendar-container${isCompact ? ' is-compact-mode' : ''}`} style={{ position: 'relative' }}>
             {selection?.type === 'cell' && (
                 <div
@@ -1341,6 +1333,7 @@ export const ContinuousCalendar = (props: ContinuousCalendarProps) => {
                         )}
                         <Virtuoso
                             ref={virtuosoRef}
+                            defaultItemHeight={isCompact ? 39 : 60}
                             rangeChanged={setVisibleRange}
                             context={{ dataVersion }}
                             style={{
@@ -1405,5 +1398,6 @@ export const ContinuousCalendar = (props: ContinuousCalendarProps) => {
                 onGoToToday={handleGoToToday}
             />
         </div>
+        </SymbolLayoutContext.Provider>
     );
 };

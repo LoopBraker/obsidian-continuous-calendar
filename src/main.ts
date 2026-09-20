@@ -121,6 +121,8 @@ export default class ContinuousCalendarPlugin extends Plugin {
 
     async saveSettings() {
         await this.saveData(this.settings);
+        this.calendarIndex.setSettings(this.settings);
+        this.calendarIndex.notifyListeners(null);
     }
 
     async activateView() {

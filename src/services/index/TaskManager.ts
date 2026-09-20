@@ -5,7 +5,6 @@ import {
     parseISO,
     format,
     isValid,
-    max as maxDate,
 } from 'date-fns';
 
 export class TaskManager {
@@ -14,13 +13,30 @@ export class TaskManager {
 
     // NEW: keep one canonical copy of each task so we can "carry it forward"
     private allTasksByPath: Map<string, TaskNote> = new Map();
+    private dateCache = new Map<string, TaskNote[]>();
+    private datesByPath = new Map<string, Set<string>>();
+
+    private invalidate() {
+        this.dateCache.clear();
+    }
+
+    public hasTask(path: string): boolean {
+        return this.allTasksByPath.has(path);
+    }
+
+    public getIndexedTasksForDate(dateStr: string): TaskNote[] {
+        return this.tasksByDate.get(dateStr) || [];
+    }
 
     public clear() {
         this.tasksByDate.clear();
         this.allTasksByPath.clear();
+        this.datesByPath.clear();
+        this.invalidate();
     }
 
     public addTask(task: TaskNote) {
+        this.invalidate();
         // Always remember the task (so it can appear on any later date)
         if (task?.path) {
             this.allTasksByPath.set(task.path, task);
@@ -75,6 +91,8 @@ export class TaskManager {
     }
 
     public getTasksForDate(dateStr: string): TaskNote[] {
+        const cached = this.dateCache.get(dateStr);
+        if (cached) return [...cached];
         // 1) tasks explicitly indexed for this date (scheduled range + due)
         const base = this.tasksByDate.get(dateStr) || [];
 
@@ -85,19 +103,23 @@ export class TaskManager {
         const seen = new Set(out.map(t => t.path));
 
         for (const task of this.allTasksByPath.values()) {
-            if (!task.scheduled) continue;
-
-            // YYYY-MM-DD strings compare correctly lexicographically
-            if (task.scheduled <= dateStr && !seen.has(task.path)) {
+            if (task.scheduled && task.scheduled <= dateStr && !seen.has(task.path)) {
                 out.push(task);
                 seen.add(task.path);
             }
         }
-
-        return out;
+        // Bound memory when scrolling through many years.
+        if (this.dateCache.size >= 128) {
+            const oldest = this.dateCache.keys().next().value;
+            if (oldest !== undefined) this.dateCache.delete(oldest);
+        }
+        this.dateCache.set(dateStr, out);
+        return [...out];
     }
 
     private addToDate(dateStr: string, task: TaskNote) {
+        if (!this.datesByPath.has(task.path)) this.datesByPath.set(task.path, new Set());
+        this.datesByPath.get(task.path)?.add(dateStr);
         if (!this.tasksByDate.has(dateStr)) {
             this.tasksByDate.set(dateStr, []);
         }
@@ -108,10 +130,13 @@ export class TaskManager {
     }
 
     public removeTasksForFile(path: string) {
+        if (!this.allTasksByPath.has(path)) return;
+        this.invalidate();
         // remove from the carry-forward registry too
         this.allTasksByPath.delete(path);
 
-        for (const [date, tasks] of this.tasksByDate.entries()) {
+        for (const date of this.datesByPath.get(path) || []) {
+            const tasks = this.tasksByDate.get(date) || [];
             const filtered = tasks.filter(t => t.path !== path);
             if (filtered.length === 0) {
                 this.tasksByDate.delete(date);
@@ -119,5 +144,6 @@ export class TaskManager {
                 this.tasksByDate.set(date, filtered);
             }
         }
+        this.datesByPath.delete(path);
     }
 }
