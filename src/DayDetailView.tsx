@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { App, TFile } from 'obsidian';
 import { format, parseISO, differenceInDays, addDays } from 'date-fns';
 import { RRule } from 'rrule';
@@ -29,11 +29,42 @@ const convertTintToTextColor = (color: string | undefined): string | undefined =
 };
 
 export const DayDetailView = ({ dateKey, index, app, settings, onClose, onPrev, onNext, onOpenNote }: DayDetailViewProps) => {
+    const containerRef = useRef<HTMLDivElement>(null);
+    const onCloseRef = useRef(onClose);
+    onCloseRef.current = onClose;
+
     const [notes, setNotes] = useState<Array<{ path: string; name: string; color?: string; tags: string[]; symbol?: string; isRecurring?: boolean }>>([]);
     const [ranges, setRanges] = useState<RangeNote[]>([]);
     const [tasks, setTasks] = useState<TaskNote[]>([]);
     const [holidays, setHolidays] = useState<Holiday[]>([]);
     const [hasDailyNote, setHasDailyNote] = useState(false);
+
+    useEffect(() => {
+        const handleKeyDown = (e: KeyboardEvent) => {
+            if (e.key === 'Escape' || e.key === 'Esc') {
+                const doc = containerRef.current?.ownerDocument || document;
+                const isObsidianPopupOpen = !!doc.querySelector('.modal-container, .prompt, .suggestion-container, .menu');
+                if (isObsidianPopupOpen) {
+                    return;
+                }
+
+                const leaf = containerRef.current?.closest('.workspace-leaf');
+                if (leaf && !leaf.classList.contains('mod-active')) {
+                    return;
+                }
+
+                e.preventDefault();
+                e.stopPropagation();
+                onCloseRef.current();
+            }
+        };
+
+        const doc = containerRef.current?.ownerDocument || document;
+        doc.addEventListener('keydown', handleKeyDown);
+        return () => {
+            doc.removeEventListener('keydown', handleKeyDown);
+        };
+    }, []);
 
     useEffect(() => {
         const fetchData = () => {
@@ -192,7 +223,7 @@ export const DayDetailView = ({ dateKey, index, app, settings, onClose, onPrev, 
     const filteredNotes = notes.filter(n => !displayTaskPaths.has(n.path));
 
     return (
-        <div className="day-detail-view">
+        <div ref={containerRef} className="day-detail-view">
             <div className="day-detail-nav">
                 <div className="nav-buttons">
                     <button onClick={onPrev} className="control-btn" title="Previous Day">
