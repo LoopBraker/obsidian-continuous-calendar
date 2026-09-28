@@ -1691,24 +1691,86 @@
 
 .sync-note-row {
     display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 8px;
+    flex-direction: column;
+    gap: 6px;
+    padding: 10px 12px;
+    margin-bottom: 8px;
+    background: var(--background-secondary);
+    border: 1px solid var(--background-modifier-border);
+    border-radius: var(--radius-m, 6px);
+    transition: border-color 0.15s ease;
+}
+
+.sync-note-row:hover {
+    border-color: var(--background-modifier-border-hover);
 }
 
 .sync-note-row > .internal-link {
     min-width: 0;
+}
+
+.sync-event-card-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 8px;
+    min-width: 0;
+}
+
+.sync-event-card-header > .sync-event-title,
+.sync-event-card-header > .internal-link {
+    min-width: 0;
     flex: 1;
+    font-weight: var(--font-medium, 500);
+    color: var(--text-normal);
+    line-height: var(--line-height-tight, 1.3);
+    overflow-wrap: break-word;
+    word-break: break-word;
+}
+
+.sync-event-card-header > .sync-event-title:hover,
+.sync-event-card-header > .internal-link:hover {
+    color: var(--text-accent);
+    text-decoration: underline;
+}
+
+.sync-event-card-header .sync-status-badge {
+    flex-shrink: 0;
 }
 
 .sync-event-time {
     color: var(--text-muted);
     font-size: var(--font-ui-smaller, 12px);
+    line-height: var(--line-height-normal, 1.4);
     overflow-wrap: anywhere;
+}
+
+.sync-note-row .sync-note-actions {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 2px;
 }
 
 .sync-note-action.mod-warning {
     color: var(--text-error);
+}
+
+.sync-note-action.mod-warning:hover {
+    border-color: var(--text-error);
+    color: var(--text-error);
+    background: color-mix(in srgb, var(--text-error) 12%, var(--background-primary));
+}
+
+.sync-note-action.mod-conflict {
+    color: var(--text-warning);
+}
+
+.sync-note-action.mod-conflict:hover {
+    border-color: var(--text-warning);
+    color: var(--text-warning);
+    background: color-mix(in srgb, var(--text-warning) 12%, var(--background-primary));
 }
 
 .sync-event-create-btn {
@@ -1751,9 +1813,3 @@
     font-weight: var(--font-semibold, 600);
 }
 
-@media (max-width: 700px) {
-    .sync-note-row {
-        align-items: flex-start;
-        flex-direction: column;
-    }
-}

@@ -521,38 +521,42 @@ export const DayDetailView = ({ dateKey, index, app, settings, onClose, onPrev, 
                     <h3>Synced events</h3>
                     <ul className="day-detail-list">
                         {syncEvents.map(syncEvent => (
-                            <li key={syncEvent.path} className="sync-note-row">
-                                <a
-                                    href="#"
-                                    className="internal-link"
-                                    onClick={(e) => {
-                                        e.preventDefault();
-                                        app.workspace.openLinkText(syncEvent.path, '', false);
-                                    }}
-                                >
-                                    {syncEvent.title || 'Untitled event'}
-                                </a>
-                                <span className="sync-note-actions">
+                            <li key={syncEvent.path} className="sync-note-row sync-event-card">
+                                <div className="sync-event-card-header">
+                                    <a
+                                        href="#"
+                                        className="internal-link sync-event-title"
+                                        onClick={(e) => {
+                                            e.preventDefault();
+                                            app.workspace.openLinkText(syncEvent.path, '', false);
+                                        }}
+                                    >
+                                        {syncEvent.title || 'Untitled event'}
+                                    </a>
                                     <SyncStatusBadge status={syncEvent.status} />
-                                    <span className="sync-event-time" title="Canonical event time">
-                                        {formatCalendarEventTime(syncEvent)}
-                                    </span>
-                                    {onEditSyncEvent && (
-                                        <button className="sync-note-action" onClick={() => onEditSyncEvent(syncEvent.uid)} aria-label={`Edit ${syncEvent.title}`}>
-                                            Edit
-                                        </button>
-                                    )}
-                                    {syncEvent.status === 'conflict' && onResolveSyncConflict && (
-                                        <button className="sync-note-action" onClick={() => onResolveSyncConflict(syncEvent.uid)} aria-label={`Resolve conflict for ${syncEvent.title}`}>
-                                            Resolve
-                                        </button>
-                                    )}
-                                    {syncEvent.status === 'synced' && onDeleteSyncEvent && (
-                                        <button className="sync-note-action mod-warning" onClick={() => { void onDeleteSyncEvent(syncEvent.uid); }} aria-label={`Delete synced event ${syncEvent.title}`}>
-                                            Delete synced event
-                                        </button>
-                                    )}
-                                </span>
+                                </div>
+                                <div className="sync-event-time" title="Canonical event time">
+                                    {formatCalendarEventTime(syncEvent)}
+                                </div>
+                                {(onEditSyncEvent || (syncEvent.status === 'conflict' && onResolveSyncConflict) || (syncEvent.status === 'synced' && onDeleteSyncEvent)) && (
+                                    <div className="sync-note-actions">
+                                        {onEditSyncEvent && (
+                                            <button className="sync-note-action" onClick={() => onEditSyncEvent(syncEvent.uid)} aria-label={`Edit ${syncEvent.title || 'Untitled event'}`}>
+                                                Edit
+                                            </button>
+                                        )}
+                                        {syncEvent.status === 'conflict' && onResolveSyncConflict && (
+                                            <button className="sync-note-action mod-conflict" onClick={() => onResolveSyncConflict(syncEvent.uid)} aria-label={`Resolve conflict for ${syncEvent.title || 'Untitled event'}`}>
+                                                Resolve
+                                            </button>
+                                        )}
+                                        {syncEvent.status === 'synced' && onDeleteSyncEvent && (
+                                            <button className="sync-note-action mod-warning" onClick={() => { void onDeleteSyncEvent(syncEvent.uid); }} aria-label={`Delete synced event ${syncEvent.title || 'Untitled event'}`}>
+                                                Delete
+                                            </button>
+                                        )}
+                                    </div>
+                                )}
                             </li>
                         ))}
                     </ul>

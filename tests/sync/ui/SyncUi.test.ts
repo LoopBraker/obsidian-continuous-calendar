@@ -41,4 +41,21 @@ describe('sync UI helpers', () => {
 		expect(label).toContain('09:00');
 		expect(label).toContain('10:00');
 	});
+
+	it('formats all-day events cleanly without end-exclusive jargon', () => {
+		expect(formatCalendarEventTime({
+			start: '2026-09-24',
+			end: '2026-09-25',
+			allDay: true,
+			timezone: 'America/Bogota',
+		})).toBe('Sep 24 (All-day)');
+
+		expect(formatCalendarEventTime({
+			start: '2026-09-24',
+			end: '2026-09-27',
+			allDay: true,
+			timezone: 'America/Bogota',
+		})).toBe('Sep 24 – Sep 26 (All-day)');
+	});
 });
+

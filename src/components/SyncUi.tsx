@@ -86,15 +86,21 @@ export function calendarEventIntersectsDate(event: CalendarEvent, dateKey: strin
 
 export type CalendarEventTime = Pick<CalendarEvent, 'start' | 'end' | 'allDay' | 'timezone'>;
 
+function parseAllDayDate(dateStr: string): Date | null {
+	const parts = dateStr.split('-').map(Number);
+	if (parts.length !== 3 || parts.some(n => Number.isNaN(n))) return null;
+	const [year, month, day] = parts;
+	return new Date(Date.UTC(year, month - 1, day));
+}
+
 function formatZonedTimestamp(value: string, timezone: string): string {
 	const instant = new Date(value);
 	if (!Number.isFinite(instant.getTime())) return value;
 	try {
-		return new Intl.DateTimeFormat('en-CA', {
+		return new Intl.DateTimeFormat('en-US', {
 			timeZone: timezone,
-			year: 'numeric',
 			month: 'short',
-			day: '2-digit',
+			day: 'numeric',
 			hour: '2-digit',
 			minute: '2-digit',
 			hourCycle: 'h23',
@@ -107,8 +113,68 @@ function formatZonedTimestamp(value: string, timezone: string): string {
 
 /** Format canonical bounds in the event timezone without relying on the host timezone. */
 export function formatCalendarEventTime(event: CalendarEventTime): string {
-	if (event.allDay) return `${event.start} – ${event.end} (end exclusive)`;
-	return `${formatZonedTimestamp(event.start, event.timezone)} – ${formatZonedTimestamp(event.end, event.timezone)}`;
+	if (event.allDay) {
+		const startDate = parseAllDayDate(event.start);
+		const endDate = parseAllDayDate(event.end);
+		if (!startDate) return `${event.start} (All-day)`;
+
+		const monthDayFormat = new Intl.DateTimeFormat('en-US', { timeZone: 'UTC', month: 'short', day: 'numeric' });
+		const fullDateFormat = new Intl.DateTimeFormat('en-US', { timeZone: 'UTC', month: 'short', day: 'numeric', year: 'numeric' });
+
+		if (!endDate || endDate.getTime() <= startDate.getTime()) {
+			return `${monthDayFormat.format(startDate)} (All-day)`;
+		}
+
+		// End is exclusive in canonical representation: inclusive end is endDate - 1 day
+		const inclusiveEnd = new Date(endDate.getTime() - 86_400_000);
+		if (inclusiveEnd.getTime() <= startDate.getTime()) {
+			return `${monthDayFormat.format(startDate)} (All-day)`;
+		}
+
+		if (startDate.getUTCFullYear() !== inclusiveEnd.getUTCFullYear()) {
+			return `${fullDateFormat.format(startDate)} – ${fullDateFormat.format(inclusiveEnd)} (All-day)`;
+		}
+		return `${monthDayFormat.format(startDate)} – ${monthDayFormat.format(inclusiveEnd)} (All-day)`;
+	}
+
+	const startInstant = new Date(event.start);
+	const endInstant = new Date(event.end);
+	if (!Number.isFinite(startInstant.getTime()) || !Number.isFinite(endInstant.getTime())) {
+		return `${event.start} – ${event.end}`;
+	}
+
+	try {
+		const startKey = zonedDateKey(event.start, event.timezone);
+		const endKey = zonedDateKey(event.end, event.timezone);
+
+		const timeFormat = new Intl.DateTimeFormat('en-US', {
+			timeZone: event.timezone,
+			hour: '2-digit',
+			minute: '2-digit',
+			hourCycle: 'h23',
+		});
+
+		const tzFormat = new Intl.DateTimeFormat('en-US', {
+			timeZone: event.timezone,
+			timeZoneName: 'short',
+		});
+		const tzParts = tzFormat.formatToParts(startInstant);
+		const tzName = tzParts.find(p => p.type === 'timeZoneName')?.value ?? '';
+		const tzSuffix = tzName ? ` ${tzName}` : '';
+
+		if (startKey && startKey === endKey) {
+			const dateFormat = new Intl.DateTimeFormat('en-US', {
+				timeZone: event.timezone,
+				month: 'short',
+				day: 'numeric',
+			});
+			return `${dateFormat.format(startInstant)}, ${timeFormat.format(startInstant)} – ${timeFormat.format(endInstant)}${tzSuffix}`;
+		}
+
+		return `${formatZonedTimestamp(event.start, event.timezone)} – ${formatZonedTimestamp(event.end, event.timezone)}`;
+	} catch (_error) {
+		return `${event.start} – ${event.end}`;
+	}
 }
 
 function pad(value: number): string {
