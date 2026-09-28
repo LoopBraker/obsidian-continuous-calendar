@@ -675,6 +675,9 @@ const WeekRow: React.FC<WeekRowProps> = ({
         ? pinnedMonth === `${firstDayOfMonth.date.getFullYear()}-${firstDayOfMonth.date.getMonth()}`
         : false;
 
+    const shouldShowYearMarker = shouldShowLabel &&
+        (firstDayOfMonth.date.getMonth() === 0 || firstDayOfMonth.date.getMonth() === 11);
+
     const isSelected = selectedWeekIndex === index;
     let weekLabel: string;
     if (selectedWeekIndex === null) {
@@ -853,6 +856,11 @@ const WeekRow: React.FC<WeekRowProps> = ({
                                     {isMonthFocused ? 'Active' : 'Focus'}
                                 </button>
                             )
+                        )}
+                        {shouldShowYearMarker && (
+                            <span className="month-year-marker">
+                                {firstDayOfMonth.date.getFullYear()}
+                            </span>
                         )}
                     </div>
                 )}

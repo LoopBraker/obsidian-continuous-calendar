@@ -944,6 +944,18 @@
         width: 100%;
     }
 
+    .month-year-marker {
+        display: block;
+        margin-top: 0.125rem;
+        margin-left: 0.15rem;
+        color: var(--text-muted);
+        font-family: var(--font-monospace, monospace);
+        font-size: 0.7rem;
+        font-weight: 600;
+        line-height: 1;
+        font-variant-numeric: tabular-nums;
+    }
+
     .pin-btn {
         background: none;
         border: none;
