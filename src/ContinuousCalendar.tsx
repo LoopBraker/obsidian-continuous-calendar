@@ -596,7 +596,7 @@ interface WeekRowProps {
     onNumberClick: (date: Date, e: React.MouseEvent) => void;
     currentYear?: number;
     isCompact?: boolean;
-    hoveredMonth?: string | null;
+    hoveredMonths?: ReadonlySet<string>;
 }
 
 const WeekRow: React.FC<WeekRowProps> = ({
@@ -618,7 +618,7 @@ const WeekRow: React.FC<WeekRowProps> = ({
     onNumberClick,
     currentYear,
     isCompact = false,
-    hoveredMonth = null
+    hoveredMonths = new Set()
 }) => {
     // --- Active Logic ---
     const { registerGrid } = React.useContext(SymbolLayoutContext);
@@ -641,11 +641,21 @@ const WeekRow: React.FC<WeekRowProps> = ({
 
     const isMonthPreview = (date: Date) =>
         viewMode === 'Continuous' &&
-        hoveredMonth === `${date.getFullYear()}-${date.getMonth()}` &&
+        hoveredMonths.has(`${date.getFullYear()}-${date.getMonth()}`) &&
         !checkIsActive(date);
     const previewDays = weekData.map(d => isMonthPreview(d.date));
-    const { path: previewBorderPath } =
-        getBorderSegment(weekData, isMonthPreview, previewDays);
+    const previewBorderPaths = viewMode === 'Continuous'
+        ? [...hoveredMonths].map((monthKey) => {
+            const isPreviewMonth = (date: Date) =>
+                `${date.getFullYear()}-${date.getMonth()}` === monthKey && !checkIsActive(date);
+            const isPreviewMonthDay = weekData.map(d => isPreviewMonth(d.date));
+            return getBorderSegment(weekData, isPreviewMonth, isPreviewMonthDay).path;
+        }).filter((path): path is string => !!path)
+        : [];
+
+    const weekMonthKeys = [...new Set(weekData.map(({ date }) =>
+        `${date.getFullYear()}-${date.getMonth()}`
+    ))];
 
     const firstDayOfMonth = weekData.find((d) => d.date.getDate() === 1);
     const monthNames = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
@@ -699,7 +709,11 @@ const WeekRow: React.FC<WeekRowProps> = ({
 
     return (
         <div className="week-row">
-            <div className={`week-num-col ${isSelected ? 'selected' : ''}`} onClick={() => onWeekClick(index)}>
+            <div
+                className={`week-num-col ${isSelected ? 'selected' : ''}`}
+                data-preview-month-keys={weekMonthKeys.join(',')}
+                onClick={() => onWeekClick(index)}
+            >
                 <span className={weekTextClass}>{weekLabel}</span>
             </div>
 
@@ -761,10 +775,11 @@ const WeekRow: React.FC<WeekRowProps> = ({
                                 vectorEffect="non-scaling-stroke"
                             />
                         )}
-                        {previewBorderPath && (
+                        {previewBorderPaths.map((path, pathIndex) => (
                             <path
+                                key={pathIndex}
                                 className="calendar-month-preview-border"
-                                d={previewBorderPath}
+                                d={path}
                                 fill="none"
                                 stroke="var(--text-muted)"
                                 strokeWidth="1"
@@ -772,7 +787,7 @@ const WeekRow: React.FC<WeekRowProps> = ({
                                 strokeLinejoin="round"
                                 vectorEffect="non-scaling-stroke"
                             />
-                        )}
+                        ))}
                         {separatorPath && (
                             <path
                                 className="calendar-month-separator"
@@ -795,6 +810,7 @@ const WeekRow: React.FC<WeekRowProps> = ({
                         <div className="month-header-row">
                             <span
                                 className={`month-name ${viewMode === 'Continuous' ? 'clickable' : ''}`}
+                                data-month-key={`${firstDayOfMonth.date.getFullYear()}-${firstDayOfMonth.date.getMonth()}`}
                                 onClick={() => {
                                     if (viewMode === 'Continuous' && onMonthNameClick) {
                                         onMonthNameClick(firstDayOfMonth.date);
@@ -806,6 +822,7 @@ const WeekRow: React.FC<WeekRowProps> = ({
                             {viewMode === 'Continuous' && onPinClick && firstDayOfMonth.date.getFullYear() <= (currentYear ?? today.getFullYear()) && (
                                 <button
                                     className={`pin-btn ${isPinned ? 'pinned' : ''}`}
+                                    data-month-key={`${firstDayOfMonth.date.getFullYear()}-${firstDayOfMonth.date.getMonth()}`}
                                     onClick={(e) => {
                                         e.stopPropagation();
                                         onPinClick(firstDayOfMonth.date);
@@ -821,12 +838,17 @@ const WeekRow: React.FC<WeekRowProps> = ({
                         {viewMode === 'Continuous' && (
                             isRealCurrentMonth ? (
                                 focusedMonths.size > 0 && (
-                                    <button onClick={resetFocus} className="btn-focus reset">RESET</button>
+                                    <button
+                                        onClick={resetFocus}
+                                        className="btn-focus reset"
+                                        data-month-key={`${firstDayOfMonth.date.getFullYear()}-${firstDayOfMonth.date.getMonth()}`}
+                                    >RESET</button>
                                 )
                             ) : (
                                 <button
                                     onClick={() => toggleMonthFocus(firstDayOfMonth.date.getFullYear(), firstDayOfMonth.date.getMonth())}
                                     className={`btn-focus ${isMonthFocused ? 'active' : 'inactive'}`}
+                                    data-month-key={`${firstDayOfMonth.date.getFullYear()}-${firstDayOfMonth.date.getMonth()}`}
                                 >
                                     {isMonthFocused ? 'Active' : 'Focus'}
                                 </button>
@@ -1058,7 +1080,7 @@ export const ContinuousCalendar = (props: ContinuousCalendarProps) => {
     const [currentYear, setCurrentYear] = useState<number>(new Date().getFullYear());
     const [minWeeksToFill, setMinWeeksToFill] = useState<number>(20);
     const [focusedMonths, setFocusedMonths] = useState<Set<string>>(new Set());
-    const [hoveredMonth, setHoveredMonth] = useState<string | null>(null);
+    const [hoveredMonths, setHoveredMonths] = useState<Set<string>>(() => new Set());
     const [selectedWeekIndex, setSelectedWeekIndex] = useState<number | null>(null);
     const [selection, setSelection] = useState<SelectionState | null>(null);
 
@@ -1140,50 +1162,55 @@ export const ContinuousCalendar = (props: ContinuousCalendarProps) => {
     useEffect(() => {
         if (viewMode !== 'Continuous') {
             pointerPosition.current = null;
-            setHoveredMonth(null);
+            setHoveredMonths((current) => current.size === 0 ? current : new Set());
             refreshHoverAfterScroll.current = () => { };
             return;
         }
         if (!hoverScroller) return;
 
-        const recalculateHoveredMonth = () => {
+        const recalculateHoveredMonths = () => {
             const position = pointerPosition.current;
             if (!position) {
-                setHoveredMonth(null);
+                setHoveredMonths((current) => current.size === 0 ? current : new Set());
                 return;
             }
 
             const target = hoverScroller.ownerDocument.elementFromPoint(position.x, position.y);
-            const dayCell = target instanceof Element
-                ? target.closest<HTMLElement>('.day-cell')
-                : null;
-            const monthKey = dayCell && hoverScroller.contains(dayCell)
-                ? dayCell.dataset.monthKey
-                : undefined;
-
-            if (!monthKey) {
-                setHoveredMonth(null);
-                return;
+            const targetElement = target instanceof Element ? target : null;
+            const weekNumber = targetElement?.closest<HTMLElement>('[data-preview-month-keys]') ?? null;
+            const keyedTarget = targetElement?.closest<HTMLElement>('[data-month-key]') ?? null;
+            let monthKeys: string[] = [];
+            if (weekNumber && hoverScroller.contains(weekNumber)) {
+                monthKeys = (weekNumber.dataset.previewMonthKeys ?? '').split(',').filter(Boolean);
+            } else if (keyedTarget && hoverScroller.contains(keyedTarget)) {
+                const monthKey = keyedTarget.dataset.monthKey;
+                if (monthKey) monthKeys = [monthKey];
             }
-
             const today = new Date();
-            const isCurrentMonth = monthKey === `${today.getFullYear()}-${today.getMonth()}`;
-            const nextMonth = isCurrentMonth || focusedMonths.has(monthKey) ? null : monthKey;
-            setHoveredMonth((current) => current === nextMonth ? current : nextMonth);
+            const currentMonthKey = `${today.getFullYear()}-${today.getMonth()}`;
+            const nextMonths = new Set(monthKeys.filter((monthKey) =>
+                monthKey !== currentMonthKey && !focusedMonths.has(monthKey)
+            ));
+            setHoveredMonths((current) => {
+                if (current.size === nextMonths.size && [...current].every((monthKey) => nextMonths.has(monthKey))) {
+                    return current;
+                }
+                return nextMonths;
+            });
         };
 
         const scheduleRecalculation = () => {
             if (hoverRecalculationFrame.current !== null) return;
             hoverRecalculationFrame.current = window.requestAnimationFrame(() => {
                 hoverRecalculationFrame.current = null;
-                recalculateHoveredMonth();
+                recalculateHoveredMonths();
             });
         };
 
         const handlePointerPosition = (event: PointerEvent) => {
             if (event.pointerType === 'touch') {
                 pointerPosition.current = null;
-                setHoveredMonth(null);
+                setHoveredMonths((current) => current.size === 0 ? current : new Set());
                 return;
             }
             pointerPosition.current = { x: event.clientX, y: event.clientY };
@@ -1192,7 +1219,7 @@ export const ContinuousCalendar = (props: ContinuousCalendarProps) => {
 
         const handlePointerLeave = () => {
             pointerPosition.current = null;
-            setHoveredMonth(null);
+            setHoveredMonths((current) => current.size === 0 ? current : new Set());
         };
 
         hoverScroller.addEventListener('pointerenter', handlePointerPosition);
@@ -1246,7 +1273,7 @@ export const ContinuousCalendar = (props: ContinuousCalendarProps) => {
     const handleNextDay = () => moveDetailDay(1);
 
     const handleYearChange = (newYear: number) => {
-        setHoveredMonth(null);
+        setHoveredMonths((current) => current.size === 0 ? current : new Set());
         setCurrentYear(newYear);
         if (onYearChange) onYearChange(newYear);
     };
@@ -1286,7 +1313,7 @@ export const ContinuousCalendar = (props: ContinuousCalendarProps) => {
     };
 
     const toggleMonthFocus = (year: number, month: number) => {
-        setHoveredMonth(null);
+        setHoveredMonths((current) => current.size === 0 ? current : new Set());
         const key = `${year}-${month}`;
         setFocusedMonths((prev) => {
             const next = new Set(prev);
@@ -1297,7 +1324,7 @@ export const ContinuousCalendar = (props: ContinuousCalendarProps) => {
     };
 
     const resetFocus = () => {
-        setHoveredMonth(null);
+        setHoveredMonths((current) => current.size === 0 ? current : new Set());
         setFocusedMonths(new Set());
         setPinnedMonth(null);
     };
@@ -1442,7 +1469,7 @@ export const ContinuousCalendar = (props: ContinuousCalendarProps) => {
     };
 
     const handleMonthNameClick = (date: Date) => {
-        setHoveredMonth(null);
+        setHoveredMonths((current) => current.size === 0 ? current : new Set());
         const monthDate = new Date(date.getFullYear(), date.getMonth(), 1);
         setMonthViewDate(monthDate);
         setSelection({ date: getInitialMonthDetailDate(monthDate), type: 'cell' });
@@ -1450,7 +1477,7 @@ export const ContinuousCalendar = (props: ContinuousCalendarProps) => {
     };
 
     const handleMonthViewNav = (newDate: Date) => {
-        setHoveredMonth(null);
+        setHoveredMonths((current) => current.size === 0 ? current : new Set());
         setMonthViewDate(newDate);
         setSelection((currentSelection) => ({
             date: currentSelection?.type === 'cell'
@@ -1572,7 +1599,7 @@ export const ContinuousCalendar = (props: ContinuousCalendarProps) => {
                                     onNumberClick={handleNumberClick}
                                     currentYear={currentYear}
                                     isCompact={isCompact}
-                                    hoveredMonth={hoveredMonth}
+                                    hoveredMonths={hoveredMonths}
                                 />
                             )}
                         />
@@ -1583,7 +1610,7 @@ export const ContinuousCalendar = (props: ContinuousCalendarProps) => {
                         onMonthChange={handleMonthViewNav}
                         onGoToToday={handleGoToToday}
                         onClose={() => {
-                            setHoveredMonth(null);
+                            setHoveredMonths((current) => current.size === 0 ? current : new Set());
                             if (pinnedMonth) {
                                 const [pYear] = pinnedMonth.split('-').map(Number);
                                 if (pYear !== currentYear) setCurrentYear(pYear);
