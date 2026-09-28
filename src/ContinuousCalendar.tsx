@@ -295,6 +295,7 @@ interface DayCellProps {
     isSelected: boolean;
     isCellSelected: boolean;
     isCompact: boolean;
+    isMonthPreview: boolean;
     onNumberClick: (d: Date, e: React.MouseEvent) => void;
     onCellClick: (d: Date) => void;
 }
@@ -307,6 +308,7 @@ const DayCell: React.FC<DayCellProps> = ({
     isSelected,
     isCellSelected,
     isCompact,
+    isMonthPreview,
     onNumberClick,
     onCellClick
 }) => {
@@ -346,7 +348,7 @@ const DayCell: React.FC<DayCellProps> = ({
     if (isCellSelected) numClass += ' engaged range-start-engaged';
 
     // Create a variable for the container class
-    const containerClass = `day-cell ${!isActive ? 'is-inactive-cell' : ''}`;
+    const containerClass = `day-cell ${!isActive ? 'is-inactive-cell' : ''}${isMonthPreview ? ' is-month-preview' : ''}`;
 
     // In compact mode, combine dots and ranges into a unified area
     const ranges = indexService.getRangesForDate(dateKey);
@@ -355,7 +357,11 @@ const DayCell: React.FC<DayCellProps> = ({
     const totalItems = displaySymbols.length + ranges.length;
 
     return (
-        <div className={`${containerClass}${isCompact ? ' is-compact' : ''}`} onClick={() => onCellClick(date)}>
+        <div
+            className={`${containerClass}${isCompact ? ' is-compact' : ''}`}
+            data-month-key={`${date.getFullYear()}-${date.getMonth()}`}
+            onClick={() => onCellClick(date)}
+        >
             <div className="cell-content">
                 <div className="top-content">
                     <span
@@ -590,6 +596,7 @@ interface WeekRowProps {
     onNumberClick: (date: Date, e: React.MouseEvent) => void;
     currentYear?: number;
     isCompact?: boolean;
+    hoveredMonth?: string | null;
 }
 
 const WeekRow: React.FC<WeekRowProps> = ({
@@ -610,7 +617,8 @@ const WeekRow: React.FC<WeekRowProps> = ({
     onCellClick,
     onNumberClick,
     currentYear,
-    isCompact = false
+    isCompact = false,
+    hoveredMonth = null
 }) => {
     // --- Active Logic ---
     const { registerGrid } = React.useContext(SymbolLayoutContext);
@@ -630,6 +638,14 @@ const WeekRow: React.FC<WeekRowProps> = ({
     const activeDays = weekData.map(d => checkIsActive(d.date));
     const { path: borderPath, separator: separatorPath } =
         getBorderSegment(weekData, checkIsActive, activeDays);
+
+    const isMonthPreview = (date: Date) =>
+        viewMode === 'Continuous' &&
+        hoveredMonth === `${date.getFullYear()}-${date.getMonth()}` &&
+        !checkIsActive(date);
+    const previewDays = weekData.map(d => isMonthPreview(d.date));
+    const { path: previewBorderPath } =
+        getBorderSegment(weekData, isMonthPreview, previewDays);
 
     const firstDayOfMonth = weekData.find((d) => d.date.getDate() === 1);
     const monthNames = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
@@ -666,10 +682,12 @@ const WeekRow: React.FC<WeekRowProps> = ({
     );
 
     const isWeekActive = activeDays.some(Boolean);
+    const isPreviewWeek = !isSelected && previewDays.some(Boolean) && !isWeekActive && !isWeekToday;
     let weekTextClass = 'week-num-text';
     if (isWeekToday) weekTextClass += ' is-today';
     else if (isWeekActive) weekTextClass += ' is-active';
     else weekTextClass += ' is-inactive';
+    if (isPreviewWeek) weekTextClass += ' is-preview';
 
     const checkSelection = (d: Date, type: 'cell' | 'number'): boolean => {
         if (!selection) return false;
@@ -693,7 +711,7 @@ const WeekRow: React.FC<WeekRowProps> = ({
                         return (
                             <div
                                 key={i}
-                                className={`day-cell-bg ${isWeekend ? 'weekend' : ''} ${!isActive ? 'is-inactive' : ''}`}
+                                className={`day-cell-bg ${isWeekend ? 'weekend' : ''} ${!isActive ? 'is-inactive' : ''}${isMonthPreview(d.date) ? ' is-month-preview' : ''}`}
                                 onClick={() => onCellClick(d.date)}
                             />
                         );
@@ -721,6 +739,7 @@ const WeekRow: React.FC<WeekRowProps> = ({
                                     isSelected={!!isNumberSelected}
                                     isCellSelected={!!isCellSelected}
                                     isCompact={isCompact}
+                                    isMonthPreview={isMonthPreview(d.date)}
                                     onNumberClick={onNumberClick}
                                     onCellClick={onCellClick}
                                 />
@@ -738,6 +757,18 @@ const WeekRow: React.FC<WeekRowProps> = ({
                                 fill="none"
                                 stroke="var(--text-normal)"
                                 strokeWidth="2"
+                                strokeLinejoin="round"
+                                vectorEffect="non-scaling-stroke"
+                            />
+                        )}
+                        {previewBorderPath && (
+                            <path
+                                className="calendar-month-preview-border"
+                                d={previewBorderPath}
+                                fill="none"
+                                stroke="var(--text-muted)"
+                                strokeWidth="1"
+                                strokeDasharray="4 4"
                                 strokeLinejoin="round"
                                 vectorEffect="non-scaling-stroke"
                             />
@@ -1019,10 +1050,15 @@ export const ContinuousCalendar = (props: ContinuousCalendarProps) => {
 
     const virtuosoRef = useRef<VirtuosoHandle>(null);
     const containerRef = useRef<HTMLDivElement>(null);
+    const [hoverScroller, setHoverScroller] = useState<HTMLElement | null>(null);
+    const pointerPosition = useRef<{ x: number; y: number } | null>(null);
+    const hoverRecalculationFrame = useRef<number | null>(null);
+    const refreshHoverAfterScroll = useRef<() => void>(() => { });
 
     const [currentYear, setCurrentYear] = useState<number>(new Date().getFullYear());
     const [minWeeksToFill, setMinWeeksToFill] = useState<number>(20);
     const [focusedMonths, setFocusedMonths] = useState<Set<string>>(new Set());
+    const [hoveredMonth, setHoveredMonth] = useState<string | null>(null);
     const [selectedWeekIndex, setSelectedWeekIndex] = useState<number | null>(null);
     const [selection, setSelection] = useState<SelectionState | null>(null);
 
@@ -1031,6 +1067,10 @@ export const ContinuousCalendar = (props: ContinuousCalendarProps) => {
     const [monthViewDate, setMonthViewDate] = useState<Date>(new Date());
     const [pendingScrollDate, setPendingScrollDate] = useState<Date | null>(null);
     const [pinnedMonth, setPinnedMonth] = useState<string | null>(null);
+
+    const handleScrollerRef = useCallback((element: HTMLElement | null) => {
+        setHoverScroller((current) => current === element ? current : element);
+    }, []);
 
     // Compact mode state - triggers when container width approaches min-width
     const COMPACT_MODE_THRESHOLD = 420; // Width at which we switch to compact mode
@@ -1097,6 +1137,84 @@ export const ContinuousCalendar = (props: ContinuousCalendarProps) => {
         return unsubscribe;
     }, [index]);
 
+    useEffect(() => {
+        if (viewMode !== 'Continuous') {
+            pointerPosition.current = null;
+            setHoveredMonth(null);
+            refreshHoverAfterScroll.current = () => { };
+            return;
+        }
+        if (!hoverScroller) return;
+
+        const recalculateHoveredMonth = () => {
+            const position = pointerPosition.current;
+            if (!position) {
+                setHoveredMonth(null);
+                return;
+            }
+
+            const target = hoverScroller.ownerDocument.elementFromPoint(position.x, position.y);
+            const dayCell = target instanceof Element
+                ? target.closest<HTMLElement>('.day-cell')
+                : null;
+            const monthKey = dayCell && hoverScroller.contains(dayCell)
+                ? dayCell.dataset.monthKey
+                : undefined;
+
+            if (!monthKey) {
+                setHoveredMonth(null);
+                return;
+            }
+
+            const today = new Date();
+            const isCurrentMonth = monthKey === `${today.getFullYear()}-${today.getMonth()}`;
+            const nextMonth = isCurrentMonth || focusedMonths.has(monthKey) ? null : monthKey;
+            setHoveredMonth((current) => current === nextMonth ? current : nextMonth);
+        };
+
+        const scheduleRecalculation = () => {
+            if (hoverRecalculationFrame.current !== null) return;
+            hoverRecalculationFrame.current = window.requestAnimationFrame(() => {
+                hoverRecalculationFrame.current = null;
+                recalculateHoveredMonth();
+            });
+        };
+
+        const handlePointerPosition = (event: PointerEvent) => {
+            if (event.pointerType === 'touch') {
+                pointerPosition.current = null;
+                setHoveredMonth(null);
+                return;
+            }
+            pointerPosition.current = { x: event.clientX, y: event.clientY };
+            scheduleRecalculation();
+        };
+
+        const handlePointerLeave = () => {
+            pointerPosition.current = null;
+            setHoveredMonth(null);
+        };
+
+        hoverScroller.addEventListener('pointerenter', handlePointerPosition);
+        hoverScroller.addEventListener('pointermove', handlePointerPosition);
+        hoverScroller.addEventListener('pointerleave', handlePointerLeave);
+        hoverScroller.addEventListener('scroll', scheduleRecalculation, { passive: true });
+        refreshHoverAfterScroll.current = scheduleRecalculation;
+        scheduleRecalculation();
+
+        return () => {
+            hoverScroller.removeEventListener('pointerenter', handlePointerPosition);
+            hoverScroller.removeEventListener('pointermove', handlePointerPosition);
+            hoverScroller.removeEventListener('pointerleave', handlePointerLeave);
+            hoverScroller.removeEventListener('scroll', scheduleRecalculation);
+            if (hoverRecalculationFrame.current !== null) {
+                window.cancelAnimationFrame(hoverRecalculationFrame.current);
+                hoverRecalculationFrame.current = null;
+            }
+            refreshHoverAfterScroll.current = () => { };
+        };
+    }, [currentYear, focusedMonths, hoverScroller, viewMode]);
+
     const handleCellClick = (date: Date) => {
         if (selection?.type === 'cell' && selection.date.getTime() === date.getTime()) {
             setSelection(null);
@@ -1128,6 +1246,7 @@ export const ContinuousCalendar = (props: ContinuousCalendarProps) => {
     const handleNextDay = () => moveDetailDay(1);
 
     const handleYearChange = (newYear: number) => {
+        setHoveredMonth(null);
         setCurrentYear(newYear);
         if (onYearChange) onYearChange(newYear);
     };
@@ -1167,6 +1286,7 @@ export const ContinuousCalendar = (props: ContinuousCalendarProps) => {
     };
 
     const toggleMonthFocus = (year: number, month: number) => {
+        setHoveredMonth(null);
         const key = `${year}-${month}`;
         setFocusedMonths((prev) => {
             const next = new Set(prev);
@@ -1177,6 +1297,7 @@ export const ContinuousCalendar = (props: ContinuousCalendarProps) => {
     };
 
     const resetFocus = () => {
+        setHoveredMonth(null);
         setFocusedMonths(new Set());
         setPinnedMonth(null);
     };
@@ -1321,6 +1442,7 @@ export const ContinuousCalendar = (props: ContinuousCalendarProps) => {
     };
 
     const handleMonthNameClick = (date: Date) => {
+        setHoveredMonth(null);
         const monthDate = new Date(date.getFullYear(), date.getMonth(), 1);
         setMonthViewDate(monthDate);
         setSelection({ date: getInitialMonthDetailDate(monthDate), type: 'cell' });
@@ -1328,6 +1450,7 @@ export const ContinuousCalendar = (props: ContinuousCalendarProps) => {
     };
 
     const handleMonthViewNav = (newDate: Date) => {
+        setHoveredMonth(null);
         setMonthViewDate(newDate);
         setSelection((currentSelection) => ({
             date: currentSelection?.type === 'cell'
@@ -1414,8 +1537,12 @@ export const ContinuousCalendar = (props: ContinuousCalendarProps) => {
                         )}
                         <Virtuoso
                             ref={virtuosoRef}
+                            scrollerRef={handleScrollerRef}
                             defaultItemHeight={isCompact ? 43 : 68}
                             rangeChanged={setVisibleRange}
+                            isScrolling={(isScrolling) => {
+                                if (!isScrolling) refreshHoverAfterScroll.current();
+                            }}
                             context={{ dataVersion }}
                             style={{
                                 height: '100%',
@@ -1445,6 +1572,7 @@ export const ContinuousCalendar = (props: ContinuousCalendarProps) => {
                                     onNumberClick={handleNumberClick}
                                     currentYear={currentYear}
                                     isCompact={isCompact}
+                                    hoveredMonth={hoveredMonth}
                                 />
                             )}
                         />
@@ -1455,6 +1583,7 @@ export const ContinuousCalendar = (props: ContinuousCalendarProps) => {
                         onMonthChange={handleMonthViewNav}
                         onGoToToday={handleGoToToday}
                         onClose={() => {
+                            setHoveredMonth(null);
                             if (pinnedMonth) {
                                 const [pYear] = pinnedMonth.split('-').map(Number);
                                 if (pYear !== currentYear) setCurrentYear(pYear);

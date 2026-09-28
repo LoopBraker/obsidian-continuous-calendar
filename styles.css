@@ -224,6 +224,11 @@
         opacity: 0.2;
     }
 
+    .week-num-text.is-preview {
+        color: var(--text-muted);
+        opacity: 0.6;
+    }
+
     .week-num-col.selected .week-num-text {
         color: var(--text-accent);
         transform: scale(1.25);
@@ -258,7 +263,7 @@
         /* border-bottom: 1px solid rgba(243, 244, 246, 0.5); */
         box-sizing: border-box;
         cursor: pointer;
-        transition: background-color 0.2s;
+        transition: background-color 0.2s, opacity 0.2s;
     }
 
     .day-cell-bg.is-inactive {
@@ -288,6 +293,11 @@
 
     .day-cell-bg.weekend.is-inactive {
         background-color: var(--background-primary);
+    }
+
+    .day-cell-bg.is-inactive.is-month-preview {
+        background-color: var(--background-modifier-hover, var(--background-secondary));
+        opacity: 0.32;
     }
 
     /* Foreground Layer (Content) */
@@ -345,7 +355,7 @@
         padding: 0px 4px;
         border-radius: 4px;
         cursor: pointer;
-        transition: outline-color 0.1s ease-in-out, background-color 0.1s ease-in-out;
+        transition: opacity 0.18s ease-in-out, outline-color 0.1s ease-in-out, background-color 0.1s ease-in-out;
     }
 
     .day-number.is-today {
@@ -431,6 +441,7 @@
         justify-content: center;
         overflow: hidden;
         white-space: nowrap;
+        transition: opacity 0.18s ease-in-out;
     }
 
     .dot-indicator {
@@ -462,6 +473,7 @@
         display: flex;
         flex-direction: column;
         gap: var(--range-bar-spacing);
+        transition: opacity 0.18s ease-in-out;
     }
 
     .range-slot {
@@ -570,6 +582,11 @@
 
     .calendar-month-border {
         stroke: var(--text-normal);
+    }
+
+    .calendar-month-preview-border {
+        stroke: var(--text-muted);
+        opacity: 0.75;
     }
 
     /* 3. Sidebar Column */
@@ -1123,6 +1140,21 @@
         opacity: 0.3;
     }
 
+    .day-cell.is-month-preview .day-number.is-inactive {
+        opacity: 0.6;
+    }
+
+    .day-cell.is-month-preview.is-inactive-cell .range-bar-area,
+    .day-cell.is-month-preview.is-inactive-cell .dot-area {
+        opacity: 0.6;
+    }
+
+    .day-cell.is-month-preview.is-inactive-cell .tag-symbol,
+    .day-cell.is-month-preview.is-inactive-cell .dot-indicator,
+    .day-cell.is-month-preview.is-inactive-cell .range-overflow-container {
+        opacity: 1;
+    }
+
     /* ==========================================
    COMPACT MODE STYLES
    Triggered when container width <= 420px
@@ -1224,6 +1256,16 @@
     .calendar-container.is-compact-mode .tag-symbol {
         font-size: 6px;
         line-height: 6px;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .Continuous-calendar-plugin .day-cell-bg,
+    .Continuous-calendar-plugin .day-number,
+    .Continuous-calendar-plugin .dot-area,
+    .Continuous-calendar-plugin .range-bar-area,
+    .Continuous-calendar-plugin .week-num-text {
+        transition: none;
     }
 }
 
@@ -1812,4 +1854,3 @@
     color: var(--text-muted);
     font-weight: var(--font-semibold, 600);
 }
-
