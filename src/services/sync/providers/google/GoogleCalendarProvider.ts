@@ -32,7 +32,10 @@ import {
 
 const GOOGLE_PROVIDER_ID = 'google' as const;
 const DEFAULT_BASE_URL = 'https://www.googleapis.com/calendar/v3';
-const GOOGLE_CURSOR_PREFIX = 'google-sync-v1:';
+// v2 marks cursors created from the unbounded query shape. A v1 cursor came
+// from a bounded initial fetch, so decode rejects it and SyncService performs
+// one automatic full resync without requiring the user to reconnect.
+const GOOGLE_CURSOR_PREFIX = 'google-sync-v2:';
 const DEFAULT_MAX_PAGES = 100;
 const DEFAULT_MAX_RESULTS = 2500;
 
@@ -223,8 +226,6 @@ export class GoogleCalendarProvider implements CalendarProvider {
 						maxResults: this.maxResults,
 						pageToken,
 						syncToken,
-						timeMin: syncToken ? undefined : request.window.from,
-						timeMax: syncToken ? undefined : request.window.to,
 					},
 				);
 

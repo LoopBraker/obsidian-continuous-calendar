@@ -3,7 +3,7 @@ import type ContinuousCalendarPlugin from '../main';
 import type { CalendarSyncSettings, DateProperty, SyncMode } from './settings';
 import { HolidaySource } from '../services/holiday/HolidayTypes';
 import type { SyncUiActions, SyncUiConflict } from '../components/SyncUi';
-import { sanitizeSyncUiError } from '../components/SyncUi';
+import { sanitizeSyncUiError, syncRunNotice } from '../components/SyncUi';
 import { createConfirmationDialog } from '../modals/ConfirmationModal';
 import { openSyncConflictModal } from '../modals/SyncConflictModal';
 
@@ -658,9 +658,14 @@ export class CalendarSettingTab extends PluginSettingTab {
             const run = this.syncActions?.syncNow
                 ? this.syncActions.syncNow()
                 : this.plugin.syncLifecycle?.syncNow('manual');
-            await run;
+            if (run === undefined) {
+                connectionState.setText(syncConnectionLabel(this.plugin.settings.sync, Boolean(this.plugin.syncLifecycle?.isStarted)));
+                new Notice('Calendar sync is not running');
+                return;
+            }
+            const result = await run;
             connectionState.setText(syncConnectionLabel(this.plugin.settings.sync, Boolean(this.plugin.syncLifecycle?.isStarted)));
-            new Notice('Calendar sync requested');
+            new Notice(result === undefined ? 'Calendar sync is not running' : syncRunNotice(result));
         } catch (error) {
             new Notice(`Sync could not start: ${sanitizeSyncUiError(error)}`);
         }

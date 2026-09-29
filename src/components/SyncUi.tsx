@@ -219,6 +219,34 @@ export function sanitizeSyncUiError(error: unknown): string {
 	return sanitizeSyncError(error).message.slice(0, 240);
 }
 
+/** Describe the result returned by a manual sync instead of implying every run succeeded. */
+export function syncRunNotice(result: unknown): string {
+	if (!result || typeof result !== 'object') return 'Calendar sync requested';
+	const details = result as { readonly status?: unknown; readonly error?: unknown; readonly skippedReason?: unknown };
+	const error = typeof details.error === 'string' ? sanitizeSyncUiError(details.error) : undefined;
+	const reason = typeof details.skippedReason === 'string' ? sanitizeSyncUiError(details.skippedReason) : undefined;
+	switch (details.status) {
+		case 'idle':
+			return 'Calendar sync completed';
+		case 'conflict':
+			return 'Calendar sync completed with conflicts';
+		case 'dry-run':
+			return 'Calendar dry run completed';
+		case 'offline':
+			return error ? `Calendar sync is offline: ${error}` : 'Calendar sync is offline';
+		case 'error':
+			return error ? `Calendar sync failed: ${error}` : 'Calendar sync failed';
+		case 'cancelled':
+			return 'Calendar sync was cancelled';
+		case 'disabled':
+			return reason ? `Calendar sync is disabled: ${reason}` : 'Calendar sync is disabled';
+		case 'stopped':
+			return 'Calendar sync is not running';
+		default:
+			return 'Calendar sync requested';
+	}
+}
+
 export function SyncStatusBadge({ status }: { readonly status?: SyncStatus }): React.ReactElement | null {
 	if (!status) return null;
 	return (

@@ -263,6 +263,15 @@ function defaultWindow(clock: SyncServiceClock, horizon: SyncHorizon): SyncWindo
 	return { from: from.toISOString(), to: to.toISOString() };
 }
 
+function eventIntersectsWindow(event: CalendarEvent, window: SyncWindow): boolean {
+	const windowStart = Date.parse(window.from);
+	const windowEnd = Date.parse(window.to);
+	const eventStart = Date.parse(event.allDay ? `${event.start}T00:00:00Z` : event.start);
+	const eventEnd = Date.parse(event.allDay ? `${event.end}T00:00:00Z` : event.end);
+	if (![windowStart, windowEnd, eventStart, eventEnd].every(Number.isFinite)) return true;
+	return eventStart < windowEnd && eventEnd > windowStart;
+}
+
 /**
  * Provider-neutral reconciliation engine. It owns no provider wire details and
  * only uses repository operations that update synchronized frontmatter.
@@ -762,6 +771,11 @@ export class SyncService {
 			}
 		}
 		if (!note) noteUid = undefined;
+		// Some providers cannot apply the date window while using incremental
+		// cursors. Keep the configured horizon at the cache boundary while still
+		// updating previously cached or explicitly linked events when they move
+		// outside it.
+		if (!existing && !mapping && !note && !eventIntersectsWindow(remote.event, this.resolveWindow())) return;
 
 		const cached = this.cacheRemoteEvent(remote, note?.path, noteUid);
 		if (note && noteUid) {

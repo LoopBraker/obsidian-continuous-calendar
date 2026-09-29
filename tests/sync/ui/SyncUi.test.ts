@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { calendarEventIntersectsDate, formatCalendarEventTime, sanitizeSyncUiError, syncStatusLabel, zonedDraftTimestamp } from '../../../src/components/SyncUi';
+import { calendarEventIntersectsDate, formatCalendarEventTime, sanitizeSyncUiError, syncRunNotice, syncStatusLabel, zonedDraftTimestamp } from '../../../src/components/SyncUi';
 
 describe('sync UI helpers', () => {
 	it('labels every persisted status consistently', () => {
@@ -13,6 +13,13 @@ describe('sync UI helpers', () => {
 		expect(sanitizeSyncUiError('Bearer abc.def access_token=secret-value')).toContain('Bearer [REDACTED]');
 		expect(sanitizeSyncUiError('Bearer abc.def access_token=secret-value')).not.toContain('secret-value');
 		expect(sanitizeSyncUiError('eyJheader.payload.signature')).not.toContain('eyJheader');
+	});
+
+	it('reports returned manual sync failures instead of implying success', () => {
+		expect(syncRunNotice({ status: 'idle' })).toBe('Calendar sync completed');
+		expect(syncRunNotice({ status: 'offline', error: 'temporarily offline' })).toBe('Calendar sync is offline: temporarily offline');
+		expect(syncRunNotice({ status: 'error', error: 'Bearer access_token=secret-value' })).toContain('[REDACTED]');
+		expect(syncRunNotice({ status: 'conflict' })).toBe('Calendar sync completed with conflicts');
 	});
 
 	it('projects all-day and timed cross-midnight events by their event timezone', () => {
@@ -58,4 +65,3 @@ describe('sync UI helpers', () => {
 		})).toBe('Sep 24 – Sep 26 (All-day)');
 	});
 });
-

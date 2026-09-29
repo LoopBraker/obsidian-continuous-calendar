@@ -115,9 +115,43 @@ describe('GoogleCalendarProvider', () => {
 		expect(decodeGoogleCursor(page.nextCursor as string)).toBe('sync/token+1');
 		const firstUrl = new URL(transport.requests[0].url);
 		const secondUrl = new URL(transport.requests[1].url);
-		expect(firstUrl.searchParams.get('timeMin')).toBe(window.from);
-		expect(secondUrl.searchParams.get('timeMin')).toBe(window.from);
+		expect(firstUrl.searchParams.has('timeMin')).toBe(false);
+		expect(firstUrl.searchParams.has('timeMax')).toBe(false);
+		expect(secondUrl.searchParams.has('timeMin')).toBe(false);
+		expect(secondUrl.searchParams.has('timeMax')).toBe(false);
 		expect(secondUrl.searchParams.get('pageToken')).toBe('next/page');
+	});
+
+	it('uses a consistent unbounded query shape so a later Google event arrives incrementally', async () => {
+		const transport = new QueueTransport(
+			response(200, { items: [], nextSyncToken: 'initial-sync-token' }),
+			response(200, { items: [remoteResource({ id: 'created-after-first-sync' })], nextSyncToken: 'next-sync-token' }),
+		);
+		const provider = new GoogleCalendarProvider({ transport });
+		const initial = await provider.pullChanges({ session, calendarId: 'primary', window });
+		const incremental = await provider.pullChanges({
+			session,
+			calendarId: 'primary',
+			cursor: initial.nextCursor,
+			window,
+		});
+
+		expect(initial.changes).toEqual([]);
+		expect(incremental.changes).toMatchObject([
+			{ type: 'upsert', value: { remoteId: 'created-after-first-sync', event: { title: 'Review' } } },
+		]);
+
+		const initialQuery = new URL(transport.requests[0].url).searchParams;
+		const incrementalQuery = new URL(transport.requests[1].url).searchParams;
+		for (const query of [initialQuery, incrementalQuery]) {
+			expect(query.has('timeMin')).toBe(false);
+			expect(query.has('timeMax')).toBe(false);
+			expect(query.get('showDeleted')).toBe('true');
+			expect(query.get('singleEvents')).toBe('false');
+			expect(query.get('maxResults')).toBe('2500');
+		}
+		expect(initialQuery.has('syncToken')).toBe(false);
+		expect(incrementalQuery.get('syncToken')).toBe('initial-sync-token');
 	});
 
 	it('retains the sync token on every incremental page and omits time bounds', async () => {
@@ -134,6 +168,17 @@ describe('GoogleCalendarProvider', () => {
 			expect(url.searchParams.has('timeMin')).toBe(false);
 			expect(url.searchParams.has('timeMax')).toBe(false);
 		}
+	});
+
+	it('invalidates bounded-query v1 cursors so the engine can recover with a full sync', async () => {
+		const provider = new GoogleCalendarProvider({ transport: new QueueTransport(response(200, {})) });
+		const error = await providerError(provider.pullChanges({
+			session,
+			calendarId: 'primary',
+			cursor: 'google-sync-v1:legacy-token',
+			window,
+		}));
+		expect(error).toMatchObject({ category: 'cursor-expired', code: 'invalid-google-cursor' });
 	});
 
 	it('requires a final sync token and bounds pagination', async () => {

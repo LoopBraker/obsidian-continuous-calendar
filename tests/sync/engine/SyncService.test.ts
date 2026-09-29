@@ -6,7 +6,7 @@ import {
 } from '../../../src/services/sync/notes';
 import { decodeCalendarEventNote, parseFrontmatter, serializeFrontmatter } from '../../../src/services/sync/notes/FrontmatterEventCodec';
 import { FakeCalendarProvider, fakeProviderSession } from '../../../src/services/sync/providers/FakeCalendarProvider';
-import { transientError } from '../../../src/services/sync/providers/ProviderErrors';
+import { cursorExpiredError, transientError } from '../../../src/services/sync/providers/ProviderErrors';
 import { SyncService, type SyncStateStoreLike } from '../../../src/services/sync/engine';
 import { createDefaultSyncState, makeSyncStateKey, normalizeSyncState, type SyncState } from '../../../src/services/sync/state';
 import type { CalendarEvent } from '../../../src/services/sync/model';
@@ -99,6 +99,32 @@ class HidingFullResyncProvider extends FakeCalendarProvider {
 				}),
 			};
 		});
+	}
+}
+
+class UnboundedPullProvider extends FakeCalendarProvider {
+	override pullChanges(request: Parameters<FakeCalendarProvider['pullChanges']>[0]) {
+		return super.pullChanges({
+			...request,
+			window: { from: '1900-01-01T00:00:00Z', to: '2100-01-01T00:00:00Z' },
+		});
+	}
+}
+
+class ExpiringCursorOnceProvider extends FakeCalendarProvider {
+	readonly seenCursors: Array<string | undefined> = [];
+	private didExpire = false;
+
+	override pullChanges(request: Parameters<FakeCalendarProvider['pullChanges']>[0]) {
+		this.seenCursors.push(request.cursor);
+		if (request.cursor && !this.didExpire) {
+			this.didExpire = true;
+			return Promise.reject(cursorExpiredError('Legacy Google cursor must be replaced', {
+				providerId: 'google',
+				code: 'invalid-google-cursor',
+			}));
+		}
+		return super.pullChanges(request);
 	}
 }
 
@@ -288,6 +314,51 @@ describe('SyncService remote event cache', () => {
 		expect(service.listCachedEvents()).toHaveLength(1);
 		expect(repository.list()).toHaveLength(0);
 		expect(store.state.eventCacheInitialized[cursorKey]).toBe(true);
+	});
+
+	it('keeps unbounded provider pulls inside the configured cache horizon and still applies deletions', async () => {
+		const provider = new UnboundedPullProvider({ accountId: SESSION.accountId });
+		provider.seedEvent('primary', event('inside-window'), { remoteId: 'inside-window' });
+		provider.seedEvent('primary', event('outside-window', {
+			start: '2024-12-30T09:00:00-05:00',
+			end: '2024-12-30T10:00:00-05:00',
+		}), { remoteId: 'outside-window' });
+		const { service, store } = makeService(provider, new MemoryVault(), new MemoryStateStore(), 'import-only');
+
+		const initial = await service.syncNow();
+		const insideKey = makeSyncStateKey('google', SESSION.accountId, 'primary', 'inside-window');
+		const outsideKey = makeSyncStateKey('google', SESSION.accountId, 'primary', 'outside-window');
+		expect(initial.pulled).toBe(2);
+		expect(service.listCachedEvents().map(cached => cached.remoteEventId)).toEqual(['inside-window']);
+		expect(store.state.remoteEvents[outsideKey]).toBeUndefined();
+
+		await provider.deleteEvent(SESSION, 'primary', 'inside-window');
+		await service.syncNow();
+		expect(store.state.remoteEvents[insideKey]?.status).toBe('remote_deleted');
+	});
+
+	it('recovers from a legacy Google cursor with one automatic full resync', async () => {
+		const provider = new ExpiringCursorOnceProvider({ accountId: SESSION.accountId });
+		provider.seedEvent('primary', event('recovered-event'), { remoteId: 'recovered-event' });
+		const store = new MemoryStateStore();
+		const cursorKey = makeSyncStateKey('google', SESSION.accountId, 'primary');
+		store.state.cursors[cursorKey] = {
+			providerId: 'google',
+			accountId: SESSION.accountId,
+			calendarId: 'primary',
+			cursor: 'google-sync-v1:legacy-token',
+			updatedAt: '2026-09-01T00:00:00.000Z',
+		};
+		store.state.eventCacheInitialized[cursorKey] = true;
+		const { service, store: savedStore } = makeService(provider, new MemoryVault(), store, 'import-only');
+
+		const result = await service.syncNow();
+		const eventKey = makeSyncStateKey('google', SESSION.accountId, 'primary', 'recovered-event');
+		expect(result.fullResync).toBe(true);
+		expect(result.status).toBe('idle');
+		expect(provider.seenCursors).toEqual(['google-sync-v1:legacy-token', undefined]);
+		expect(savedStore.state.remoteEvents[eventKey]?.event.title).toBe('recovered-event');
+		expect(savedStore.state.eventCacheInitialized[cursorKey]).toBe(true);
 	});
 
 	it('marks cached events absent from a completed full resync as remotely deleted', async () => {

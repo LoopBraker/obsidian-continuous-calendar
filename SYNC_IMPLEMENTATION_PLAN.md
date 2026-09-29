@@ -248,6 +248,11 @@ src/services/sync/
 
 ## Current baseline evidence
 
+Recorded on 2026-09-29 after the follow-up Google sync fix:
+- Full Google event pulls now establish an unbounded incremental cursor; the configured horizon is applied when caching events. Existing bounded-query cursors trigger one automatic full resync, without disconnecting the account.
+- Manual sync reports offline and error results in the settings notice. Live Google verification is still required to confirm the reported repeat-sync failure is resolved.
+- `npm test`: 18 test files, 124 tests passed. `npm run build` and `git diff --check` pass. Focused changed-file lint has zero errors and three existing warnings; repository-wide lint retains 16 pre-existing errors.
+
 Recorded on 2026-09-28 after Workstream K:
 - `npm test`: 18 test files, 119 tests passed.
 - `npm run build`: passes TypeScript checking and production bundle.
