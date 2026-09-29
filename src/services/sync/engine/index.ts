@@ -19,6 +19,7 @@ export {
 	CalendarSyncService,
 	type SyncConflictResolutionResult,
 	type SyncConflictView,
+	type CachedCalendarEventView,
 	type SyncRepositoryLike,
 	type SyncRunResult,
 	type SyncRunTrigger,

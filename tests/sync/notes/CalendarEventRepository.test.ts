@@ -10,6 +10,7 @@ import {
 	type CalendarEventVault,
 	type CalendarVaultFileLike,
 } from '../../../src/services/sync/notes/CalendarEventRepository';
+import type { ProviderReference } from '../../../src/services/sync/model/CalendarEvent';
 
 const event = {
 	uid: 'event-1',
@@ -20,6 +21,13 @@ const event = {
 	timezone: 'America/Bogota',
 	location: 'Room 1',
 	description: 'Discuss the release.',
+};
+
+const googleReference: ProviderReference<'google'> = {
+	providerId: 'google',
+	accountId: 'account-1',
+	calendarId: 'primary',
+	remoteEventId: 'remote-1',
 };
 
 class MemoryVault implements CalendarEventVault {
@@ -190,6 +198,52 @@ describe('CalendarEventRepository', () => {
 		expect(repository.getByUid('generated-uid')?.path).toBe(created.path);
 	});
 
+	it('creates one linked note per provider event, including concurrent repeated requests', async () => {
+		const vault = new MemoryVault();
+		const repository = new CalendarEventRepository(vault, {
+			folder: 'Events',
+			uuidFactory: () => 'linked-uid',
+		});
+
+		const [first, repeated] = await Promise.all([
+			repository.createLinkedNote({ ...event, uid: undefined }, googleReference, { body: 'My notes' }),
+			repository.createLinkedNote({ ...event, uid: undefined }, googleReference, { body: 'Should not replace' }),
+		]);
+
+		expect(repeated.path).toBe(first.path);
+		expect(first.association?.reference).toEqual(googleReference);
+		expect(first.body).toBe('My notes');
+		expect(vault.createCalls).toEqual(['Events/Project review.md']);
+		expect(repository.getByProviderReference(googleReference)?.path).toBe(first.path);
+
+		const again = await repository.createLinkedNote({ ...event, title: 'Updated remotely' }, googleReference);
+		expect(again.path).toBe(first.path);
+		expect(again.event.title).toBe(event.title);
+		expect(vault.createCalls).toHaveLength(1);
+	});
+
+	it('finds and reuses a legacy note already linked to the provider event', async () => {
+		const body = '\r\n# Existing research\r\n';
+		const vault = new MemoryVault({
+			'Events/Existing research.md': encodeCalendarEventNote(event, {
+				body,
+				association: googleReference,
+				unknownFrontmatter: { project: 'preserve' },
+			}),
+		});
+		const repository = new CalendarEventRepository(vault, { folder: 'Events' });
+		await repository.reload();
+
+		const existing = repository.getByProviderReference(googleReference);
+		const reused = await repository.createLinkedNote({ ...event, title: 'Remote update' }, googleReference);
+
+		expect(existing?.path).toBe('Events/Existing research.md');
+		expect(reused.path).toBe(existing?.path);
+		expect(reused.body).toBe(body);
+		expect(reused.frontmatter.project).toBe('preserve');
+		expect(vault.createCalls).toEqual([]);
+	});
+
 	it('updates only frontmatter, preserving unknown fields and exact body bytes', async () => {
 		const body = '\r\n# local body\r\n\r\n- [ ] local checkbox\r\n';
 		const vault = new MemoryVault({
@@ -209,6 +263,28 @@ describe('CalendarEventRepository', () => {
 		expect(decoded.note?.event.title).toBe('Architecture review');
 		expect(decoded.note?.frontmatter.custom_field).toBe('keep me');
 		expect(decoded.note?.body).toBe(body);
+	});
+
+	it('keeps an established provider reference immutable while allowing same-event updates', async () => {
+		const body = '\r\n# Keep my details\r\n';
+		const vault = new MemoryVault();
+		const repository = new CalendarEventRepository(vault, { folder: 'Events' });
+		const created = await repository.createLinkedNote(event, googleReference, { body });
+
+		await expect(repository.update(created.event.uid, { title: 'Wrong remote event' }, {
+			association: { ...googleReference, remoteEventId: 'another-event' },
+		})).rejects.toMatchObject({ code: 'immutable-association' });
+
+		const updated = await repository.update(created.event.uid, { title: 'Updated by sync' }, {
+			association: googleReference,
+			status: 'synced',
+		});
+		const decoded = decodeCalendarEventNote(await vault.read(updated.path));
+
+		expect(updated.event.title).toBe('Updated by sync');
+		expect(updated.association?.reference).toEqual(googleReference);
+		expect(decoded.note?.body).toBe(body);
+		expect(vault.createCalls).toHaveLength(1);
 	});
 
 	it('renames locally while retaining UID and changing no remote-facing operation', async () => {

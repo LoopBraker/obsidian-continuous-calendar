@@ -1,18 +1,27 @@
 # Calendar Sync Implementation Plan and Orchestrator Handoff
 
-Last updated: 2026-09-27  
-Status: Gates 0–2 and Workstreams A–H completed and accepted. Workstream I (Google Rollout) live authorization and synchronization implemented and validated; automated lifecycle suite and cross-platform checks pending. Workstream J (Microsoft) deferred.  
+Last updated: 2026-09-28
+Status: Google event display and optional-note redesign is code-complete and in review. Workstream I remains open; Microsoft is deferred.
 Repository: `obsidian-continuous-calendar`
 
 ## Current state snapshot
 
-Recorded on 2026-09-27 after Google Calendar bidirectional sync rollout and DayDetailView UI improvements.
+The 2026-09-27 snapshot below describes the previous note-backed implementation. The 2026-09-28 redesign in this document supersedes its automatic-note behavior; verify the current code and tests before treating a listed behavior as delivered.
+
+### Approved 2026-09-28 redesign
+
+- Google events appear in both calendar views and the day detail view without creating Markdown notes during import.
+- A persistent provider-keyed cache retains fetched events across restarts and temporary outages. Dry-run does not populate it. Disconnect clears the selected binding's cache while preserving Google events and all vault notes.
+- Each Google event offers **Create note** beside **Edit** in the day detail view. After linking, the action becomes **Open note**. Repeated actions reuse the same note.
+- Optional notes are personal: Google is authoritative for synchronized event fields, while the note body and unrelated properties remain local. Note edits/deletions do not change Google events.
+- Existing imported event notes remain and are linked to their Google events. A full fetch on first sync after migration populates the cache despite an existing incremental cursor.
+- Calendar event creation, editing, and deletion operate directly on Google in bidirectional mode, without requiring a note. Import-only displays cached events and allows optional notes; it does not write events to Google. Remote deletion removes the event display and retains a linked note with deleted-event status.
 
 ### What works now
 
 - **Local-first startup and gating**: Plugin loads safely with sync disabled, without credentials, or with missing client configuration without making network requests. Desktop sync controls are capability-gated via `Platform.isDesktopApp`.
 - **Pure canonical event domain**: Full validation, RFC 3339 offset enforcement, deterministic SHA-256 hashing, and 3-way merge logic (`CalendarEventValidation`, `CalendarEventHash`, `CalendarEventMerge`).
-- **Markdown vault integration & dual frontmatter encoding**: `CalendarEventRepository` and `FrontmatterEventCodec` handle non-destructive frontmatter updates via `processFrontMatter`. Dual frontmatter bridges native Obsidian properties (`date`, `dateStart`, `dateEnd`) with canonical sync boundaries (`calendar_start`, `calendar_end`, `calendar_all_day`).
+- **Markdown vault integration & dual frontmatter encoding (legacy snapshot)**: `CalendarEventRepository` and `FrontmatterEventCodec` handle non-destructive frontmatter updates via `processFrontMatter`. Under the redesign these fields belong only to optional linked notes.
 - **State and credential storage**: Versioned migrations via `PluginDataStore`, sync tokens/snapshots/tombstones via `SyncStateStore`, and secure tokens via `CredentialStore` (`SecretStorage` / `safeStorage` with session fallback).
 - **Google OAuth & provider runtime**: System browser PKCE authorization with loopback HTTP listener on `127.0.0.1:0`, refresh token exchange, revocation, calendar discovery, pagination, incremental sync tokens, 410 full resync, and ETag conditional updates (`GoogleOAuthProvider`, `GoogleCalendarProvider`, `GoogleDesktopOAuth`).
 - **Provider-neutral sync engine**: Debounced serialized outbound queue (`SyncQueue`), 3-way reconciliation, conflict detection, feedback-loop suppression, and tombstone handling (`SyncService`).
@@ -20,7 +29,7 @@ Recorded on 2026-09-27 after Google Calendar bidirectional sync rollout and DayD
 - **Modals & UI projections**:
   - `SyncEventModal`: Create and edit canonical events.
   - `SyncConflictModal`: Side-by-side local vs remote diff resolution.
-  - `DayDetailView`: Dedicated "Synced events" section with event cards, clean timezone-aware time formatting, status badges, and action buttons (`Edit`, `Resolve`, `Delete synced event`), filtered from generic notes.
+  - `DayDetailView`: The redesigned event cards use the remote event cache and offer `Create note` or `Open note` alongside event actions.
   - Read-model projections shared across standard `CalendarView` and `CalendarBasesView`.
 - **Test coverage**: 18 test files with 125 Vitest tests passing; production build passes TypeScript and esbuild cleanly.
 
@@ -35,17 +44,17 @@ Recorded on 2026-09-27 after Google Calendar bidirectional sync rollout and DayD
 
 ### Architectural and Design Deviations from Original Plan
 
-1. **Dual Frontmatter Mapping for Native Interoperability (`date` / `dateStart` / `dateEnd` vs `calendar_start` / `calendar_end`)**:
+1. **Dual Frontmatter Mapping for Optional Notes (`date` / `dateStart` / `dateEnd` vs `calendar_start` / `calendar_end`)**:
    - *Original Plan*: Rely solely on `calendar_start`, `calendar_end`, and `calendar_all_day` with Google's exclusive end dates (`[start, end)`).
    - *Deviation*: `FrontmatterEventCodec` and `CalendarEventValidation` maintain native Continuous Calendar frontmatter properties alongside canonical sync properties. Single-day events map to `date`. Multi-day events map to `dateStart` and `dateEnd` using inclusive ends (`exclusiveToInclusive(end)`). Timed events extract the `YYYY-MM-DD` date into `date` while keeping exact RFC 3339 timestamps and offsets in `calendar_start`/`calendar_end`.
-   - *Reason*: Allows the native calendar view to render event dots, range bars, and day lists immediately without rewriting the entire core plugin rendering engine, while preserving Google's exact timestamp constraints and exclusive end boundaries without data loss or date drift.
+   - *Reason*: Preserves native dated-note interoperability for notes the user chooses to create. Cached Google events now contribute their own calendar indicators.
 2. **Google OAuth Client Secret Requirement**:
    - *Original Plan*: Assumed public-client PKCE without client secrets.
    - *Deviation*: Added `googleClientSecret` to settings and `GoogleOAuthProvider`.
    - *Reason*: Google Cloud Console OAuth 2.0 Client IDs created for "Desktop app" applications mandate a `client_secret` during authorization code exchange at `https://oauth2.googleapis.com/token`. Omitting it causes Google to reject the request with `401 Unauthorized / invalid_client`.
-3. **Dedicated "Synced Events" Card Section in `DayDetailView`**:
+3. **Dedicated Google Event Card Section in `DayDetailView`**:
    - *Original Plan*: Show sync events mixed into the existing markdown notes list with status badges.
-   - *Deviation*: Added a dedicated "Synced events" section in `DayDetailView.tsx` with card styling, distinct time range formatting (`formatCalendarEventTime`), status badges, and action buttons (`Edit`, `Resolve`, `Delete synced event`), filtering synced events out of the generic notes list.
+   - *Deviation*: Added a dedicated event section in `DayDetailView.tsx` with card styling and distinct time range formatting (`formatCalendarEventTime`). The redesign displays pathless cached events, adds `Create note` / `Open note`, and edits events directly.
    - *Reason*: Provides clearer distinction between structured calendar events and local markdown notes, avoiding cluttered notes lists and duplicated items.
 4. **Distinct `Connect` and `Reconnect` UI States**:
    - *Original Plan*: Single `Reconnect` button.
@@ -70,11 +79,11 @@ Bidirectional synchronization is feasible and delivered incrementally:
 - Google Calendar first, then Microsoft Outlook through the same provider-neutral engine.
 - Desktop-only synchronization while retaining the plugin's existing local calendar behavior on mobile.
 - Local operation only: sync on startup, manually, and every five minutes while Obsidian is open. No hosted webhook service.
-- One explicit Markdown event note per calendar event, stored in a configurable folder.
-- Only notes with `calendar_event: true` participate. Existing dated, range, task, and daily notes are never uploaded implicitly.
-- Frontmatter contains synchronized event fields. The Markdown body remains local and is never rewritten by synchronization.
+- One optional, explicitly created Markdown note per selected Google event, stored in a configurable folder.
+- Google events are cached independently of notes. Existing dated, range, task, and daily notes are never uploaded implicitly.
+- Linked-note frontmatter mirrors Google event fields. The Markdown body remains local and is never rewritten by synchronization.
 - Non-recurring events only in the first milestone. Recurring events are detected and reported as unsupported.
-- Safe deletion: neither side is deleted automatically. Remote deletion marks the note; local deletion creates a tombstone. Remote deletion occurs only through explicit confirmation.
+- Safe deletion: event deletion requires explicit confirmation and preserves the linked note. Deleting a note never deletes the Google event. Remote deletion marks a linked note and removes the cached event display.
 - One Google account and one selected writable calendar in the first milestone.
 - Default sync horizon: one year backward and two years forward.
 
@@ -102,7 +111,7 @@ Specific constraints:
 - Use `processFrontMatter` for synchronized field updates; never rewrite a complete Markdown file.
 - File paths and filenames are not identities. `calendar_uid` is immutable and survives renames.
 
-## Canonical event-note contract
+## Optional linked event-note contract
 
 ```yaml
 ---
@@ -125,7 +134,7 @@ calendar_sync:
 ---
 ```
 
-Contract rules:
+Contract rules (only when a note is explicitly created):
 - `calendar_uid` is generated once and is the local identity.
 - `calendar_title`, not the filename, is authoritative.
 - Native keys (`date` or `dateStart`/`dateEnd`) coexist to render on Continuous Calendar views.
@@ -223,6 +232,14 @@ src/services/sync/
 - [ ] Windows and Linux desktop runtime verification.
 - [ ] Mobile smoke testing to confirm local calendar behavior remains unaffected.
 
+### Workstream K — Cached Google events and optional linked notes
+- Status: `REVIEW` (2026-09-28; automated checks pass, native rendering remains unverified).
+- [x] Separate provider event cache from Markdown note index and expose calendar projections.
+- [x] Replace automatic inbound note creation with explicit linked-note creation.
+- [x] Wire day detail actions to provider events in both calendar views.
+- [x] Automated migration, CRUD, link, deletion, mode, and restart checks; root diff review.
+- [ ] Verify calendar rendering and actions in native Obsidian when available.
+
 ### Workstream J — Microsoft adapter
 - Status: `TODO — deferred until Google is accepted`.
 
@@ -231,7 +248,14 @@ src/services/sync/
 
 ## Current baseline evidence
 
-Recorded on 2026-09-27:
+Recorded on 2026-09-28 after Workstream K:
+- `npm test`: 18 test files, 119 tests passed.
+- `npm run build`: passes TypeScript checking and production bundle.
+- Focused sync/UI/lifecycle lint: zero errors, four existing warnings.
+- `git diff --check`: passes.
+- Native Obsidian event-card and calendar-dot rendering has not been checked in this session.
+
+Prior baseline recorded on 2026-09-27:
 - `npm test`: 18 test files, 125 tests passed.
 - `npm run build`: passes TypeScript checking and production bundle cleanly.
 - Sync lint: `./node_modules/.bin/eslint src/services/sync tests/sync vitest.config.ts` passes with zero errors (1 pre-existing warning).
@@ -239,15 +263,15 @@ Recorded on 2026-09-27:
 
 ## Exact next action for the fresh session
 
-1. Verify the test suite and build remain green:
+1. Reload the plugin in Obsidian desktop and inspect calendar dots, Google event cards, Create note / Open note, direct Edit/Delete, and retained existing notes in a throwaway vault/calendar. Capture screenshots or a short recording when native UI access is available.
+2. Verify the test suite and build remain green after any visual fixes:
    ```sh
    npm test
    npm run build
    ```
-2. Write automated lifecycle integration tests for `main.ts` simulating:
+3. Write automated lifecycle integration tests for `main.ts` simulating:
    - First-time `Connect` success and error handling.
    - Session restoration on plugin startup with existing credentials.
    - `Disconnect` clearing credentials and state while preserving notes.
-3. Validate desktop execution on Windows/Linux if testing environments are available.
-4. Perform mobile smoke test (iOS/Android) confirming local calendar functionality remains intact and sync tab is hidden.
+4. Validate desktop execution on Windows/Linux if testing environments are available, and perform a mobile smoke test confirming local calendar functionality remains intact.
 5. Once Google milestone is signed off, begin Workstream J (Microsoft adapter).

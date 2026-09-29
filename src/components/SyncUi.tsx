@@ -37,8 +37,10 @@ export interface SyncUiStatus {
 
 export interface SyncEventActions {
 	readonly create?: (dateKey: string) => void;
-	readonly edit?: (localUid: string) => void;
-	readonly delete?: (localUid: string) => Promise<boolean>;
+	readonly edit?: (eventKey: string) => void;
+	readonly delete?: (eventKey: string) => Promise<boolean>;
+	readonly createNote?: (eventKey: string) => void;
+	readonly openNote?: (eventKey: string) => void;
 	readonly resolveConflict?: (localUid: string) => void;
 }
 

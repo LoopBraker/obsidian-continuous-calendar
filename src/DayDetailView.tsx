@@ -1,11 +1,11 @@
 import * as React from 'react';
 import { useState, useEffect, useRef } from 'react';
-import { App, TFile } from 'obsidian';
+import { App, Platform, TFile } from 'obsidian';
 import { format, parseISO, differenceInDays, addDays } from 'date-fns';
 import { RRule } from 'rrule';
-import { IndexService, type RangeNote, type TaskNote } from './services/IndexService';
+import { IndexService, type CalendarDisplayEvent, type RangeNote, type TaskNote } from './services/IndexService';
 import type { SyncStatus } from './services/sync/model';
-import { calendarEventIntersectsDate, formatCalendarEventTime, SyncStatusBadge } from './components/SyncUi';
+import { formatCalendarEventTime, SyncStatusBadge } from './components/SyncUi';
 
 interface DayDetailViewProps {
     dateKey: string;
@@ -18,20 +18,10 @@ interface DayDetailViewProps {
     onOpenNote: (date: string) => void;
     onCreateSyncEvent?: (dateKey: string) => void;
     canCreateSyncEvent?: boolean;
-    onEditSyncEvent?: (uid: string) => void;
-    onDeleteSyncEvent?: (uid: string) => Promise<boolean>;
-    onResolveSyncConflict?: (uid: string) => void;
-}
-
-interface SyncEventNoteView {
-    path: string;
-    uid: string;
-    title: string;
-    start: string;
-    end: string;
-    allDay: boolean;
-    timezone: string;
-    status?: SyncStatus;
+    onEditSyncEvent?: (eventKey: string) => void;
+    onDeleteSyncEvent?: (eventKey: string) => Promise<boolean>;
+    onCreateEventNote?: (eventKey: string) => void;
+    onOpenEventNote?: (eventKey: string) => void;
 }
 
 import { type Holiday } from './services/holiday/HolidayTypes';
@@ -46,17 +36,21 @@ const convertTintToTextColor = (color: string | undefined): string | undefined =
     return color;
 };
 
-export const DayDetailView = ({ dateKey, index, app, settings, onClose, onPrev, onNext, onOpenNote, onCreateSyncEvent, canCreateSyncEvent, onEditSyncEvent, onDeleteSyncEvent, onResolveSyncConflict }: DayDetailViewProps) => {
+export const DayDetailView = ({ dateKey, index, app, settings, onClose, onPrev, onNext, onOpenNote, onCreateSyncEvent, canCreateSyncEvent, onEditSyncEvent, onDeleteSyncEvent, onCreateEventNote, onOpenEventNote }: DayDetailViewProps) => {
     const containerRef = useRef<HTMLDivElement>(null);
     const onCloseRef = useRef(onClose);
     onCloseRef.current = onClose;
 
-    const [notes, setNotes] = useState<Array<{ path: string; name: string; color?: string; tags: string[]; symbol?: string; isRecurring?: boolean; status?: SyncStatus; uid?: string }>>([]);
-    const [syncEvents, setSyncEvents] = useState<SyncEventNoteView[]>([]);
+    const [notes, setNotes] = useState<Array<{ path: string; name: string; color?: string; tags: string[]; symbol?: string; isRecurring?: boolean; status?: SyncStatus }>>([]);
+    const [syncEvents, setSyncEvents] = useState<readonly CalendarDisplayEvent[]>([]);
     const [ranges, setRanges] = useState<RangeNote[]>([]);
     const [tasks, setTasks] = useState<TaskNote[]>([]);
     const [holidays, setHolidays] = useState<Holiday[]>([]);
     const [hasDailyNote, setHasDailyNote] = useState(false);
+    const syncSettings = index.settings?.sync;
+    const canWriteSyncEvents = Platform.isDesktopApp
+        && syncSettings?.syncMode === 'bidirectional'
+        && Boolean(syncSettings.providerId && syncSettings.accountId && syncSettings.calendarId);
 
     useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {
@@ -87,27 +81,13 @@ export const DayDetailView = ({ dateKey, index, app, settings, onClose, onPrev, 
 
     useEffect(() => {
         const fetchData = () => {
+            setSyncEvents([...index.getCalendarEventsForDate(dateKey)].sort((left, right) =>
+                left.event.start.localeCompare(right.event.start) || left.event.title.localeCompare(right.event.title)));
             const syncIndex = index.calendarEventIndex;
-            setSyncEvents((syncIndex?.values() ?? [])
-                .filter(record => calendarEventIntersectsDate(record.event, dateKey))
-                .map(record => ({
-                    path: record.path,
-                    uid: record.event.uid,
-                    title: record.event.title,
-                    start: record.event.start,
-                    end: record.event.end,
-                    allDay: record.event.allDay,
-                    timezone: record.event.timezone,
-                    status: record.status,
-                })));
-            setNotes(index.getNotesForDate(dateKey).map(note => {
-                const record = syncIndex?.getByPath(note.path);
-                return {
-                    ...note,
-                    uid: record?.event.uid,
-                    status: record?.status,
-                };
-            }));
+            setNotes(index.getNotesForDate(dateKey).map(note => ({
+                ...note,
+                status: syncIndex?.getByPath(note.path)?.status,
+            })));
             setRanges(index.getRangesForDate(dateKey));
             setTasks(index.getTasksForDate(dateKey));
             setHolidays(index.getHolidaysForDate(dateKey));
@@ -259,7 +239,7 @@ export const DayDetailView = ({ dateKey, index, app, settings, onClose, onPrev, 
 
     const displayTaskPaths = new Set(displayTasks.map(t => t.path));
     const filteredRanges = ranges.filter(r => !displayTaskPaths.has(r.path));
-    const syncEventPaths = new Set(syncEvents.map(event => event.path));
+    const syncEventPaths = new Set(syncEvents.flatMap(event => event.notePath ? [event.notePath] : []));
     const filteredNotes = notes.filter(n => !displayTaskPaths.has(n.path) && !syncEventPaths.has(n.path));
 
     return (
@@ -290,9 +270,9 @@ export const DayDetailView = ({ dateKey, index, app, settings, onClose, onPrev, 
                 >
                     {hasDailyNote ? 'Open Daily Note' : 'Create Daily Note'}
                 </button>
-                {onCreateSyncEvent && canCreateSyncEvent && (
+                {canWriteSyncEvents && onCreateSyncEvent && canCreateSyncEvent && (
                     <button className="sync-event-create-btn" onClick={() => onCreateSyncEvent(dateKey)}>
-                        Create synced event
+                        Create Google Calendar event
                     </button>
                 )}
             </div>
@@ -518,47 +498,64 @@ export const DayDetailView = ({ dateKey, index, app, settings, onClose, onPrev, 
 
             {syncEvents.length > 0 && (
                 <div className="day-detail-section sync-events-section">
-                    <h3>Synced events</h3>
+                    <h3>Google Calendar events</h3>
                     <ul className="day-detail-list">
-                        {syncEvents.map(syncEvent => (
-                            <li key={syncEvent.path} className="sync-note-row sync-event-card">
-                                <div className="sync-event-card-header">
-                                    <a
-                                        href="#"
-                                        className="internal-link sync-event-title"
-                                        onClick={(e) => {
-                                            e.preventDefault();
-                                            app.workspace.openLinkText(syncEvent.path, '', false);
-                                        }}
-                                    >
-                                        {syncEvent.title || 'Untitled event'}
-                                    </a>
-                                    <SyncStatusBadge status={syncEvent.status} />
-                                </div>
-                                <div className="sync-event-time" title="Canonical event time">
-                                    {formatCalendarEventTime(syncEvent)}
-                                </div>
-                                {(onEditSyncEvent || (syncEvent.status === 'conflict' && onResolveSyncConflict) || (syncEvent.status === 'synced' && onDeleteSyncEvent)) && (
-                                    <div className="sync-note-actions">
-                                        {onEditSyncEvent && (
-                                            <button className="sync-note-action" onClick={() => onEditSyncEvent(syncEvent.uid)} aria-label={`Edit ${syncEvent.title || 'Untitled event'}`}>
-                                                Edit
-                                            </button>
+                        {syncEvents.map(syncEvent => {
+                            const notePath = syncEvent.notePath;
+                            return (
+                                <li key={syncEvent.key} className="sync-note-row sync-event-card">
+                                    <div className="sync-event-card-header">
+                                        {notePath ? (
+                                            <a
+                                                href="#"
+                                                className="internal-link sync-event-title"
+                                                onClick={(e) => {
+                                                    e.preventDefault();
+                                                    app.workspace.openLinkText(notePath, '', false);
+                                                }}
+                                            >
+                                                {syncEvent.event.title || 'Untitled event'}
+                                            </a>
+                                        ) : (
+                                            <span className="sync-event-title">
+                                                {syncEvent.event.title || 'Untitled event'}
+                                            </span>
                                         )}
-                                        {syncEvent.status === 'conflict' && onResolveSyncConflict && (
-                                            <button className="sync-note-action mod-conflict" onClick={() => onResolveSyncConflict(syncEvent.uid)} aria-label={`Resolve conflict for ${syncEvent.title || 'Untitled event'}`}>
-                                                Resolve
-                                            </button>
-                                        )}
-                                        {syncEvent.status === 'synced' && onDeleteSyncEvent && (
-                                            <button className="sync-note-action mod-warning" onClick={() => { void onDeleteSyncEvent(syncEvent.uid); }} aria-label={`Delete synced event ${syncEvent.title || 'Untitled event'}`}>
-                                                Delete
-                                            </button>
-                                        )}
+                                        <SyncStatusBadge status={syncEvent.status} />
                                     </div>
-                                )}
-                            </li>
-                        ))}
+                                    <div className="sync-event-time" title="Canonical event time">
+                                        {formatCalendarEventTime(syncEvent.event)}
+                                    </div>
+                                    {(canWriteSyncEvents && (onEditSyncEvent || onDeleteSyncEvent) || onCreateEventNote || onOpenEventNote) && (
+                                        <div className="sync-note-actions">
+                                            {canWriteSyncEvents && syncEvent.status !== 'unsupported' && onEditSyncEvent && (
+                                                <button className="sync-note-action" onClick={() => onEditSyncEvent(syncEvent.key)} aria-label={`Edit ${syncEvent.event.title || 'Untitled event'}`}>
+                                                    Edit
+                                                </button>
+                                            )}
+                                            {notePath ? (
+                                                onOpenEventNote && (
+                                                    <button className="sync-note-action" onClick={() => onOpenEventNote(syncEvent.key)} aria-label={`Open note for ${syncEvent.event.title || 'Untitled event'}`}>
+                                                        Open note
+                                                    </button>
+                                                )
+                                            ) : (
+                                                onCreateEventNote && (
+                                                    <button className="sync-note-action" onClick={() => onCreateEventNote(syncEvent.key)} aria-label={`Create note for ${syncEvent.event.title || 'Untitled event'}`}>
+                                                        Create note
+                                                    </button>
+                                                )
+                                            )}
+                                            {canWriteSyncEvents && syncEvent.status !== 'unsupported' && onDeleteSyncEvent && (
+                                                <button className="sync-note-action mod-warning" onClick={() => { void onDeleteSyncEvent(syncEvent.key); }} aria-label={`Delete Google Calendar event ${syncEvent.event.title || 'Untitled event'}`}>
+                                                    Delete event
+                                                </button>
+                                            )}
+                                        </div>
+                                    )}
+                                </li>
+                            );
+                        })}
                     </ul>
                 </div>
             )}
@@ -596,24 +593,7 @@ export const DayDetailView = ({ dateKey, index, app, settings, onClose, onPrev, 
                                             <span className="recurrence-symbol" style={{ marginLeft: '6px', fontSize: '0.9em', opacity: 0.8 }}>↻</span>
                                         )}
                                     </a>
-                                    <span className="sync-note-actions">
-                                        <SyncStatusBadge status={note.status} />
-                                        {note.status && note.uid && onEditSyncEvent && (
-                                            <button className="sync-note-action" onClick={() => onEditSyncEvent(note.uid as string)} aria-label={`Edit ${note.name}`}>
-                                                Edit
-                                            </button>
-                                        )}
-                                        {note.status === 'conflict' && note.uid && onResolveSyncConflict && (
-                                            <button className="sync-note-action" onClick={() => onResolveSyncConflict(note.uid as string)} aria-label={`Resolve conflict for ${note.name}`}>
-                                                Resolve
-                                            </button>
-                                        )}
-                                        {note.status === 'synced' && note.uid && onDeleteSyncEvent && (
-                                            <button className="sync-note-action mod-warning" onClick={() => { void onDeleteSyncEvent(note.uid as string); }} aria-label={`Delete synced event ${note.name}`}>
-                                                Delete synced event
-                                            </button>
-                                        )}
-                                    </span>
+                                    {note.status && <SyncStatusBadge status={note.status} />}
                                 </li>
                             );
                         })}

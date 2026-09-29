@@ -1,10 +1,13 @@
-import { Platform, Plugin, WorkspaceLeaf, TFile, normalizePath } from 'obsidian';
+import { Notice, Platform, Plugin, WorkspaceLeaf, TFile, normalizePath } from 'obsidian';
 import { CalendarView, VIEW_TYPE_CALENDAR } from "./CalendarView";
 import {
     IndexService,
     notifyCalendarEventIndexChanged,
     registerCalendarEventIndex,
+    registerCalendarEventSource,
     unregisterCalendarEventIndex,
+    unregisterCalendarEventSource,
+    type CalendarDisplayEvent,
 } from "./services/IndexService";
 import { DEFAULT_SETTINGS, type CalendarPluginSettings } from "./settings/settings";
 import { CalendarSettingTab } from "./settings/SettingsTab";
@@ -20,6 +23,7 @@ import {
     SyncStateStore,
     createCredentialStore,
     type CredentialStore,
+    type SyncState,
 } from './services/sync/state';
 import {
     SyncLifecycleCoordinator,
@@ -28,7 +32,7 @@ import {
     type SyncRuntimeFactory,
 } from './services/sync/lifecycle';
 import type { CalendarEvent, CalendarEventSnapshot } from './services/sync/model';
-import type { SyncUiActions, SyncUiConflict } from './components/SyncUi';
+import { sanitizeSyncUiError, type SyncUiActions, type SyncUiConflict } from './components/SyncUi';
 import { openSyncConflictModal } from './modals/SyncConflictModal';
 
 export default class ContinuousCalendarPlugin extends Plugin {
@@ -45,6 +49,9 @@ export default class ContinuousCalendarPlugin extends Plugin {
     private syncStateStore: SyncStateStore;
     private credentialStore: CredentialStore;
     private layoutReady = false;
+    private unsubscribeSyncState?: () => void;
+    private calendarEventState?: SyncState;
+    private calendarEventProjection?: readonly CalendarDisplayEvent[];
 
 
     async onload() {
@@ -58,6 +65,12 @@ export default class ContinuousCalendarPlugin extends Plugin {
         this.calendarIndex = new IndexService(this.app);
         this.calendarIndex.setSettings(this.settings);
         this.calendarIndex.setCalendarEventIndex(this.calendarEventRepository.index);
+        registerCalendarEventSource(this.app, () => this.getCalendarEvents());
+        this.unsubscribeSyncState = this.syncStateStore.subscribe(state => {
+            this.calendarEventState = state;
+            this.calendarEventProjection = undefined;
+            notifyCalendarEventIndexChanged(this.app);
+        });
 
         await this.setSyncRuntimeFactory(async (context) => {
             const sync = context.settings.sync;
@@ -192,10 +205,108 @@ export default class ContinuousCalendarPlugin extends Plugin {
 
     onunload() {
         void this.syncLifecycle?.stop();
+        this.unsubscribeSyncState?.();
+        unregisterCalendarEventSource(this.app);
         if (this.calendarEventRepository) {
             unregisterCalendarEventIndex(this.app, this.calendarEventRepository.index);
         }
         this.calendarIndex?.dispose();
+    }
+
+    private getCalendarEvents(): readonly CalendarDisplayEvent[] {
+        if (this.calendarEventProjection) return this.calendarEventProjection;
+        const sync = this.settings.sync;
+        if (sync.syncMode === 'disabled' || sync.syncMode === 'dry-run' || !sync.providerId || !sync.accountId || !sync.calendarId) return [];
+        const records = Object.entries(this.calendarEventState?.remoteEvents ?? {});
+        const notePaths = new Map<string, string>();
+        for (const note of this.calendarEventRepository.index.values()) {
+            const ref = note.association?.reference;
+            if (ref) notePaths.set(JSON.stringify([ref.providerId, ref.accountId, ref.calendarId, ref.remoteEventId]), note.path);
+        }
+        this.calendarEventProjection = records.flatMap(([key, record]) => {
+            if (record.providerId !== sync.providerId || record.accountId !== sync.accountId || record.calendarId !== sync.calendarId || record.status === 'remote_deleted') return [];
+            const indexedPath = record.noteUid ? this.calendarEventRepository.index.getByUid(record.noteUid)?.path : undefined;
+            const associatedPath = notePaths.get(JSON.stringify([record.providerId, record.accountId, record.calendarId, record.remoteEventId]));
+            const candidatePath = indexedPath ?? associatedPath ?? record.notePath;
+            const notePath = candidatePath && this.app.vault.getAbstractFileByPath(candidatePath) instanceof TFile
+                ? candidatePath
+                : undefined;
+            return [{ key, event: record.event, status: record.status, notePath }];
+        });
+        return this.calendarEventProjection;
+    }
+
+    getCalendarEvent(key: string): CalendarDisplayEvent | undefined {
+        return this.getCalendarEvents().find(record => record.key === key);
+    }
+
+    private requireWritableCalendarService() {
+        if (this.settings.sync.syncMode !== 'bidirectional') throw new Error('Enable bidirectional sync to change Google events.');
+        const service = this.syncLifecycle?.service;
+        if (!service) throw new Error('Connect to Google Calendar before changing events.');
+        return service;
+    }
+
+    async createCalendarEvent(event: CalendarEvent): Promise<void> {
+        const create = this.requireWritableCalendarService().createCalendarEvent;
+        if (!create) throw new Error('Calendar event creation is unavailable.');
+        await create.call(this.syncLifecycle.service, event);
+        notifyCalendarEventIndexChanged(this.app);
+    }
+
+    async updateCalendarEvent(key: string, event: CalendarEvent): Promise<void> {
+        const update = this.requireWritableCalendarService().updateCalendarEvent;
+        if (!update) throw new Error('Calendar event editing is unavailable.');
+        await update.call(this.syncLifecycle.service, key, event);
+        notifyCalendarEventIndexChanged(this.app);
+    }
+
+    async deleteCalendarEvent(key: string): Promise<boolean> {
+        const remove = this.requireWritableCalendarService().deleteCalendarEvent;
+        if (!remove) throw new Error('Calendar event deletion is unavailable.');
+        const deleted = await remove.call(this.syncLifecycle.service, key);
+        notifyCalendarEventIndexChanged(this.app);
+        return deleted;
+    }
+
+    openNoteForCalendarEvent(key: string): void {
+        const path = this.getCalendarEvent(key)?.notePath;
+        if (!path) {
+            new Notice('This calendar event has no linked note.');
+            return;
+        }
+        void this.app.workspace.openLinkText(path, '', false);
+    }
+
+    async createNoteForCalendarEvent(key: string): Promise<void> {
+        const record = this.syncStateStore.getState().remoteEvents[key];
+        if (!record || record.status === 'remote_deleted' || !this.getCalendarEvent(key)) {
+            new Notice('This calendar event is no longer available.');
+            return;
+        }
+        const reference = {
+            providerId: record.providerId,
+            accountId: record.accountId,
+            calendarId: record.calendarId,
+            remoteEventId: record.remoteEventId,
+            version: record.version,
+        };
+        try {
+            const note = await this.calendarEventRepository.createLinkedNote(
+                { ...record.event, uid: undefined }, reference,
+                { status: record.status === 'unsupported' ? 'unsupported' : 'synced' },
+            );
+            const link = this.syncLifecycle?.service?.linkNote;
+            if (link) await link.call(this.syncLifecycle.service, key, note.path, note.event.uid);
+            else await this.syncStateStore.update(state => {
+                const cached = state.remoteEvents[key];
+                if (cached) state.remoteEvents[key] = { ...cached, notePath: note.path, noteUid: note.event.uid };
+            });
+            notifyCalendarEventIndexChanged(this.app);
+            void this.app.workspace.openLinkText(note.path, '', false);
+        } catch (error) {
+            new Notice(`Could not create event note: ${sanitizeSyncUiError(error)}`);
+        }
     }
 
     private createEventRepository(): CalendarEventRepository {
@@ -269,7 +380,10 @@ export default class ContinuousCalendarPlugin extends Plugin {
         this.syncLifecycle = new SyncLifecycleCoordinator({
             repository: this.calendarEventRepository,
             syncService: service,
-            onIndexChanged: () => notifyCalendarEventIndexChanged(this.app),
+            onIndexChanged: () => {
+                this.calendarEventProjection = undefined;
+                notifyCalendarEventIndexChanged(this.app);
+            },
             onError: error => { void this.syncStateStore.setLastError(error); },
         });
         if (startWhenReady && this.layoutReady) await this.syncLifecycle.start();
@@ -380,11 +494,13 @@ export default class ContinuousCalendarPlugin extends Plugin {
         const loaded = await this.pluginDataStore.load();
         this.settings = loaded.settings;
         this.syncStateStore = new SyncStateStore(this.pluginDataStore);
+        this.calendarEventState = await this.syncStateStore.load();
         this.credentialStore = createCredentialStore(this.app);
     }
 
     async saveSettings() {
         await this.pluginDataStore.saveSettings(this.settings);
+        this.calendarEventProjection = undefined;
         this.calendarIndex.setSettings(this.settings);
         this.calendarIndex.notifyListeners(null);
         await this.configureSyncLifecycle(true);

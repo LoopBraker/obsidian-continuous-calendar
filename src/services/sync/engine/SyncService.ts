@@ -12,11 +12,10 @@ import {
 	type SyncConflictRecord,
 	type SyncCursor,
 	type SyncMapping,
-	type SyncSnapshotRecord,
 	type SyncState,
 	type SyncStateStore,
-	type SyncTombstone,
 	createDefaultSyncState,
+	type CachedCalendarEvent,
 	withSyncStateError,
 } from '../state';
 import type {
@@ -30,6 +29,7 @@ import type {
 	SyncWindow,
 } from '../providers';
 import { isProviderCancelledError, isProviderError } from '../providers/ProviderErrors';
+import { normalizeCalendarEvent } from '../model/CalendarEventValidation';
 import type {
 	CalendarEventCreateOptions,
 	CalendarEventInputLike,
@@ -39,7 +39,7 @@ import type {
 	LocalCalendarEventDeletion,
 	CalendarEventUpdateOptions,
 } from '../notes';
-import { ConflictResolver, type ConflictChoice, type SyncConflictCandidate } from './ConflictResolver';
+import type { ConflictChoice, SyncConflictCandidate } from './ConflictResolver';
 import { SyncQueue, type SyncQueueScheduler } from './SyncQueue';
 
 export type SyncRunTrigger = 'startup' | 'manual' | 'interval' | 'retry' | 'full-resync';
@@ -128,6 +128,10 @@ export interface SyncStateStoreLike {
 	getState?(): SyncState;
 }
 
+export interface CachedCalendarEventView extends CachedCalendarEvent {
+	readonly key: string;
+}
+
 export interface SyncServiceOptions {
 	readonly provider: CalendarProvider;
 	readonly session: ProviderSession;
@@ -164,11 +168,6 @@ interface Binding {
 	readonly key: string;
 	readonly mapping: SyncMapping;
 	readonly localUid: string;
-}
-
-interface SnapshotPair {
-	readonly local?: CalendarEventSnapshot;
-	readonly remote?: CalendarEventSnapshot;
 }
 
 interface MutableRunCounters {
@@ -232,22 +231,6 @@ function makeAssociation(
 	return { calendarUid: '', reference, status };
 }
 
-function localizeRemoteEvent(remote: RemoteCalendarEvent, localUid: string): CalendarEvent {
-	return remote.event.uid === localUid ? cloneEvent(remote.event) : { ...remote.event, uid: localUid };
-}
-
-function readSnapshotPair(value: SyncSnapshotRecord | CalendarEventSnapshot | undefined): SnapshotPair {
-	if (!value) return {};
-	if ('event' in value && 'hash' in value && value.event && typeof value.hash === 'string') {
-		return { local: value as CalendarEventSnapshot };
-	}
-	const record = value as SyncSnapshotRecord;
-	return {
-		local: record.local,
-		remote: record.remote,
-	};
-}
-
 function sanitizedErrorMessage(error: unknown): string {
 	if (isProviderError(error)) return error.message;
 	return error instanceof Error ? error.message : String(error);
@@ -300,7 +283,6 @@ export class SyncService {
 	private readonly debounceMs: number;
 	private readonly pollIntervalMs: number;
 	private readonly maxPages: number;
-	private readonly conflictResolver: ConflictResolver;
 	private readonly listeners = new Set<(status: SyncServiceStatusSnapshot) => void>();
 	private state: SyncState = createDefaultSyncState();
 	private loaded = false;
@@ -336,7 +318,6 @@ export class SyncService {
 			Math.floor(options.pollIntervalMs ?? (options.pollIntervalMinutes ?? 5) * 60_000),
 		);
 		this.maxPages = Math.max(1, Math.floor(options.maxPages ?? 100));
-		this.conflictResolver = new ConflictResolver();
 		this.queue = options.queue ?? new SyncQueue(options.queueScheduler);
 		this.statusSnapshot = this.makeStatus('idle');
 		this.unsubscribeDeletion = this.repository.onLocalDeletion?.(deletion => this.onLocalDeletion(deletion));
@@ -357,6 +338,105 @@ export class SyncService {
 
 	get conflicts(): readonly SyncConflictView[] {
 		return Object.entries(this.state.conflicts).map(([key, value]) => ({ key, ...value }));
+	}
+
+	/** Cached remote events, including events that have no Markdown note. */
+	listCachedEvents(): readonly CachedCalendarEventView[] {
+		const state = this.stateStore.getState?.() ?? this.state;
+		return Object.entries(state.remoteEvents).map(([key, value]) => ({ key, ...value }));
+	}
+
+	/** Create a provider event directly, without creating a Markdown note. */
+	async createCalendarEvent(input: CalendarEventInputLike): Promise<CachedCalendarEventView> {
+		await this.ensureLoaded();
+		this.assertProviderWritesEnabled();
+		const event = normalizeCalendarEvent(input);
+		const remote = await this.runQueuedProviderWrite(
+			makeSyncStateKey(this.provider.id, this.session.accountId, this.calendarId, 'create', event.uid),
+			signal => this.provider.createEvent(this.session, this.calendarId, event, signal),
+		);
+		const cached = this.cacheRemoteEvent(remote);
+		this.stateDirty = true;
+		await this.saveState();
+		return cached;
+	}
+
+	/** Update a cached provider event directly; its canonical UID is immutable. */
+	async updateCalendarEvent(key: string, input: CalendarEventInputLike): Promise<CachedCalendarEventView> {
+		await this.ensureLoaded();
+		this.assertProviderWritesEnabled();
+		const current = this.state.remoteEvents[key];
+		if (!current || current.status === 'remote_deleted') throw new Error(`Cached calendar event "${key}" was not found`);
+		if (current.status === 'unsupported' || current.recurrence === 'unsupported') {
+			throw new Error('Recurring Google Calendar events cannot be edited from Continuous Calendar');
+		}
+		const candidate = normalizeCalendarEvent(input);
+		if (candidate.uid !== current.event.uid) throw new Error('Calendar event UID cannot be changed');
+		const remote = await this.runQueuedProviderWrite(key, signal => this.provider.updateEvent(
+			this.session,
+			this.calendarId,
+			current.remoteEventId,
+			candidate,
+			current.version,
+			signal,
+		));
+		const cached = this.cacheRemoteEvent(remote, current.notePath, current.noteUid);
+		await this.mirrorRemoteEventToLinkedNote(cached);
+		this.stateDirty = true;
+		await this.saveState();
+		return cached;
+	}
+
+	/** Delete only the provider event. A linked note remains in the vault. */
+	async deleteCalendarEvent(key: string): Promise<boolean> {
+		await this.ensureLoaded();
+		if (this.mode !== 'bidirectional') return false;
+		const current = this.state.remoteEvents[key];
+		if (!current || current.status === 'remote_deleted') return false;
+		if (current.status === 'unsupported' || current.recurrence === 'unsupported') {
+			throw new Error('Recurring Google Calendar events cannot be deleted from Continuous Calendar');
+		}
+		try {
+			await this.runQueuedProviderWrite(key, signal => this.provider.deleteEvent(
+				this.session,
+				this.calendarId,
+				current.remoteEventId,
+				current.version,
+				signal,
+			));
+		} catch (error) {
+			await this.recordError(error);
+			return false;
+		}
+		const deleted: CachedCalendarEvent = { ...current, status: 'remote_deleted' };
+		this.state.remoteEvents[key] = deleted;
+		await this.mirrorRemoteEventToLinkedNote(deleted);
+		this.stateDirty = true;
+		await this.saveState();
+		return true;
+	}
+
+	/** Attach an already-created note to a cached event, without provider writes. */
+	async linkNote(key: string, path: string, uid: string): Promise<CachedCalendarEventView> {
+		await this.ensureLoaded();
+		const cached = this.state.remoteEvents[key];
+		if (!cached || cached.status === 'remote_deleted') throw new Error(`Cached calendar event "${key}" was not found`);
+		const note = this.repository.getByPath(path) ?? this.repository.getByUid(uid);
+		if (!note || note.path !== path || note.event.uid !== uid) throw new Error(`Calendar event note "${path}" was not found`);
+		const linked = { ...cached, notePath: note.path, noteUid: uid };
+		const mapped = this.linkMapping(linked);
+		const localized = { ...linked.event, uid };
+		await this.withInternalWrite(uid, () => this.repository.update(note.path, localized, {
+			status: linked.status === 'unsupported' ? 'unsupported' : 'synced',
+			association: makeAssociation(this.provider.id, this.session.accountId, this.calendarId, linked.remoteEventId, linked.status === 'unsupported' ? 'unsupported' : 'synced'),
+		}));
+		this.state.remoteEvents[key] = linked;
+		this.state.mappings[mapped.key] = mapped.mapping;
+		const snapshot = createCalendarEventSnapshot(localized, nowIso(this.clock));
+		this.state.snapshots[mapped.key] = { local: snapshot, remote: snapshot };
+		this.stateDirty = true;
+		await this.saveState();
+		return { key, ...linked };
 	}
 
 	subscribe(listener: (status: SyncServiceStatusSnapshot) => void): () => void {
@@ -441,124 +521,43 @@ export class SyncService {
 		if (this.mode === 'disabled' || this.mode === 'dry-run') {
 			throw new Error(`Conflict resolution is unavailable in ${this.mode} mode`);
 		}
+		if (choice !== 'remote') {
+			throw new Error('Google Calendar is authoritative for event fields; local conflict choices are unavailable');
+		}
 		const candidate = this.readConflictCandidate(record);
-		const resolved = this.conflictResolver.choose(candidate, choice);
-		if (!resolved.event) throw new Error(`Conflict "${key}" has no resolvable event`);
+		const resolvedEvent = candidate.remote.event;
 		const binding = this.findBindingByKey(key) ?? this.findBindingByLocalUid(record.localUid);
 		if (!binding) throw new Error(`Conflict "${key}" has no local mapping`);
-		const mapping = binding.mapping;
 		const localUid = binding.localUid;
 		const local = this.repository.getByUid(localUid);
 		if (!local) throw new Error(`Conflict "${key}" local note is missing`);
-		const signal = this.runController?.signal;
-		await this.withInternalWrite(localUid, () => this.repository.update(local.path, resolved.event as CalendarEventInputLike, {
-			status: 'pending',
-		}));
-		const remoteId = providerRemoteId(mapping);
-		let resolvedMapping = { ...mapping };
-		let resolvedRemote: RemoteCalendarEvent | undefined;
-		let localProjectionSynced = false;
-		if (this.mode === 'bidirectional' && remoteId && hashCalendarEvent(resolved.event) !== candidate.remote.hash) {
-			const remote = await this.runQueuedProviderWrite(
-				key,
-				providerSignal => this.provider.updateEvent(
-					this.session,
-					this.calendarId,
-					remoteId,
-					resolved.event as CalendarEvent,
-					mapping.version,
-					providerSignal,
-				),
-				signal,
-			);
-			resolvedRemote = remote;
-			resolvedMapping = {
-				...resolvedMapping,
-				version: remote.version,
-				calendarUidPersisted: remote.calendarUid === localUid,
-			};
-			await this.withInternalWrite(localUid, () => this.repository.update(local.path, resolved.event as CalendarEventInputLike, {
-				status: 'synced',
+		const remoteId = providerRemoteId(binding.mapping);
+		const localized = { ...resolvedEvent, uid: localUid };
+		await this.withInternalWrite(localUid, () => this.repository.update(local.path, localized as CalendarEventInputLike, {
+			status: 'synced',
+			...(remoteId === undefined ? {} : {
 				association: makeAssociation(this.provider.id, this.session.accountId, this.calendarId, remoteId, 'synced'),
-			}));
-			localProjectionSynced = true;
-		}
-		const remoteSnapshot = candidate.remote;
-		const remoteMatches = hashCalendarEvent(resolved.event) === remoteSnapshot.hash;
-		if (remoteMatches && !localProjectionSynced) {
-			await this.withInternalWrite(localUid, () => this.repository.update(local.path, resolved.event as CalendarEventInputLike, {
-				status: 'synced',
-				...(remoteId === undefined ? {} : {
-					association: makeAssociation(this.provider.id, this.session.accountId, this.calendarId, remoteId, 'synced'),
-				}),
-			}));
-			localProjectionSynced = true;
-		}
-		const snapshot = createCalendarEventSnapshot(resolved.event, nowIso(this.clock));
-		const finalRemoteSnapshot = resolvedRemote
-			? createCalendarEventSnapshot(localizeRemoteEvent(resolvedRemote, localUid), nowIso(this.clock))
-			: remoteSnapshot;
-		this.state.snapshots[key] = { local: snapshot, remote: finalRemoteSnapshot };
+			}),
+		}));
+		const snapshot = createCalendarEventSnapshot(localized, nowIso(this.clock));
+		this.state.snapshots[key] = { local: snapshot, remote: snapshot };
 		this.state.mappings[key] = {
-			...resolvedMapping,
-			status: this.mode === 'import-only' && !remoteMatches ? 'pending' : 'synced',
+			...binding.mapping,
+			status: 'synced',
 			notePath: local.path,
 		};
 		delete this.state.conflicts[key];
 		this.stateDirty = true;
 		await this.saveState();
 		this.setStatus('idle');
-		return { key, event: resolved.event, status: 'resolved' };
+		return { key, event: localized, status: 'resolved' };
 	}
 
 	async deleteSyncedEvent(localUid: string, signal?: AbortSignal): Promise<boolean> {
 		await this.ensureLoaded();
-		if (this.mode !== 'bidirectional') return false;
-		const binding = this.findBindingByLocalUid(localUid);
-		if (!binding) return false;
-		const remoteId = providerRemoteId(binding.mapping);
-		if (!remoteId) return false;
-		const local = this.repository.getByUid(localUid);
-		const trashOperation = this.repository.trash;
-		if (!local || !trashOperation) return false;
-		const trash = trashOperation.bind(this.repository);
-		const runSignal = this.runController?.signal ?? signal;
-		try {
-			await this.runQueuedProviderWrite(binding.key, callbackSignal =>
-				this.provider.deleteEvent(
-					this.session,
-					this.calendarId,
-					remoteId,
-					binding.mapping.version,
-					callbackSignal,
-				), runSignal);
-		} catch (error) {
-			if (!isCancellation(error)) await this.markNoteError(localUid);
-			if (!isCancellation(error)) await this.recordError(error);
-			return false;
-		}
-		let trashSucceeded = true;
-		try {
-			await this.withInternalWrite(localUid, () => trash(local.path));
-		} catch (error) {
-			trashSucceeded = false;
-			await this.markNoteError(localUid);
-			await this.recordError(error);
-		}
-		const tombstone: SyncTombstone = {
-			localUid,
-			providerId: this.provider.id,
-			accountId: this.session.accountId,
-			calendarId: this.calendarId,
-			remoteEventId: remoteId,
-			deletedAt: nowIso(this.clock),
-			reason: 'explicit-delete',
-		};
-		this.state.tombstones[binding.key] = tombstone;
-		this.state.mappings[binding.key] = { ...binding.mapping, status: 'deleted' };
-		this.stateDirty = true;
-		await this.saveState();
-		return trashSucceeded;
+		void signal;
+		const key = Object.entries(this.state.remoteEvents).find(([, cached]) => cached.noteUid === localUid)?.[0];
+		return key ? this.deleteCalendarEvent(key) : false;
 	}
 
 	private async run(trigger: SyncRunTrigger, signal: AbortSignal): Promise<SyncRunResult> {
@@ -580,8 +579,9 @@ export class SyncService {
 			abortIfNeeded(signal);
 			const reload = await this.repository.reload();
 			this.reconcileReloadDeletions(reload);
-			await this.pullChanges(signal, counters);
-			await this.reconcileLocal(signal, counters);
+			await this.pullChanges(signal, counters, trigger);
+			await this.mirrorCachedEventsToLinkedNotes();
+			this.refreshLinkedNotePaths();
 			await this.queue.flush();
 			await this.saveState();
 			const status: SyncServiceStatus = this.mode === 'dry-run'
@@ -602,9 +602,15 @@ export class SyncService {
 		}
 	}
 
-	private async pullChanges(signal: AbortSignal, counters: MutableRunCounters): Promise<void> {
+	private async pullChanges(signal: AbortSignal, counters: MutableRunCounters, trigger: SyncRunTrigger): Promise<void> {
 		const cursorKey = makeSyncStateKey(this.provider.id, this.session.accountId, this.calendarId);
-		let cursor = this.readCursor(cursorKey);
+		const seenRemoteEvents = new Set<string>();
+		let fullResync = trigger === 'full-resync' || this.state.eventCacheInitialized[cursorKey] !== true;
+		let cursor = fullResync ? undefined : this.readCursor(cursorKey);
+		if (fullResync) {
+			counters.fullResync = true;
+			delete this.state.eventCacheInitialized[cursorKey];
+		}
 		let fullResyncAttempted = false;
 		for (let pageNumber = 0; pageNumber < this.maxPages; pageNumber += 1) {
 			abortIfNeeded(signal);
@@ -620,8 +626,10 @@ export class SyncService {
 			} catch (error) {
 				if (isCursorExpired(error) && !fullResyncAttempted) {
 					fullResyncAttempted = true;
+					fullResync = true;
 					counters.fullResync = true;
 					cursor = undefined;
+					delete this.state.eventCacheInitialized[cursorKey];
 					delete this.state.cursors[cursorKey];
 					this.stateDirty = true;
 					continue;
@@ -631,6 +639,8 @@ export class SyncService {
 			for (const change of page.changes) {
 				abortIfNeeded(signal);
 				counters.pulled += 1;
+				const remoteId = change.type === 'upsert' ? change.value.remoteId : change.remoteId;
+				seenRemoteEvents.add(makeSyncStateKey(this.provider.id, this.session.accountId, this.calendarId, remoteId));
 				await this.applyRemoteChange(change, counters, signal);
 				await this.saveState();
 			}
@@ -646,7 +656,15 @@ export class SyncService {
 				this.stateDirty = true;
 				await this.saveState();
 			}
-			if (!page.hasMore) return;
+			if (!page.hasMore) {
+				if (fullResync) {
+					await this.reconcileFullResync(seenRemoteEvents, this.resolveWindow());
+					this.state.eventCacheInitialized[cursorKey] = true;
+					this.stateDirty = true;
+					await this.saveState();
+				}
+				return;
+			}
 			if (page.nextCursor === undefined && cursor === undefined) throw new Error('Provider returned hasMore without a cursor');
 		}
 		throw new Error(`Provider change pull exceeded ${this.maxPages} pages`);
@@ -665,23 +683,40 @@ export class SyncService {
 		counters: MutableRunCounters,
 	): Promise<void> {
 		if (change.providerId !== this.provider.id || change.calendarId !== this.calendarId) return;
-		const binding = this.findBindingByRemote(change.remoteId);
-		if (!binding || binding.mapping.status === 'remote_deleted' || binding.mapping.status === 'deleted') return;
-		if (this.state.tombstones[binding.key]) return;
-		const local = this.repository.getByUid(binding.localUid);
-		if (local && this.mode !== 'dry-run') {
-			await this.withInternalWrite(binding.localUid, () => this.repository.markRemoteDeleted(local.path));
+		if (this.mode === 'dry-run') return;
+		const key = makeSyncStateKey(this.provider.id, this.session.accountId, this.calendarId, change.remoteId);
+		let cached = this.state.remoteEvents[key];
+		if (!cached) {
+			// During the first cache migration, a cancelled Google event may be the
+			// first record we see. Recover its canonical value from its old sync
+			// snapshot so a linked legacy note still receives the deleted status.
+			const binding = this.findBindingByRemote(change.remoteId);
+			if (!binding) return;
+			const snapshotRecord = this.state.snapshots[binding.key] as {
+				readonly event?: CalendarEvent;
+				readonly remote?: CalendarEventSnapshot;
+			} | undefined;
+			const eventValue = snapshotRecord?.event ?? snapshotRecord?.remote?.event ?? this.repository.getByUid(binding.localUid)?.event;
+			if (!eventValue) return;
+			cached = {
+				providerId: this.provider.id,
+				accountId: this.session.accountId,
+				calendarId: this.calendarId,
+				remoteEventId: change.remoteId,
+				event: cloneEvent(eventValue),
+				version: binding.mapping.version,
+				recurrence: 'none',
+				status: 'synced',
+				...(binding.mapping.notePath === undefined ? {} : { notePath: binding.mapping.notePath }),
+				noteUid: binding.localUid,
+			};
 		}
-		this.state.mappings[binding.key] = { ...binding.mapping, status: 'remote_deleted' };
-		this.state.tombstones[binding.key] = {
-			localUid: binding.localUid,
-			providerId: this.provider.id,
-			accountId: this.session.accountId,
-			calendarId: this.calendarId,
-			remoteEventId: change.remoteId,
-			deletedAt: nowIso(this.clock),
-			reason: 'remote-delete',
-		};
+		if (cached.status === 'remote_deleted') return;
+		const deleted = { ...cached, status: 'remote_deleted' as const };
+		this.state.remoteEvents[key] = deleted;
+		await this.mirrorRemoteEventToLinkedNote(deleted);
+		const binding = this.findBindingByRemote(change.remoteId);
+		if (binding) this.state.mappings[binding.key] = { ...binding.mapping, status: 'remote_deleted' };
 		this.stateDirty = true;
 		counters.deleted += 1;
 	}
@@ -689,253 +724,74 @@ export class SyncService {
 	private async applyRemoteUpsert(
 		remote: RemoteCalendarEvent,
 		counters: MutableRunCounters,
-		signal: AbortSignal,
+		_signal: AbortSignal,
 	): Promise<void> {
 		if (remote.providerId !== this.provider.id || remote.calendarId !== this.calendarId) return;
-		const byRemote = this.findBindingByRemote(remote.remoteId);
-		const byUid = remote.calendarUid === undefined
-			? undefined
-			: this.findBindingByLocalUid(remote.calendarUid);
-		if (byRemote && this.state.tombstones[byRemote.key]) return;
-		const existingNote = remote.calendarUid === undefined
-			? undefined
-			: this.repository.getByUid(remote.calendarUid);
-		if (byRemote && remote.calendarUid !== undefined && byRemote.localUid !== remote.calendarUid) {
-			await this.persistMappingConflict(byRemote.key, byRemote.localUid, remote, remote.calendarUid);
-			counters.conflicts.push(byRemote.key);
-			return;
+		if (this.mode === 'dry-run') return;
+		const remoteKey = makeSyncStateKey(this.provider.id, this.session.accountId, this.calendarId, remote.remoteId);
+		const existing = this.state.remoteEvents[remoteKey];
+		const mapping = this.findBindingByRemote(remote.remoteId);
+		let noteUid = existing?.noteUid ?? mapping?.localUid;
+		let note = noteUid ? this.repository.getByUid(noteUid) : undefined;
+		if (!note) {
+			const associatedNotes = this.repository.list().filter(candidate => {
+				const reference = candidate.association?.reference;
+				return reference?.providerId === this.provider.id &&
+					reference.accountId === this.session.accountId &&
+					reference.calendarId === this.calendarId &&
+					reference.remoteEventId === remote.remoteId;
+			});
+			if (associatedNotes.length === 1) {
+				note = associatedNotes[0];
+				noteUid = note.event.uid;
+			}
 		}
-		if (byRemote && byUid && byRemote.localUid !== byUid.localUid) {
-			await this.persistMappingConflict(byRemote.key, byRemote.localUid, remote, byUid.localUid);
-			counters.conflicts.push(byRemote.key);
-			return;
+		// Legacy providers wrote the local note UID into private event metadata.
+		// Use that only to recover an existing link; never create a note from it.
+		if (!note && remote.calendarUid) {
+			const candidate = this.repository.getByUid(remote.calendarUid);
+			const reference = candidate?.association?.reference;
+			if (
+				candidate && reference?.providerId === this.provider.id &&
+				reference.accountId === this.session.accountId &&
+				reference.calendarId === this.calendarId &&
+				reference.remoteEventId === remote.remoteId
+			) {
+				note = candidate;
+				noteUid = candidate.event.uid;
+			}
 		}
-		if (byUid && !this.sameBinding(byUid.mapping, remote)) {
-			await this.persistMappingConflict(byUid.key, byUid.localUid, remote);
-			counters.conflicts.push(byUid.key);
-			return;
-		}
+		if (!note) noteUid = undefined;
 
-		let binding = byRemote ?? byUid;
-		let local = binding ? this.repository.getByUid(binding.localUid) : existingNote;
-		if (!binding && local) {
-			binding = {
-				key: keyForBinding(this.provider.id, this.session.accountId, this.calendarId, local.event.uid),
-				localUid: local.event.uid,
-				mapping: {
-					localUid: local.event.uid,
-					notePath: local.path,
-					providerId: this.provider.id,
-					accountId: this.session.accountId,
-					calendarId: this.calendarId,
-					remoteEventId: remote.remoteId,
-					version: remote.version,
-					calendarUidPersisted: remote.calendarUid === local.event.uid,
-					status: 'pending',
-				},
-			};
-		}
-
-		if (!binding) {
-			if (this.mode === 'dry-run') return;
-			const imported = await this.withInternalWrite('', () => this.repository.create(
-				{ ...remote.event, uid: undefined },
-				{
-					status: remote.recurrence === 'unsupported' ? 'unsupported' : 'synced',
-					association: makeAssociation(
-						this.provider.id,
-						this.session.accountId,
-						this.calendarId,
-						remote.remoteId,
-						remote.recurrence === 'unsupported' ? 'unsupported' : 'synced',
-					),
-				},
-			));
-			local = imported;
-			binding = {
-				key: keyForBinding(this.provider.id, this.session.accountId, this.calendarId, imported.event.uid),
-				localUid: imported.event.uid,
-				mapping: {
-					localUid: imported.event.uid,
-					notePath: imported.path,
-					providerId: this.provider.id,
-					accountId: this.session.accountId,
-					calendarId: this.calendarId,
-					remoteEventId: remote.remoteId,
-					version: remote.version,
-					calendarUidPersisted: remote.calendarUid === imported.event.uid,
-					status: remote.recurrence === 'unsupported' ? 'unsupported' : 'synced',
-				},
-			};
-			this.state.mappings[binding.key] = binding.mapping;
-			this.state.snapshots[binding.key] = {
-				local: createCalendarEventSnapshot(imported.event, nowIso(this.clock)),
-				remote: createCalendarEventSnapshot(localizeRemoteEvent(remote, imported.event.uid), nowIso(this.clock)),
-			};
-			this.stateDirty = true;
-			counters.imported += 1;
-			return;
-		}
-
-		if (!local) {
-			if (this.state.tombstones[binding.key] || binding.mapping.status === 'local_deleted') return;
-			// A missing local note is a local deletion. Preserve the remote mapping
-			// as a tombstone instead of recreating a note or deleting the event.
-			this.state.tombstones[binding.key] = {
-				localUid: binding.localUid,
+		const cached = this.cacheRemoteEvent(remote, note?.path, noteUid);
+		if (note && noteUid) {
+			const linkedNote = note;
+			const localKey = keyForBinding(this.provider.id, this.session.accountId, this.calendarId, noteUid);
+			const status = cached.status === 'unsupported' ? 'unsupported' : 'synced';
+			const localized = { ...cached.event, uid: noteUid };
+			if (hashCalendarEvent(linkedNote.event) !== hashCalendarEvent(localized) || linkedNote.status !== status) {
+				await this.withInternalWrite(noteUid, () => this.repository.update(linkedNote.path, localized, {
+					status,
+					association: makeAssociation(this.provider.id, this.session.accountId, this.calendarId, remote.remoteId, status),
+				}));
+				counters.localUpdated += 1;
+			}
+			const nextMapping = {
+				...(mapping?.mapping ?? {}),
+				localUid: noteUid,
+				notePath: linkedNote.path,
 				providerId: this.provider.id,
 				accountId: this.session.accountId,
 				calendarId: this.calendarId,
 				remoteEventId: remote.remoteId,
-				deletedAt: nowIso(this.clock),
-				reason: 'local-note-missing',
+				version: remote.version,
+				status,
 			};
-			this.state.mappings[binding.key] = { ...binding.mapping, status: 'local_deleted' };
-			this.stateDirty = true;
-			return;
+			this.state.mappings[localKey] = nextMapping;
+			const snapshot = createCalendarEventSnapshot(localized, nowIso(this.clock));
+			this.state.snapshots[localKey] = { local: snapshot, remote: snapshot };
 		}
-
-		const mapping = {
-			...binding.mapping,
-			notePath: local.path,
-			version: remote.version,
-			remoteEventId: remote.remoteId,
-			calendarUidPersisted: binding.mapping.calendarUidPersisted === true || remote.calendarUid === binding.localUid,
-		};
-		this.state.mappings[binding.key] = mapping;
 		this.stateDirty = true;
-		const localNote = local;
-		const localized = localizeRemoteEvent(remote, binding.localUid);
-		const pair = readSnapshotPair(this.state.snapshots[binding.key]);
-		if (remote.recurrence === 'unsupported') {
-			if (this.mode !== 'dry-run') await this.withInternalWrite(binding.localUid, () => this.repository.markUnsupported(localNote.path));
-			this.state.mappings[binding.key] = { ...mapping, status: 'unsupported' };
-			this.state.snapshots[binding.key] = {
-				local: pair.local ?? createCalendarEventSnapshot(local.event, nowIso(this.clock)),
-				remote: createCalendarEventSnapshot(localized, nowIso(this.clock)),
-			};
-			this.stateDirty = true;
-			return;
-		}
-
-		const remoteSnapshot = createCalendarEventSnapshot(localized, nowIso(this.clock));
-		if (this.mode === 'dry-run') return;
-		const localSnapshot = createCalendarEventSnapshot(localNote.event, nowIso(this.clock));
-		if (!pair.local || !pair.remote) {
-			if (hashCalendarEvent(localNote.event) !== remoteSnapshot.hash && pair.local) {
-				this.persistConflict(binding.key, binding.localUid, pair.local, localSnapshot, remoteSnapshot);
-				counters.conflicts.push(binding.key);
-				return;
-			}
-			await this.withInternalWrite(binding.localUid, () => this.repository.update(localNote.path, localized, {
-				status: 'synced',
-				association: makeAssociation(this.provider.id, this.session.accountId, this.calendarId, remote.remoteId, 'synced'),
-			}));
-			this.state.snapshots[binding.key] = { local: remoteSnapshot, remote: remoteSnapshot };
-			this.state.mappings[binding.key] = { ...mapping, status: 'synced' };
-			this.stateDirty = true;
-			counters.localUpdated += 1;
-			return;
-		}
-
-		const localChanged = hashCalendarEvent(localNote.event) !== pair.local.hash;
-		const remoteChanged = remoteSnapshot.hash !== pair.remote.hash;
-		if (!remoteChanged) {
-			this.state.mappings[binding.key] = { ...mapping, status: 'synced' };
-			return;
-		}
-		if (!localChanged) {
-			await this.withInternalWrite(binding.localUid, () => this.repository.update(localNote.path, localized, {
-				status: 'synced',
-				association: makeAssociation(this.provider.id, this.session.accountId, this.calendarId, remote.remoteId, 'synced'),
-			}));
-			this.state.snapshots[binding.key] = { local: remoteSnapshot, remote: remoteSnapshot };
-			this.state.mappings[binding.key] = { ...mapping, status: 'synced' };
-			this.stateDirty = true;
-			counters.localUpdated += 1;
-			return;
-		}
-
-		const merged = this.conflictResolver.resolve(pair.local, localSnapshot, remoteSnapshot);
-		if (merged.status === 'conflict' || !merged.event) {
-			this.persistConflict(binding.key, binding.localUid, pair.local, localSnapshot, remoteSnapshot, merged.conflicts);
-			await this.withInternalWrite(binding.localUid, () => this.repository.update(localNote.path, localNote.event, {
-				status: 'conflict',
-				association: makeAssociation(this.provider.id, this.session.accountId, this.calendarId, remote.remoteId, 'conflict'),
-			}));
-			counters.conflicts.push(binding.key);
-			return;
-		}
-		await this.withInternalWrite(binding.localUid, () => this.repository.update(localNote.path, merged.event as CalendarEventInputLike, {
-			status: 'pending',
-			association: makeAssociation(this.provider.id, this.session.accountId, this.calendarId, remote.remoteId, 'pending'),
-		}));
-		let finalRemote = remote;
-		if (this.mode === 'bidirectional') {
-			finalRemote = await this.runQueuedProviderWrite(binding.key, callbackSignal => this.provider.updateEvent(
-				this.session,
-				this.calendarId,
-				remote.remoteId,
-				merged.event as CalendarEvent,
-				remote.version,
-				callbackSignal,
-			), signal);
-			counters.remoteUpdated += 1;
-		}
-		const finalSnapshot = createCalendarEventSnapshot(merged.event, nowIso(this.clock));
-		const remoteMatches = finalSnapshot.hash === remoteSnapshot.hash;
-		if (this.mode === 'import-only' && remoteMatches) {
-			await this.withInternalWrite(binding.localUid, () => this.repository.update(localNote.path, merged.event as CalendarEventInputLike, {
-				status: 'synced',
-				association: makeAssociation(this.provider.id, this.session.accountId, this.calendarId, remote.remoteId, 'synced'),
-			}));
-		}
-		const finalRemoteSnapshot = this.mode === 'import-only'
-			? remoteSnapshot
-			: createCalendarEventSnapshot(localizeRemoteEvent(finalRemote, binding.localUid), nowIso(this.clock));
-		this.state.snapshots[binding.key] = { local: finalSnapshot, remote: finalRemoteSnapshot };
-		this.state.mappings[binding.key] = {
-			...mapping,
-			version: finalRemote.version,
-			calendarUidPersisted: finalRemote.calendarUid === binding.localUid,
-			status: this.mode === 'import-only' && !remoteMatches ? 'pending' : 'synced',
-		};
-		this.stateDirty = true;
-		counters.localUpdated += 1;
-	}
-
-	private async reconcileLocal(signal: AbortSignal, counters: MutableRunCounters): Promise<void> {
-		const operations: Promise<unknown>[] = [];
-		for (const note of this.repository.list()) {
-			abortIfNeeded(signal);
-			const binding = this.findBindingByLocalUid(note.event.uid);
-			if (!binding) {
-				if (this.mode === 'bidirectional') {
-					operations.push(this.enqueueCreate(note, counters, signal));
-				}
-				continue;
-			}
-			if (binding.mapping.notePath !== note.path) {
-				this.state.mappings[binding.key] = { ...binding.mapping, notePath: note.path };
-				this.stateDirty = true;
-			}
-			if (
-				binding.mapping.status === 'remote_deleted' ||
-				binding.mapping.status === 'deleted' ||
-				binding.mapping.status === 'unsupported' ||
-				binding.mapping.status === 'conflict' ||
-				binding.mapping.status === 'local_deleted' ||
-				this.state.tombstones[binding.key]
-			) continue;
-			operations.push(this.reconcileLocalNote(note, binding, counters, signal));
-		}
-		await this.queue.flush();
-		const results = await Promise.all(operations.map(operation => operation.then(
-			() => ({ ok: true as const }),
-			error => ({ ok: false as const, error }),
-		)));
-		const failed = results.find(result => !result.ok);
-		if (failed && !failed.ok) throw failed.error;
 	}
 
 	private enqueueProviderWrite<T>(
@@ -968,205 +824,6 @@ export class SyncService {
 		return operation;
 	}
 
-	private async reconcileLocalNote(
-		note: CalendarEventNoteRecord,
-		binding: Binding,
-		counters: MutableRunCounters,
-		signal: AbortSignal,
-	): Promise<void> {
-		try {
-			await this.reconcileLocalNoteInternal(note, binding, counters, signal);
-		} catch (error) {
-			if (!isCancellation(error)) await this.markNoteError(binding.localUid);
-			throw error;
-		}
-	}
-
-	private async reconcileLocalNoteInternal(
-		note: CalendarEventNoteRecord,
-		binding: Binding,
-		counters: MutableRunCounters,
-		signal: AbortSignal,
-	): Promise<void> {
-		const pair = readSnapshotPair(this.state.snapshots[binding.key]);
-		const localSnapshot = createCalendarEventSnapshot(note.event, nowIso(this.clock));
-		const internalHash = this.internalWriteHashes.get(binding.localUid);
-		if (internalHash !== undefined) {
-			this.internalWriteHashes.delete(binding.localUid);
-			if (internalHash === localSnapshot.hash) return;
-		}
-		const remoteId = providerRemoteId(binding.mapping);
-		if (!pair.local) {
-			this.state.snapshots[binding.key] = { ...pair, local: localSnapshot };
-			this.stateDirty = true;
-			return;
-		}
-		if (this.mode === 'bidirectional' && remoteId && binding.mapping.calendarUidPersisted !== true) {
-			const remote = await this.runQueuedProviderWrite(binding.key, callbackSignal => this.provider.updateEvent(
-				this.session,
-				this.calendarId,
-				remoteId,
-				localSnapshot.event,
-				binding.mapping.version,
-				callbackSignal,
-			), signal);
-			const calendarUidPersisted = remote.calendarUid === binding.localUid;
-			const remoteSnapshot = createCalendarEventSnapshot(
-				localizeRemoteEvent(remote, binding.localUid),
-				nowIso(this.clock),
-			);
-			const associationStatus = calendarUidPersisted ? 'synced' : 'pending';
-			await this.withInternalWrite(binding.localUid, () => this.repository.update(note.path, localSnapshot.event, {
-				status: associationStatus,
-				association: makeAssociation(
-					this.provider.id,
-					this.session.accountId,
-					this.calendarId,
-					remoteId,
-					associationStatus,
-				),
-			}));
-			this.state.snapshots[binding.key] = { local: localSnapshot, remote: remoteSnapshot };
-			this.state.mappings[binding.key] = {
-				...binding.mapping,
-				version: remote.version,
-				calendarUidPersisted,
-				status: associationStatus,
-			};
-			this.stateDirty = true;
-			counters.remoteUpdated += 1;
-			return;
-		}
-		if (localSnapshot.hash === pair.local.hash) {
-			if (this.mode === 'bidirectional' && remoteId && pair.remote && pair.remote.hash !== pair.local.hash) {
-			const remote = await this.runQueuedProviderWrite(binding.key, callbackSignal => this.provider.updateEvent(
-					this.session,
-					this.calendarId,
-					remoteId,
-					localSnapshot.event,
-					binding.mapping.version,
-					callbackSignal,
-				), signal);
-				await this.withInternalWrite(binding.localUid, () => this.repository.update(note.path, localSnapshot.event, {
-					status: 'synced',
-					association: makeAssociation(this.provider.id, this.session.accountId, this.calendarId, remoteId, 'synced'),
-				}));
-				this.state.snapshots[binding.key] = {
-					local: localSnapshot,
-					remote: createCalendarEventSnapshot(localizeRemoteEvent(remote, binding.localUid), nowIso(this.clock)),
-				};
-				this.state.mappings[binding.key] = {
-					...binding.mapping,
-					version: remote.version,
-					calendarUidPersisted: remote.calendarUid === binding.localUid,
-					status: 'synced',
-				};
-				this.stateDirty = true;
-				counters.remoteUpdated += 1;
-			}
-			return;
-		}
-		if (!remoteId || !pair.remote || this.mode !== 'bidirectional') return;
-		const remoteChanged = pair.remote.hash !== pair.local.hash;
-		if (remoteChanged) {
-			const merged = this.conflictResolver.resolve(pair.local, localSnapshot, pair.remote);
-			if (merged.status === 'conflict' || !merged.event) {
-				this.persistConflict(binding.key, binding.localUid, pair.local, localSnapshot, pair.remote, merged.conflicts);
-				await this.withInternalWrite(binding.localUid, () => this.repository.update(note.path, note.event, { status: 'conflict' }));
-				counters.conflicts.push(binding.key);
-				return;
-			}
-			await this.withInternalWrite(binding.localUid, () => this.repository.update(note.path, merged.event as CalendarEventInputLike, { status: 'pending' }));
-			const remote = await this.runQueuedProviderWrite(binding.key, callbackSignal => this.provider.updateEvent(
-				this.session,
-				this.calendarId,
-				remoteId,
-				merged.event as CalendarEvent,
-				binding.mapping.version,
-				callbackSignal,
-			), signal);
-			const snapshot = createCalendarEventSnapshot(merged.event, nowIso(this.clock));
-			const remoteSnapshot = createCalendarEventSnapshot(
-				localizeRemoteEvent(remote, binding.localUid),
-				nowIso(this.clock),
-			);
-			this.state.snapshots[binding.key] = { local: snapshot, remote: remoteSnapshot };
-			this.state.mappings[binding.key] = {
-				...binding.mapping,
-				version: remote.version,
-				calendarUidPersisted: remote.calendarUid === binding.localUid,
-				status: 'synced',
-			};
-			this.stateDirty = true;
-			counters.remoteUpdated += 1;
-			return;
-		}
-		const remote = await this.runQueuedProviderWrite(binding.key, callbackSignal => this.provider.updateEvent(
-			this.session,
-			this.calendarId,
-			remoteId,
-			localSnapshot.event,
-			binding.mapping.version,
-			callbackSignal,
-		), signal);
-		const remoteSnapshot = createCalendarEventSnapshot(
-			localizeRemoteEvent(remote, binding.localUid),
-			nowIso(this.clock),
-		);
-		this.state.snapshots[binding.key] = { local: localSnapshot, remote: remoteSnapshot };
-		this.state.mappings[binding.key] = {
-			...binding.mapping,
-			version: remote.version,
-			calendarUidPersisted: remote.calendarUid === binding.localUid,
-			status: 'synced',
-		};
-		this.stateDirty = true;
-		counters.remoteUpdated += 1;
-	}
-
-	private enqueueCreate(note: CalendarEventNoteRecord, counters: MutableRunCounters, signal: AbortSignal): Promise<void> {
-		const key = keyForBinding(this.provider.id, this.session.accountId, this.calendarId, note.event.uid);
-		const operation = this.enqueueProviderWrite(key, async providerSignal => {
-			const pendingMapping: SyncMapping = {
-				localUid: note.event.uid,
-				notePath: note.path,
-				providerId: this.provider.id,
-				accountId: this.session.accountId,
-				calendarId: this.calendarId,
-				status: 'pending',
-			};
-			this.state.mappings[key] = pendingMapping;
-			this.stateDirty = true;
-			const remote = await this.provider.createEvent(this.session, this.calendarId, note.event, providerSignal);
-			const mapping: SyncMapping = {
-				...pendingMapping,
-				remoteEventId: remote.remoteId,
-				version: remote.version,
-				calendarUidPersisted: remote.calendarUid === note.event.uid,
-				status: 'synced',
-			};
-			const snapshot = createCalendarEventSnapshot(note.event, nowIso(this.clock));
-			const remoteSnapshot = createCalendarEventSnapshot(
-				localizeRemoteEvent(remote, note.event.uid),
-				nowIso(this.clock),
-			);
-			this.state.mappings[key] = mapping;
-			this.state.snapshots[key] = { local: snapshot, remote: remoteSnapshot };
-			this.stateDirty = true;
-			await this.withInternalWrite(note.event.uid, () => this.repository.update(note.path, note.event, {
-				status: 'synced',
-				association: makeAssociation(this.provider.id, this.session.accountId, this.calendarId, remote.remoteId, 'synced'),
-			}));
-			counters.remoteCreated += 1;
-		}, signal);
-		return operation.then(() => undefined).catch(async error => {
-			if (isCancellation(error)) throw error;
-			await this.markNoteError(note.event.uid);
-			await this.recordError(error);
-			throw error;
-		});
-	}
-
 	private findBindingByLocalUid(localUid: string | undefined): Binding | undefined {
 		if (!localUid) return undefined;
 		for (const [key, mapping] of Object.entries(this.state.mappings)) {
@@ -1193,60 +850,6 @@ export class SyncService {
 		return mapping && typeof mapping.localUid === 'string'
 			? { key, mapping, localUid: mapping.localUid }
 			: undefined;
-	}
-
-	private sameBinding(binding: SyncMapping, remote: RemoteCalendarEvent): boolean {
-		return (
-			binding.providerId === remote.providerId &&
-			binding.calendarId === remote.calendarId &&
-			binding.accountId === this.session.accountId &&
-				providerRemoteId(binding) === remote.remoteId &&
-				(remote.calendarUid === undefined || binding.localUid === remote.calendarUid)
-		);
-	}
-
-	private persistConflict(
-		key: string,
-		localUid: string,
-		base: CalendarEventSnapshot,
-		local: CalendarEventSnapshot,
-		remote: CalendarEventSnapshot,
-		conflicts: readonly { field: string }[] = [],
-	): void {
-		this.state.conflicts[key] = {
-			localUid,
-			fields: conflicts.length > 0 ? conflicts.map(conflict => conflict.field) : ['event'],
-			base,
-			local,
-			remote,
-			createdAt: nowIso(this.clock),
-		};
-		this.state.mappings[key] = { ...(this.state.mappings[key] ?? {}), localUid, status: 'conflict' };
-		this.stateDirty = true;
-	}
-
-	private async persistMappingConflict(key: string, localUid: string, remote: RemoteCalendarEvent, otherLocalUid?: string): Promise<void> {
-		const local = this.repository.getByUid(localUid);
-		const localSnapshot = local ? createCalendarEventSnapshot(local.event, nowIso(this.clock)) : undefined;
-		const remoteSnapshot = local
-			? createCalendarEventSnapshot(localizeRemoteEvent(remote, localUid), nowIso(this.clock))
-			: undefined;
-		this.state.conflicts[key] = {
-			localUid,
-			fields: ['uid', 'remoteEventId'],
-			base: otherLocalUid ? { localUid: otherLocalUid } : undefined,
-			local: localSnapshot,
-			remote: remoteSnapshot,
-			createdAt: nowIso(this.clock),
-		};
-		this.state.mappings[key] = { ...(this.state.mappings[key] ?? {}), localUid, status: 'conflict' };
-		this.stateDirty = true;
-		if (local && this.mode !== 'dry-run') {
-			await this.withInternalWrite(localUid, () => this.repository.update(local.path, local.event, {
-				status: 'conflict',
-				association: makeAssociation(this.provider.id, this.session.accountId, this.calendarId, remote.remoteId, 'conflict'),
-			}));
-		}
 	}
 
 	private readConflictCandidate(record: SyncConflictRecord): SyncConflictCandidate {
@@ -1294,18 +897,18 @@ export class SyncService {
 	}
 
 	private recordLocalDeletion(deletion: LocalCalendarEventDeletion): void {
+		for (const [remoteKey, cached] of Object.entries(this.state.remoteEvents)) {
+			if (cached.noteUid === deletion.uid) {
+				this.state.remoteEvents[remoteKey] = { ...cached, notePath: undefined, noteUid: undefined };
+			}
+		}
 		const binding = this.findBindingByLocalUid(deletion.uid);
-		const key = binding?.key ?? keyForBinding(this.provider.id, this.session.accountId, this.calendarId, deletion.uid);
-		this.state.tombstones[key] = {
-			localUid: deletion.uid,
-			providerId: this.provider.id,
-			accountId: this.session.accountId,
-			calendarId: this.calendarId,
-			remoteEventId: binding ? providerRemoteId(binding.mapping) : undefined,
-			deletedAt: nowIso(this.clock),
-			reason: 'local-delete',
-		};
-		if (binding) this.state.mappings[key] = { ...binding.mapping, notePath: undefined, status: 'local_deleted' };
+		if (binding) {
+			delete this.state.mappings[binding.key];
+			delete this.state.snapshots[binding.key];
+			delete this.state.conflicts[binding.key];
+			delete this.state.tombstones[binding.key];
+		}
 		this.stateDirty = true;
 	}
 
@@ -1339,18 +942,161 @@ export class SyncService {
 		this.stateDirty = false;
 	}
 
+	private assertProviderWritesEnabled(): void {
+		if (this.mode !== 'bidirectional') {
+			throw new Error(`Provider event writes are unavailable in ${this.mode} mode`);
+		}
+	}
+
+	private cacheRemoteEvent(
+		remote: RemoteCalendarEvent,
+		notePath?: string,
+		noteUid?: string,
+	): CachedCalendarEventView {
+		const key = makeSyncStateKey(remote.providerId, this.session.accountId, remote.calendarId, remote.remoteId);
+		const status = remote.recurrence === 'unsupported' ? 'unsupported' : 'synced';
+		const cached: CachedCalendarEvent = {
+			providerId: remote.providerId,
+			accountId: this.session.accountId,
+			calendarId: remote.calendarId,
+			remoteEventId: remote.remoteId,
+			event: cloneEvent(remote.event),
+			version: remote.version,
+			remoteUpdatedAt: remote.remoteUpdatedAt,
+			recurrence: remote.recurrence,
+			status,
+			...(notePath === undefined ? {} : { notePath }),
+			...(noteUid === undefined ? {} : { noteUid }),
+		};
+		this.state.remoteEvents[key] = cached;
+		return { key, ...cached };
+	}
+
+	private async reconcileFullResync(seenRemoteEvents: ReadonlySet<string>, window: SyncWindow): Promise<void> {
+		if (this.mode === 'dry-run') return;
+		const from = Date.parse(window.from);
+		const to = Date.parse(window.to);
+		for (const [key, cached] of Object.entries(this.state.remoteEvents)) {
+			if (
+				cached.providerId !== this.provider.id ||
+				cached.accountId !== this.session.accountId ||
+				cached.calendarId !== this.calendarId ||
+				cached.status === 'remote_deleted' ||
+				seenRemoteEvents.has(key)
+			) continue;
+			const startsAt = Date.parse(cached.event.start);
+			// A bounded full sync cannot infer deletion for events that have fallen
+			// outside the requested horizon.
+			if (!Number.isFinite(startsAt) || startsAt < from || startsAt >= to) continue;
+			const deleted: CachedCalendarEvent = { ...cached, status: 'remote_deleted' };
+			this.state.remoteEvents[key] = deleted;
+			await this.mirrorRemoteEventToLinkedNote(deleted);
+			const binding = this.findBindingByRemote(cached.remoteEventId);
+			if (binding) this.state.mappings[binding.key] = { ...binding.mapping, status: 'remote_deleted' };
+			this.stateDirty = true;
+		}
+	}
+
+	private linkMapping(cached: CachedCalendarEvent): { key: string; mapping: SyncMapping } {
+		const previous = this.findBindingByRemote(cached.remoteEventId);
+		const key = keyForBinding(this.provider.id, this.session.accountId, this.calendarId, cached.noteUid ?? '');
+		return {
+			key,
+			mapping: {
+				...(previous?.mapping ?? {}),
+				localUid: cached.noteUid,
+				notePath: cached.notePath,
+				providerId: this.provider.id,
+				accountId: this.session.accountId,
+				calendarId: this.calendarId,
+				remoteEventId: cached.remoteEventId,
+				version: cached.version,
+				status: cached.status,
+			},
+		};
+	}
+
+	private async mirrorRemoteEventToLinkedNote(cached: CachedCalendarEvent): Promise<void> {
+		if (!cached.noteUid) return;
+		const note = this.repository.getByUid(cached.noteUid) ?? (cached.notePath ? this.repository.getByPath(cached.notePath) : undefined);
+		if (!note) return;
+		if (cached.status === 'remote_deleted') {
+			if (note.status !== 'remote_deleted') {
+				await this.withInternalWrite(note.event.uid, () => this.repository.markRemoteDeleted(note.path));
+				this.stateDirty = true;
+			}
+			const binding = this.findBindingByRemote(cached.remoteEventId);
+			if (binding && (binding.mapping.notePath !== note.path || binding.mapping.status !== 'remote_deleted')) {
+				this.state.mappings[binding.key] = { ...binding.mapping, notePath: note.path, status: 'remote_deleted' };
+				this.stateDirty = true;
+			}
+			return;
+		}
+		const localized = { ...cached.event, uid: note.event.uid };
+		const syncStatus = cached.status === 'unsupported' ? 'unsupported' : 'synced';
+		if (hashCalendarEvent(note.event) !== hashCalendarEvent(localized) || note.status !== syncStatus) {
+			await this.withInternalWrite(note.event.uid, () => this.repository.update(note.path, localized, {
+				status: syncStatus,
+				association: makeAssociation(this.provider.id, this.session.accountId, this.calendarId, cached.remoteEventId, syncStatus),
+			}));
+			this.stateDirty = true;
+		}
+		const mapping = this.linkMapping({ ...cached, noteUid: note.event.uid, notePath: note.path });
+		const existingMapping = this.state.mappings[mapping.key];
+		if (!existingMapping || existingMapping.notePath !== mapping.mapping.notePath || existingMapping.status !== mapping.mapping.status || existingMapping.version !== mapping.mapping.version) {
+			this.state.mappings[mapping.key] = mapping.mapping;
+			this.stateDirty = true;
+		}
+		const snapshot = createCalendarEventSnapshot(localized, nowIso(this.clock));
+		const existingSnapshot = this.state.snapshots[mapping.key] as { local?: CalendarEventSnapshot; remote?: CalendarEventSnapshot } | undefined;
+		if (existingSnapshot?.local?.hash !== snapshot.hash || existingSnapshot?.remote?.hash !== snapshot.hash) {
+			this.state.snapshots[mapping.key] = { local: snapshot, remote: snapshot };
+			this.stateDirty = true;
+		}
+	}
+
+	private async mirrorCachedEventsToLinkedNotes(): Promise<void> {
+		if (this.mode === 'dry-run') return;
+		for (const cached of Object.values(this.state.remoteEvents)) {
+			if (
+				cached.providerId === this.provider.id &&
+				cached.accountId === this.session.accountId &&
+				cached.calendarId === this.calendarId &&
+				cached.noteUid
+			) await this.mirrorRemoteEventToLinkedNote(cached);
+		}
+	}
+
+	private refreshLinkedNotePaths(): void {
+		for (const [key, cached] of Object.entries(this.state.remoteEvents)) {
+			if (!cached.noteUid) continue;
+			const note = this.repository.getByUid(cached.noteUid);
+			if (note) {
+				if (cached.notePath !== note.path) {
+					this.state.remoteEvents[key] = { ...cached, notePath: note.path };
+					const binding = this.findBindingByRemote(cached.remoteEventId);
+					if (binding) this.state.mappings[binding.key] = { ...binding.mapping, notePath: note.path };
+					this.stateDirty = true;
+				}
+				continue;
+			}
+			this.state.remoteEvents[key] = { ...cached, notePath: undefined, noteUid: undefined };
+			const binding = this.findBindingByRemote(cached.remoteEventId);
+			if (binding) {
+				delete this.state.mappings[binding.key];
+				delete this.state.snapshots[binding.key];
+				delete this.state.conflicts[binding.key];
+				delete this.state.tombstones[binding.key];
+			}
+			this.stateDirty = true;
+		}
+	}
+
 	private async recordError(error: unknown): Promise<void> {
 		if (this.mode === 'dry-run') return;
 		this.state = withSyncStateError(this.state, error, nowIso(this.clock));
 		this.stateDirty = true;
 		await this.saveState();
-	}
-
-	private async markNoteError(localUid: string): Promise<void> {
-		if (this.mode === 'dry-run') return;
-		const note = this.repository.getByUid(localUid);
-		if (!note) return;
-		await this.withInternalWrite(localUid, () => this.repository.markError(note.path));
 	}
 
 	private readCursor(key: string): OpaqueCursor | undefined {

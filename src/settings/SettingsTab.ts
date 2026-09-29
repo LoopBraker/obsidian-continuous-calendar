@@ -529,7 +529,7 @@ export class CalendarSettingTab extends PluginSettingTab {
         
         new Setting(connectionCard)
             .setName('Actions')
-            .setDesc('Connect authorizes the plugin. Reconnect refreshes the injected session. Disconnect preserves notes and remote events while removing the binding through the lifecycle callback.')
+            .setDesc('Connect authorizes the plugin. Reconnect refreshes the session. Disconnect removes this calendar\'s cached events while preserving notes and Google events.')
             .addButton(button => button
                 .setButtonText('Sync now')
                 .setCta()
@@ -549,7 +549,7 @@ export class CalendarSettingTab extends PluginSettingTab {
         configurationCard.createEl('h3', { text: 'Sync configuration' });
         new Setting(configurationCard)
             .setName('Event folder')
-            .setDesc('Marked event notes are created here. Existing notes are never moved automatically.')
+            .setDesc('Notes you choose to create for calendar events are stored here. Existing notes are never moved automatically.')
             .addText(text => {
                 text.setValue(sync.eventFolder === '' ? '/' : sync.eventFolder)
                     .setPlaceholder('Calendar Events')
@@ -601,7 +601,7 @@ export class CalendarSettingTab extends PluginSettingTab {
                 }));
         new Setting(configurationCard)
             .setName('Mode')
-            .setDesc('Dry run previews changes without provider writes; import-only never uploads local edits.')
+            .setDesc('Dry run previews without saving events. Import only caches Google events and allows optional personal notes. Bidirectional also enables event creation and editing.')
             .addDropdown(dropdown => {
                 const modes: Array<[SyncMode, string]> = [
                     ['disabled', 'Disabled'],
@@ -699,7 +699,7 @@ export class CalendarSettingTab extends PluginSettingTab {
     private confirmDisconnect(): void {
         createConfirmationDialog(this.app, {
             title: 'Disconnect calendar sync?',
-            text: 'This preserves event notes and remote events. The plugin callback will remove the binding and credentials, if supported.',
+            text: 'This clears cached Google events and the connection. Linked notes and events in Google Calendar are preserved.',
             cta: 'Disconnect',
             onAccept: async () => {
                 if (!this.syncActions?.disconnect) {
@@ -716,7 +716,7 @@ export class CalendarSettingTab extends PluginSettingTab {
                         syncMode: 'disabled',
                     };
                     await this.saveSyncSettings();
-                    new Notice('Calendar sync disconnected; notes and remote events were preserved.');
+                    new Notice('Calendar disconnected; cached events cleared and notes preserved.');
                     this.display();
                 } catch (error) {
                     new Notice(`Disconnect failed: ${sanitizeSyncUiError(error)}`);

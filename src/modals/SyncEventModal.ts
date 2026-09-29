@@ -86,7 +86,7 @@ export class SyncEventModal extends Modal {
 		contentEl.addClass('sync-event-modal');
 		contentEl.createEl('h2', { text: this.options.title ?? (this.options.initialEvent ? 'Edit calendar event' : 'Create calendar event') });
 		contentEl.createEl('p', {
-			text: 'Only canonical event fields are synchronized. The note body remains local.',
+			text: 'This changes the calendar event. You can create a personal note for it separately.',
 			cls: 'setting-item-description',
 		});
 

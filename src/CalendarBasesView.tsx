@@ -17,7 +17,7 @@ import {
 import { createConfirmationDialog } from './modals/ConfirmationModal';
 import { createRangeNote } from './createRangeNote';
 import { openSyncEventModal } from './modals/SyncEventModal';
-import { sanitizeSyncUiError, type SyncUiActions } from './components/SyncUi';
+import { sanitizeSyncUiError, type SyncEventActions } from './components/SyncUi';
 
 export const CALENDAR_BASES_VIEW_TYPE = 'calendar-bases-view';
 
@@ -27,6 +27,7 @@ export class CalendarBasesView extends BasesView {
     private root: Root | null = null;
     private calendarIndex: IndexService;
     private plugin: ContinuousCalendarPlugin;
+    private pluginIndexUnsubscribe?: () => void;
 
     constructor(controller: QueryController, parentEl: HTMLElement, plugin: ContinuousCalendarPlugin) {
         super(controller);
@@ -45,6 +46,11 @@ export class CalendarBasesView extends BasesView {
         // 1. Initialize Service
         this.calendarIndex = new IndexService(app);
         this.calendarIndex.setSettings(plugin.settings);
+        this.pluginIndexUnsubscribe = plugin.calendarIndex.subscribe(changedDates => {
+            if (changedDates !== null) return;
+            this.calendarIndex.setSettings(this.plugin.settings);
+            this.calendarIndex.notifyListeners(null);
+        });
         void this.loadHolidaysForYear(new Date().getFullYear());
 
         // 2. Setup Container Styles
@@ -74,57 +80,74 @@ export class CalendarBasesView extends BasesView {
 
         this.root = createRoot(reactRoot);
 
-        const lifecycleActions = (this.plugin as unknown as { syncUiActions?: SyncUiActions }).syncUiActions;
-        const syncEventActions = Platform.isDesktopApp ? {
+        const canWriteCalendarEvents = () => {
+            const sync = this.plugin.settings.sync;
+            return Platform.isDesktopApp && sync.syncMode === 'bidirectional'
+                && Boolean(sync.providerId && sync.accountId && sync.calendarId);
+        };
+        const rejectUnavailableEventWrite = () => {
+            new Notice('Enable a connected bidirectional calendar before creating, editing, or deleting a Google Calendar event.');
+        };
+        const syncEventActions: SyncEventActions = {
+            createNote: eventKey => { void this.plugin.createNoteForCalendarEvent(eventKey); },
+            openNote: eventKey => this.plugin.openNoteForCalendarEvent(eventKey),
             create: (dateKey: string) => {
-                const sync = this.plugin.settings.sync;
-                if (sync.syncMode !== 'bidirectional' || !sync.providerId || !sync.accountId || !sync.calendarId) {
-                    new Notice('Enable a connected bidirectional calendar before creating a synced event.');
+                if (!canWriteCalendarEvents()) {
+                    rejectUnavailableEventWrite();
                     return;
                 }
+                const sync = this.plugin.settings.sync;
                 openSyncEventModal(this.plugin.app, {
                     dateKey,
-                    timezone: this.plugin.settings.sync.timezone,
-                    onSubmit: async event => {
-                        const created = await this.plugin.calendarEventRepository.create(event, { status: 'pending' });
-                        this.plugin.syncLifecycle.handleCreate(created.path);
-                    },
+                    timezone: sync.timezone,
+                    onSubmit: event => this.plugin.createCalendarEvent(event),
                 });
             },
-            edit: (uid: string) => {
-                const existing = this.plugin.calendarEventRepository.getByUid(uid);
+            edit: (eventKey: string) => {
+                if (!canWriteCalendarEvents()) {
+                    rejectUnavailableEventWrite();
+                    return;
+                }
+                const existing = this.plugin.getCalendarEvent(eventKey);
                 if (!existing) {
-                    new Notice('The synchronized event note is no longer indexed.');
+                    new Notice('The Google Calendar event is no longer available.');
                     return;
                 }
                 openSyncEventModal(this.plugin.app, {
                     initialEvent: existing.event,
                     timezone: existing.event.timezone,
-                    onSubmit: async event => {
-                        await this.plugin.calendarEventRepository.update(uid, event, { status: 'pending' });
-                        this.plugin.syncLifecycle.handleModify(existing.path);
-                    },
+                    onSubmit: event => this.plugin.updateCalendarEvent(eventKey, event),
                 });
             },
-            delete: lifecycleActions?.deleteSyncedEvent ? async (uid: string) => new Promise<boolean>(resolve => {
-                createConfirmationDialog(this.plugin.app, {
-                    title: 'Delete synced event?',
-                    text: 'This first requests remote deletion. The local note is moved to system trash only after provider confirmation.',
-                    cta: 'Delete synced event',
-                    onAccept: async () => {
-                        try {
-                            const deleted = await lifecycleActions.deleteSyncedEvent?.(uid) ?? false;
-                            new Notice(deleted ? 'Synced event deleted' : 'Synced event was not fully deleted');
-                            resolve(deleted);
-                        } catch (error) {
-                            new Notice(`Synced event was not deleted: ${sanitizeSyncUiError(error)}`);
-                            resolve(false);
-                        }
-                    },
+            delete: (eventKey: string) => {
+                if (!canWriteCalendarEvents()) {
+                    rejectUnavailableEventWrite();
+                    return Promise.resolve(false);
+                }
+                return new Promise<boolean>(resolve => {
+                    createConfirmationDialog(this.plugin.app, {
+                        title: 'Delete Google Calendar event?',
+                        text: 'This deletes the event from Google Calendar. Any linked note will be kept.',
+                        cta: 'Delete event',
+                        onAccept: async () => {
+                            if (!canWriteCalendarEvents()) {
+                                rejectUnavailableEventWrite();
+                                resolve(false);
+                                return;
+                            }
+                            try {
+                                const deleted = await this.plugin.deleteCalendarEvent(eventKey);
+                                new Notice(deleted ? 'Google Calendar event deleted' : 'Google Calendar event was not deleted');
+                                resolve(deleted);
+                            } catch (error) {
+                                new Notice(`Google Calendar event was not deleted: ${sanitizeSyncUiError(error)}`);
+                                resolve(false);
+                            }
+                        },
+                    });
                 });
-            }) : undefined,
-            resolveConflict: lifecycleActions?.openConflict,
-        } : undefined;
+            },
+        };
 
         this.root.render(
             <ContinuousCalendar
@@ -184,6 +207,7 @@ export class CalendarBasesView extends BasesView {
     }
 
     public onDataUpdated(): void {
+        this.calendarIndex.setSettings(this.plugin.settings);
         this.calendarIndex.clearIndexedFiles();
 
         if (this.data && this.data.groupedData) {
@@ -202,6 +226,7 @@ export class CalendarBasesView extends BasesView {
 
     public onClose() {
         if (this.root) this.root.unmount();
+        this.pluginIndexUnsubscribe?.();
         this.calendarIndex.dispose();
     }
 }

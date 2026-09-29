@@ -1,6 +1,8 @@
 import type {
 	CalendarEvent,
 	CalendarEventInput,
+	CalendarEventAssociation,
+	ProviderReference,
 	SyncStatus,
 } from '../model/CalendarEvent';
 import { normalizeCalendarEvent, type CalendarEventValidationError } from '../model/CalendarEventValidation';
@@ -85,6 +87,7 @@ export type CalendarEventRepositoryErrorCode =
 	| 'invalid-event-note'
 	| 'not-found'
 	| 'immutable-uid'
+	| 'immutable-association'
 	| 'invalid-path';
 
 export class CalendarEventRepositoryError extends Error {
@@ -249,6 +252,28 @@ function recordAssociation(
 	};
 }
 
+function providerReferenceOf(
+	association: CalendarEventAssociation | ProviderReference,
+): ProviderReference {
+	return 'reference' in association ? association.reference : association;
+}
+
+function sameProviderReference(left: ProviderReference, right: ProviderReference): boolean {
+	return left.providerId === right.providerId &&
+		left.accountId === right.accountId &&
+		left.calendarId === right.calendarId &&
+		left.remoteEventId === right.remoteEventId;
+}
+
+function providerReferenceKey(reference: ProviderReference): string {
+	return JSON.stringify([
+		reference.providerId,
+		reference.accountId,
+		reference.calendarId,
+		reference.remoteEventId,
+	]);
+}
+
 /**
  * Vault-backed repository for explicitly marked Markdown event notes.
  * Provider APIs are intentionally absent: renames, updates, and deletion
@@ -263,6 +288,7 @@ export class CalendarEventRepository {
 	private readonly uuidFactory: () => string;
 	private readonly filenameFactory?: CalendarEventRepositoryOptions['filenameFactory'];
 	private readonly deletionListeners = new Set<LocalDeletionListener>();
+	private readonly linkedNoteCreations = new Map<string, Promise<CalendarEventNoteRecord>>();
 	private lastReloadResult: CalendarEventReloadResult = {
 		records: [],
 		events: [],
@@ -563,6 +589,38 @@ export class CalendarEventRepository {
 		return record;
 	}
 
+	/**
+	 * Create a note for an explicitly selected remote event. Repeated calls for
+	 * the same provider object return its existing note, including notes created
+	 * by earlier sync runs. Remote event imports never call this implicitly.
+	 */
+	async createLinkedNote(
+		input: CalendarEventInputLike,
+		association: CalendarEventAssociation | ProviderReference,
+		options: Omit<CalendarEventCreateOptions, 'association'> = {},
+	): Promise<CalendarEventNoteRecord> {
+		const reference = providerReferenceOf(association);
+		const existing = this.getByProviderReference(reference);
+		if (existing) return existing;
+
+		const key = providerReferenceKey(reference);
+		const inFlight = this.linkedNoteCreations.get(key);
+		if (inFlight) return inFlight;
+
+		const status = options.status ?? ('reference' in association ? association.status : undefined);
+		const creation = this.create(input, {
+			...options,
+			...(status === undefined ? {} : { status }),
+			association: reference,
+		});
+		this.linkedNoteCreations.set(key, creation);
+		try {
+			return await creation;
+		} finally {
+			if (this.linkedNoteCreations.get(key) === creation) this.linkedNoteCreations.delete(key);
+		}
+	}
+
 	createEvent(
 		input: CalendarEventInputLike,
 		options: CalendarEventCreateOptions = {},
@@ -608,6 +666,13 @@ export class CalendarEventRepository {
 		return this.index.getByUid(uid) as CalendarEventNoteRecord | undefined;
 	}
 
+	/** Find an existing note by its immutable provider object identity. */
+	getByProviderReference(reference: ProviderReference): CalendarEventNoteRecord | undefined {
+		return this.index.values().find(record =>
+			record.association !== undefined && sameProviderReference(record.association.reference, reference),
+		) as CalendarEventNoteRecord | undefined;
+	}
+
 	get(pathOrUid: string): CalendarEventNoteRecord | undefined {
 		return this.getByPath(pathOrUid) ?? this.getByUid(pathOrUid);
 	}
@@ -650,6 +715,17 @@ export class CalendarEventRepository {
 		const event = normalizeCalendarEvent(this.mergedEventInput(existing, input));
 		const status = options.status ?? existing.status;
 		const association = options.association ?? existing.association;
+		if (
+			existing.association !== undefined &&
+			association !== undefined &&
+			!sameProviderReference(existing.association.reference, providerReferenceOf(association))
+		) {
+			throw new CalendarEventRepositoryError(
+				'immutable-association',
+				`Provider association is immutable for "${existing.path}"`,
+				{ path: existing.path, uid: existing.event.uid },
+			);
+		}
 		const frontmatterForRecord = { ...existing.frontmatter };
 		await this.processPath(path, frontmatter => {
 			applyCalendarEventFrontmatter(frontmatter, event, {

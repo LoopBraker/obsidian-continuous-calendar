@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { useMemo, useState, useRef, useEffect, useLayoutEffect, useCallback } from 'react';
 import { Virtuoso, type VirtuosoHandle, type ListRange } from 'react-virtuoso';
-import { App } from 'obsidian';
+import { App, Platform } from 'obsidian';
 import { IndexService } from './services/IndexService';
 import { DayDetailView } from './DayDetailView';
 import type { SyncEventActions } from './components/SyncUi';
@@ -1504,6 +1504,11 @@ export const ContinuousCalendar = (props: ContinuousCalendarProps) => {
         }
     }, []);
 
+    const syncSettings = index.settings?.sync;
+    const canWriteCalendarEvents = Platform.isDesktopApp
+        && syncSettings?.syncMode === 'bidirectional'
+        && Boolean(syncSettings.providerId && syncSettings.accountId && syncSettings.calendarId);
+
     const dayDetail = selection?.type === 'cell' ? (
         <DayDetailView
             dateKey={toDateKey(selection.date)}
@@ -1517,16 +1522,11 @@ export const ContinuousCalendar = (props: ContinuousCalendarProps) => {
                 onOpenNote(new Date(dateStr + 'T00:00:00'));
             }}
             onCreateSyncEvent={syncEventActions?.create}
-            canCreateSyncEvent={Boolean(
-                syncEventActions?.create &&
-                index.settings?.sync?.syncMode === 'bidirectional' &&
-                index.settings.sync.providerId !== null &&
-                index.settings.sync.accountId !== null &&
-                index.settings.sync.calendarId !== null,
-            )}
-            onEditSyncEvent={syncEventActions?.edit}
-            onDeleteSyncEvent={syncEventActions?.delete}
-            onResolveSyncConflict={syncEventActions?.resolveConflict}
+            canCreateSyncEvent={Boolean(syncEventActions?.create && canWriteCalendarEvents)}
+            onEditSyncEvent={canWriteCalendarEvents ? syncEventActions?.edit : undefined}
+            onDeleteSyncEvent={canWriteCalendarEvents ? syncEventActions?.delete : undefined}
+            onCreateEventNote={syncEventActions?.createNote}
+            onOpenEventNote={syncEventActions?.openNote}
         />
     ) : null;
 

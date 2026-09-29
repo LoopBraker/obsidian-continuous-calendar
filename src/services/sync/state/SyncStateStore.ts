@@ -1,9 +1,24 @@
-import type { CalendarEventSnapshot } from '../model/CalendarEvent';
+import type { CalendarEvent, CalendarEventSnapshot } from '../model/CalendarEvent';
 import type { CalendarPluginSettings, SyncProviderId } from '../../../settings/settings';
 import type { PluginDataMutationEnvelope } from './PluginDataStore';
 import { sanitizeSyncError, type SanitizedSyncError, redactSecrets } from './redaction';
 
-export const SYNC_STATE_SCHEMA_VERSION = 1;
+export const SYNC_STATE_SCHEMA_VERSION = 2;
+
+/** Provider event data cached independently from any optional Markdown note. */
+export interface CachedCalendarEvent {
+	readonly providerId: string;
+	readonly accountId: string;
+	readonly calendarId: string;
+	readonly remoteEventId: string;
+	readonly event: CalendarEvent;
+	readonly version?: string;
+	readonly remoteUpdatedAt?: string;
+	readonly recurrence: 'none' | 'unsupported';
+	readonly status: 'synced' | 'unsupported' | 'remote_deleted' | 'error';
+	readonly notePath?: string;
+	readonly noteUid?: string;
+}
 
 export interface SyncMapping {
 	readonly localUid?: string;
@@ -73,6 +88,10 @@ export interface SyncState {
 	readonly conflicts: Record<string, SyncConflictRecord>;
 	readonly tombstones: Record<string, SyncTombstone>;
 	readonly retry: Record<string, SyncRetryState>;
+	/** Event cache keyed by provider/account/calendar/remote event identity. */
+	readonly remoteEvents: Record<string, CachedCalendarEvent>;
+	/** Calendars that have completed a full event-cache population. */
+	readonly eventCacheInitialized: Record<string, boolean>;
 	lastError: SanitizedSyncError | null;
 	readonly [key: string]: unknown;
 }
@@ -129,6 +148,8 @@ export function createDefaultSyncState(): SyncState {
 		conflicts: {},
 		tombstones: {},
 		retry: {},
+		remoteEvents: {},
+		eventCacheInitialized: {},
 		lastError: null,
 	};
 }
@@ -156,6 +177,8 @@ export function normalizeSyncState(raw: unknown): SyncState {
 		conflicts: copyRecord<SyncConflictRecord>(raw.conflicts ?? {}),
 		tombstones: copyRecord<SyncTombstone>(raw.tombstones ?? {}),
 		retry: copyRecord<SyncRetryState>(raw.retry ?? raw.retries ?? {}),
+		remoteEvents: copyRecord<CachedCalendarEvent>(raw.remoteEvents ?? {}),
+		eventCacheInitialized: copyRecord<boolean>(raw.eventCacheInitialized ?? {}),
 		lastError: raw.lastError === null || raw.lastError === undefined
 			? null
 			: sanitizeSyncError(raw.lastError),
@@ -244,6 +267,8 @@ export function disconnectSyncState(
 		return removedLocalUids.has(value.localUid ?? '') || removedMappingKeys.has(key) || stateKeyMatches(key, selection);
 	});
 	removedStateKeys += removeMatchingRecord(state.retry, selection, (key) => stateKeyMatches(key, selection));
+	removedStateKeys += removeMatchingRecord(state.remoteEvents, selection, (key) => stateKeyMatches(key, selection));
+	removedStateKeys += removeMatchingRecord(state.eventCacheInitialized, selection, (key) => stateKeyMatches(key, selection));
 	state.lastError = null;
 
 	return {
@@ -283,6 +308,7 @@ export function isSyncProviderId(value: unknown): value is SyncProviderId {
 export class SyncStateStore {
 	private state: SyncState = createDefaultSyncState();
 	private loaded = false;
+	private readonly listeners = new Set<(state: SyncState) => void>();
 
 	/** Injected plugin-data store is typed structurally to avoid a runtime cycle. */
 	constructor(
@@ -294,7 +320,13 @@ export class SyncStateStore {
 		const rawState = result.syncState ?? result.envelope?.syncState ?? createDefaultSyncState();
 		this.state = normalizeSyncState(rawState);
 		this.loaded = true;
+		this.notify();
 		return clone(this.state);
+	}
+
+	subscribe(listener: (state: SyncState) => void): () => void {
+		this.listeners.add(listener);
+		return () => this.listeners.delete(listener);
 	}
 
 	async initialize(): Promise<SyncState> {
@@ -317,6 +349,7 @@ export class SyncStateStore {
 		this.state = normalizeSyncState(state);
 		await this.dataStore.saveSyncState(this.state);
 		this.loaded = true;
+		this.notify();
 		return clone(this.state);
 	}
 
@@ -364,6 +397,7 @@ export class SyncStateStore {
 			}));
 			this.state = normalizeSyncState(result.state);
 			this.loaded = true;
+			this.notify();
 		} else {
 			await this.save(result.state);
 		}
@@ -378,5 +412,16 @@ export class SyncStateStore {
 			}
 		}
 		return { ...result, state: this.getState() };
+	}
+
+	private notify(): void {
+		const state = this.getState();
+		for (const listener of this.listeners) {
+			try {
+				listener(clone(state));
+			} catch (_error) {
+				// Observers must not fail a durable state operation.
+			}
+		}
 	}
 }

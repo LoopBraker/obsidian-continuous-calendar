@@ -9,6 +9,15 @@ import { RecurrenceManager } from './index/RecurrenceManager';
 import { TaskManager } from './index/TaskManager';
 import { TaskNote } from './index/IndexTypes';
 import type { CalendarEventIndex } from './sync/notes/CalendarEventIndex';
+import type { CalendarEvent, SyncStatus } from './sync/model/CalendarEvent';
+import { calendarEventIntersectsDate } from '../components/SyncUi';
+
+export interface CalendarDisplayEvent {
+    readonly key: string;
+    readonly event: CalendarEvent;
+    readonly status?: SyncStatus;
+    readonly notePath?: string;
+}
 
 /**
  * The sync read model is vault-scoped rather than view-scoped.  Bases creates
@@ -17,7 +26,16 @@ import type { CalendarEventIndex } from './sync/notes/CalendarEventIndex';
  * This registry stores no provider or credential objects.
  */
 const calendarEventIndexes = new WeakMap<App, CalendarEventIndex>();
+const calendarEventSources = new WeakMap<App, () => readonly CalendarDisplayEvent[]>();
 const calendarIndexServices = new WeakMap<App, Set<IndexService>>();
+
+export function registerCalendarEventSource(app: App, source: () => readonly CalendarDisplayEvent[]): void {
+    calendarEventSources.set(app, source);
+}
+
+export function unregisterCalendarEventSource(app: App): void {
+    calendarEventSources.delete(app);
+}
 
 export function registerCalendarEventIndex(app: App, index: CalendarEventIndex): void {
     calendarEventIndexes.set(app, index);
@@ -102,6 +120,15 @@ export class IndexService {
     /** Shared vault-backed projection for explicitly marked sync event notes. */
     get calendarEventIndex(): CalendarEventIndex | undefined { return this.syncEventIndex; }
 
+    /** Provider events are projected independently of optional Markdown notes. */
+    getCalendarEvents(): readonly CalendarDisplayEvent[] {
+        return calendarEventSources.get(this.app)?.() ?? [];
+    }
+
+    getCalendarEventsForDate(dateStr: string): readonly CalendarDisplayEvent[] {
+        return this.getCalendarEvents().filter(record => calendarEventIntersectsDate(record.event, dateStr));
+    }
+
     /** Attach the plugin-wide event projection to a view-created index. */
     setCalendarEventIndex(index: CalendarEventIndex | undefined): void {
         this.syncEventIndex = index;
@@ -136,6 +163,10 @@ export class IndexService {
     getDateStatus(dateStr: string): DateMetadata {
         const meta = this.noteManager.getDateStatus(dateStr);
 
+        if (this.getCalendarEventsForDate(dateStr).length > 0) {
+            return { ...meta, hasProperty: true };
+        }
+
         // Check recurring in RecurrenceManager
         const recurringNotes = this.recurrenceManager.getNotesForDate(dateStr);
         if (recurringNotes.length > 0) {
@@ -146,7 +177,10 @@ export class IndexService {
     }
 
     getRangesForDate(dateStr: string): RangeNote[] {
-        return this.rangesByDate.get(dateStr) || [];
+        const linkedPaths = new Set(this.getCalendarEventsForDate(dateStr)
+            .map(record => record.notePath)
+            .filter((path): path is string => !!path));
+        return (this.rangesByDate.get(dateStr) || []).filter(range => !linkedPaths.has(range.path));
     }
 
     getRangeSlots(dateStr: string): Map<string, number> {
@@ -252,7 +286,9 @@ export class IndexService {
         const cached = this.displaySymbolsCache.get(dateStr);
         if (cached?.signature === signature) return cached.symbols.map(symbol => ({ ...symbol }));
         // Presentation logic remains here as it acts as a View Model
-        const notes = this.getNotesForDate(dateStr);
+        const events = this.getCalendarEventsForDate(dateStr);
+        const linkedPaths = new Set(events.map(record => record.notePath).filter((path): path is string => !!path));
+        const notes = this.getNotesForDate(dateStr).filter(note => !linkedPaths.has(note.path));
 
         interface NoteDisplay {
             symbol?: string;
@@ -301,6 +337,8 @@ export class IndexService {
                 hasSymbol: !!symbol
             };
         });
+
+        noteDisplays.push(...events.map(() => ({ symbol: undefined, color: defaultDotColor, hasSymbol: false })));
 
         if (collapseDuplicates) {
             const seenSymbols = new Set<string>();

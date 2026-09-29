@@ -1782,7 +1782,7 @@
     word-break: break-word;
 }
 
-.sync-event-card-header > .sync-event-title:hover,
+.sync-event-card-header > a.sync-event-title:hover,
 .sync-event-card-header > .internal-link:hover {
     color: var(--text-accent);
     text-decoration: underline;
