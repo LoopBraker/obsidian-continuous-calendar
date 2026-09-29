@@ -14,9 +14,7 @@ export const obsidianHttpTransport = {
         if (req.body !== undefined) {
             options.body = req.body;
         }
-        console.log('[Calendar Sync] HTTP Request:', options.method, options.url, 'Body:', options.body);
         const response = await requestUrl(options);
-        console.log('[Calendar Sync] HTTP Response:', response.status, response.text);
         return {
             status: response.status,
             headers: response.headers,

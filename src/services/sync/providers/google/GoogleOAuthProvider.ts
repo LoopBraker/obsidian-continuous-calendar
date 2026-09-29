@@ -103,6 +103,10 @@ function asNonEmptyString(value: unknown): string | undefined {
 	return normalized.length > 0 ? normalized : undefined;
 }
 
+function isCredentialStoreFailure(error: unknown): boolean {
+	return Boolean(error && typeof error === 'object' && (error as { code?: unknown }).code === 'credential-storage-failed');
+}
+
 function readResponseBody(response: ProviderHttpResponse): unknown {
 	if (response.body !== undefined) return response.body;
 	const responseWithJson = response as ProviderHttpResponse & { readonly json?: unknown; readonly text?: unknown };
@@ -261,10 +265,22 @@ export class GoogleOAuthProvider {
 			const connection = await this.connectionFromToken(token, undefined, undefined, signal);
 			if (connection.refreshToken && this.credentialStore) {
 				await this.credentialStore.set(connection.accountId, connection.refreshToken);
+			} else if (this.credentialStore) {
+				// Google can omit refresh_token after a prior consent grant. Reuse a
+				// previously persisted token for this account, but never report a new
+				// connection as successful when no restart-safe credential exists.
+				const savedCredential = await this.credentialStore.get(connection.accountId);
+				if (!savedCredential) {
+					throw authenticationError(
+						'Google did not provide a refresh credential. Revoke this app in your Google Account permissions, then connect again.',
+						{ providerId: GOOGLE_PROVIDER_ID, code: 'missing-refresh-token' },
+					);
+				}
+				return { ...connection, refreshToken: savedCredential };
 			}
 			return connection;
 		} catch (error) {
-			if (error instanceof ProviderError) throw error;
+			if (error instanceof ProviderError || isCredentialStoreFailure(error)) throw error;
 			if (signal?.aborted) throw makeAbortError('Google authorization was cancelled');
 			throw transientError('Google authorization failed', {
 				providerId: GOOGLE_PROVIDER_ID,
@@ -331,6 +347,7 @@ export class GoogleOAuthProvider {
 			response_type: 'code',
 			scope: this.scope,
 			access_type: 'offline',
+			prompt: 'consent',
 			code_challenge: challenge,
 			code_challenge_method: 'S256',
 			state,

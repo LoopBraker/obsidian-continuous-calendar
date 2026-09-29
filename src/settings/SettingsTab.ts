@@ -16,10 +16,19 @@ export function clampSyncInterval(value: number): number {
 	return Math.min(1440, Math.max(1, Math.round(value)));
 }
 
-export function syncConnectionLabel(sync: CalendarSyncSettings, lifecycleStarted: boolean): string {
+export function syncConnectionLabel(
+	sync: CalendarSyncSettings,
+	lifecycleStarted: boolean,
+	authenticationAvailable: boolean,
+	authenticationIssueCode?: string,
+	credentialPersistence: 'secure' | 'session-only' = 'secure',
+): string {
 	if (!Platform.isDesktopApp) return 'Desktop sync unavailable on this device';
 	if (!sync.providerId || !sync.accountId) return 'Not connected';
+	if (!authenticationAvailable && authenticationIssueCode === 'google-client-secret-missing') return 'Enter Google Client Secret to restore sync';
+	if (!authenticationAvailable) return 'Reconnect required';
 	if (!sync.calendarId) return 'Connected — choose a calendar';
+	if (credentialPersistence === 'session-only') return 'Connected for this session only';
 	return lifecycleStarted ? 'Connected and ready' : 'Connected — waiting for sync';
 }
 
@@ -454,9 +463,10 @@ export class CalendarSettingTab extends PluginSettingTab {
         const connectionCard = syncContainer.createDiv('calendar-settings-card sync-connection-card');
         const connectionHeader = connectionCard.createDiv('sync-connection-header');
         connectionHeader.createEl('h3', { text: 'Connection' });
+        const connected = Boolean(sync.accountId && this.plugin.syncAuthenticationAvailable);
         const connectionState = connectionHeader.createSpan({
-            text: syncConnectionLabel(sync, Boolean(this.plugin.syncLifecycle?.isStarted)),
-            cls: `sync-connection-state ${sync.providerId && sync.accountId ? 'is-connected' : 'is-disconnected'}`,
+            text: this.getConnectionLabel(),
+            cls: `sync-connection-state ${connected ? 'is-connected' : 'is-disconnected'}`,
         });
 
         new Setting(connectionCard)
@@ -491,17 +501,29 @@ export class CalendarSettingTab extends PluginSettingTab {
                         });
                 });
 
+            let clientSecretInput: HTMLInputElement | undefined;
             new Setting(connectionCard)
                 .setName('Google Client Secret')
-                .setDesc('Required for Google Desktop Apps.')
+                .setDesc('Saved in Obsidian SecretStorage, not plugin settings. Leave blank to keep the saved value; enter a value to save or replace it.')
                 .addText(text => {
-                    text.setValue(sync.googleClientSecret ?? '')
-                        .setPlaceholder('GOCSPX-...')
-                        .onChange(async value => {
-                            sync.googleClientSecret = value.trim() || null;
-                            await this.saveSyncSettings();
-                        });
-                });
+                    text.setPlaceholder('Enter to save or replace');
+                    text.inputEl.type = 'password';
+                    text.inputEl.autocomplete = 'new-password';
+                    text.inputEl.setAttribute('aria-label', 'Google Client Secret');
+                    clientSecretInput = text.inputEl;
+                })
+                .addButton(button => button
+                    .setButtonText('Save securely')
+                    .onClick(async () => {
+                        try {
+                            await this.plugin.saveGoogleClientSecret(clientSecretInput?.value ?? '');
+                            if (clientSecretInput) clientSecretInput.value = '';
+                            new Notice('Google Client Secret saved securely');
+                            this.display();
+                        } catch (error) {
+                            new Notice(`Google Client Secret could not be saved: ${sanitizeSyncUiError(error)}`);
+                        }
+                    }));
         }
 
         new Setting(connectionCard)
@@ -529,7 +551,7 @@ export class CalendarSettingTab extends PluginSettingTab {
         
         new Setting(connectionCard)
             .setName('Actions')
-            .setDesc('Connect authorizes the plugin. Reconnect refreshes the session. Disconnect removes this calendar\'s cached events while preserving notes and Google events.')
+            .setDesc('Connect authorizes the plugin. Reconnect restores an expired or missing session without clearing cached events. Disconnect removes this calendar\'s cached events while preserving notes and Google events.')
             .addButton(button => button
                 .setButtonText('Sync now')
                 .setCta()
@@ -624,6 +646,14 @@ export class CalendarSettingTab extends PluginSettingTab {
             errorCallout.createSpan({ text: `Last sync error: ${sanitizeSyncUiError(status.lastError)}` });
         }
 
+        if (sync.accountId && this.plugin.syncCredentialPersistence === 'session-only') {
+            const persistenceNotice = syncContainer.createDiv('calendar-settings-callout is-error');
+            setIcon(persistenceNotice.createSpan(), 'alert-triangle');
+            persistenceNotice.createSpan({
+                text: 'Obsidian SecretStorage is unavailable. This connection lasts only until Obsidian closes; use an Obsidian version that supports SecretStorage to keep it connected after restart.',
+            });
+        }
+
         const conflicts = syncContainer.createDiv('sync-conflict-settings');
         conflicts.createEl('h3', { text: 'Conflicts' });
         const conflictBody = conflicts.createDiv('sync-conflict-list');
@@ -637,6 +667,16 @@ export class CalendarSettingTab extends PluginSettingTab {
         } catch (error) {
             new Notice(`Sync settings were not saved: ${sanitizeSyncUiError(error)}`);
         }
+    }
+
+    private getConnectionLabel(): string {
+        return syncConnectionLabel(
+            this.plugin.settings.sync,
+            Boolean(this.plugin.syncLifecycle?.isStarted),
+            this.plugin.syncAuthenticationAvailable,
+            this.plugin.syncAuthenticationErrorCode,
+            this.plugin.syncCredentialPersistence,
+        );
     }
 
     private async populateCalendars(dropdown: { addOption(value: string, label: string): unknown; setValue(value: string): unknown }): Promise<void> {
@@ -659,12 +699,12 @@ export class CalendarSettingTab extends PluginSettingTab {
                 ? this.syncActions.syncNow()
                 : this.plugin.syncLifecycle?.syncNow('manual');
             if (run === undefined) {
-                connectionState.setText(syncConnectionLabel(this.plugin.settings.sync, Boolean(this.plugin.syncLifecycle?.isStarted)));
+                connectionState.setText(this.getConnectionLabel());
                 new Notice('Calendar sync is not running');
                 return;
             }
             const result = await run;
-            connectionState.setText(syncConnectionLabel(this.plugin.settings.sync, Boolean(this.plugin.syncLifecycle?.isStarted)));
+            connectionState.setText(this.getConnectionLabel());
             new Notice(result === undefined ? 'Calendar sync is not running' : syncRunNotice(result));
         } catch (error) {
             new Notice(`Sync could not start: ${sanitizeSyncUiError(error)}`);
@@ -678,11 +718,11 @@ export class CalendarSettingTab extends PluginSettingTab {
         }
         try {
             await this.syncActions.connect();
-            connectionState.setText(syncConnectionLabel(this.plugin.settings.sync, Boolean(this.plugin.syncLifecycle?.isStarted)));
+            connectionState.setText(this.getConnectionLabel());
             new Notice('Calendar account connected');
             this.display();
         } catch (error) {
-            console.error('[Calendar Sync] Connect failed:', error);
+            console.warn('[Calendar Sync] Connect failed:', sanitizeSyncUiError(error));
             new Notice(`Connect failed: ${sanitizeSyncUiError(error)}`);
         }
     }
@@ -694,8 +734,9 @@ export class CalendarSettingTab extends PluginSettingTab {
         }
         try {
             await this.syncActions.reconnect();
-            connectionState.setText(syncConnectionLabel(this.plugin.settings.sync, Boolean(this.plugin.syncLifecycle?.isStarted)));
+            connectionState.setText(this.getConnectionLabel());
             new Notice('Calendar account reconnected');
+            this.display();
         } catch (error) {
             new Notice(`Reconnect failed: ${sanitizeSyncUiError(error)}`);
         }

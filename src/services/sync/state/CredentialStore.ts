@@ -39,6 +39,24 @@ export interface CredentialStore {
 	remove(provider: CredentialProviderId, accountId: string): Promise<void>;
 }
 
+/** Named secret storage for OAuth client credentials and similar values. */
+export interface SecretValueStore {
+	readonly persistence: CredentialPersistence;
+	get(key: string): Promise<string | null>;
+	set(key: string, value: string): Promise<void>;
+	remove(key: string): Promise<void>;
+}
+
+/** Safe-to-display error for a host SecretStorage operation that did not persist. */
+export class CredentialStoreError extends Error {
+	readonly code = 'credential-storage-failed';
+
+	constructor(operation: 'read' | 'write' | 'remove') {
+		super(`Obsidian could not ${operation} the saved Google credential. Reconnect after checking Obsidian's secret storage.`);
+		this.name = 'CredentialStoreError';
+	}
+}
+
 function isSecretStorageLike(value: unknown): value is SecretStorageLike {
 	if (!value || typeof value !== 'object') return false;
 	const candidate = value as SecretStorageLike;
@@ -92,7 +110,7 @@ function normalizeStoredSecret(value: unknown): RefreshCredential | null {
 	return typeof value === 'string' && value.length > 0 ? { refreshToken: value } : null;
 }
 
-/** In-memory fallback used when SecretStorage is unavailable on the host. */
+/** In-memory store used only when the host does not expose SecretStorage. */
 export class SessionCredentialStore implements CredentialStore {
 	readonly persistence: CredentialPersistence = 'session-only';
 
@@ -125,12 +143,7 @@ export class SessionCredentialStore implements CredentialStore {
 /** Persistent implementation backed by the feature-detected host store. */
 export class SecretStorageCredentialStore implements CredentialStore {
 	private readonly secretStorage: RequiredSecretStorageLike;
-	private readonly sessionFallback = new SessionCredentialStore();
-	private usingSessionFallback = false;
-
-	get persistence(): CredentialPersistence {
-		return this.usingSessionFallback ? 'session-only' : 'secure';
-	}
+	readonly persistence: CredentialPersistence = 'secure';
 
 	constructor(source: SecretStorageLike | SecretStorageAppLike) {
 		const storage = getSecretStorage(source);
@@ -139,13 +152,11 @@ export class SecretStorageCredentialStore implements CredentialStore {
 	}
 
 	async get(provider: CredentialProviderId, accountId: string): Promise<RefreshCredential | null> {
-		if (this.usingSessionFallback) return this.sessionFallback.get(provider, accountId);
 		try {
 			const value = await this.secretStorage.getSecret(credentialSecretId(provider, accountId));
 			return normalizeStoredSecret(value);
 		} catch (_error) {
-			this.usingSessionFallback = true;
-			return this.sessionFallback.get(provider, accountId);
+			throw new CredentialStoreError('read');
 		}
 	}
 
@@ -155,55 +166,130 @@ export class SecretStorageCredentialStore implements CredentialStore {
 		credential: RefreshCredential | string,
 	): Promise<void> {
 		const normalized = normalizeCredential(credential);
-		if (this.usingSessionFallback) {
-			await this.sessionFallback.set(provider, accountId, normalized);
-			return;
-		}
+		const id = credentialSecretId(provider, accountId);
 		try {
-			await this.secretStorage.setSecret(credentialSecretId(provider, accountId), normalized.refreshToken);
+			await this.secretStorage.setSecret(id, normalized.refreshToken);
+			// SecretStorage is synchronous in Obsidian's public API. Read back the
+			// value so a host implementation that silently fails cannot report a
+			// successful connection that will disappear on restart.
+			const saved = await this.secretStorage.getSecret(id);
+			if (saved !== normalized.refreshToken) throw new CredentialStoreError('write');
 		} catch (_error) {
-			this.usingSessionFallback = true;
-			await this.sessionFallback.set(provider, accountId, normalized);
+			if (_error instanceof CredentialStoreError) throw _error;
+			throw new CredentialStoreError('write');
 		}
 	}
 
 	async remove(provider: CredentialProviderId, accountId: string): Promise<void> {
-		if (this.usingSessionFallback) {
-			await this.sessionFallback.remove(provider, accountId);
-			return;
-		}
 		const id = credentialSecretId(provider, accountId);
 		try {
 			if (typeof this.secretStorage.deleteSecret === 'function') {
 				await this.secretStorage.deleteSecret(id);
-				return;
-			}
-			if (typeof this.secretStorage.removeSecret === 'function') {
+			} else if (typeof this.secretStorage.removeSecret === 'function') {
 				await this.secretStorage.removeSecret(id);
-				return;
-			}
-			if (typeof this.secretStorage.clearSecret === 'function') {
+			} else if (typeof this.secretStorage.clearSecret === 'function') {
 				await this.secretStorage.clearSecret(id);
-				return;
+			} else {
+				// Older SecretStorage implementations expose only get/set. Overwrite
+				// with an empty value; no plaintext credential remains retrievable.
+				await this.secretStorage.setSecret(id, '');
 			}
-			// Older SecretStorage implementations expose only get/set.  Overwrite
-			// with an empty value; no plaintext credential remains retrievable.
-			await this.secretStorage.setSecret(id, '');
+			const remaining = await this.secretStorage.getSecret(id);
+			if (typeof remaining === 'string' && remaining.length > 0) throw new CredentialStoreError('remove');
 		} catch (_error) {
-			this.usingSessionFallback = true;
-			await this.sessionFallback.remove(provider, accountId);
+			if (_error instanceof CredentialStoreError) throw _error;
+			throw new CredentialStoreError('remove');
+		}
+	}
+}
+
+/** Session-only fallback for named secrets when the host has no SecretStorage. */
+export class SessionSecretValueStore implements SecretValueStore {
+	readonly persistence: CredentialPersistence = 'session-only';
+	private readonly values = new Map<string, string>();
+
+	async get(key: string): Promise<string | null> {
+		return this.values.get(credentialSecretId('secret-value', key)) ?? null;
+	}
+
+	async set(key: string, value: string): Promise<void> {
+		if (!value) throw new TypeError('A non-empty secret value is required');
+		this.values.set(credentialSecretId('secret-value', key), value);
+	}
+
+	async remove(key: string): Promise<void> {
+		this.values.delete(credentialSecretId('secret-value', key));
+	}
+}
+
+/** Persistent named-secret implementation backed by Obsidian SecretStorage. */
+export class SecretStorageValueStore implements SecretValueStore {
+	readonly persistence: CredentialPersistence = 'secure';
+	private readonly secretStorage: RequiredSecretStorageLike;
+
+	constructor(source: SecretStorageLike | SecretStorageAppLike) {
+		const storage = getSecretStorage(source);
+		if (!storage) throw new TypeError('Obsidian SecretStorage is unavailable');
+		this.secretStorage = storage as RequiredSecretStorageLike;
+	}
+
+	async get(key: string): Promise<string | null> {
+		try {
+			const value = await this.secretStorage.getSecret(credentialSecretId('secret-value', key));
+			return typeof value === 'string' && value.length > 0 ? value : null;
+		} catch (_error) {
+			throw new CredentialStoreError('read');
+		}
+	}
+
+	async set(key: string, value: string): Promise<void> {
+		if (!value) throw new TypeError('A non-empty secret value is required');
+		const id = credentialSecretId('secret-value', key);
+		try {
+			await this.secretStorage.setSecret(id, value);
+			if (await this.secretStorage.getSecret(id) !== value) throw new CredentialStoreError('write');
+		} catch (_error) {
+			if (_error instanceof CredentialStoreError) throw _error;
+			throw new CredentialStoreError('write');
+		}
+	}
+
+	async remove(key: string): Promise<void> {
+		const id = credentialSecretId('secret-value', key);
+		try {
+			if (typeof this.secretStorage.deleteSecret === 'function') {
+				await this.secretStorage.deleteSecret(id);
+			} else if (typeof this.secretStorage.removeSecret === 'function') {
+				await this.secretStorage.removeSecret(id);
+			} else if (typeof this.secretStorage.clearSecret === 'function') {
+				await this.secretStorage.clearSecret(id);
+			} else {
+				await this.secretStorage.setSecret(id, '');
+			}
+			const remaining = await this.secretStorage.getSecret(id);
+			if (typeof remaining === 'string' && remaining.length > 0) throw new CredentialStoreError('remove');
+		} catch (_error) {
+			if (_error instanceof CredentialStoreError) throw _error;
+			throw new CredentialStoreError('remove');
 		}
 	}
 }
 
 /**
  * Select secure persistence when the host exposes a compatible API; otherwise
- * retain credentials only for the current process.  There is intentionally no
- * ordinary Plugin.saveData fallback.
+ * retain credentials only for the current process. SecretStorage failures are
+ * surfaced instead of silently falling back to memory. There is intentionally
+ * no ordinary Plugin.saveData fallback.
  */
 export function createCredentialStore(source?: unknown): CredentialStore {
 	const storage = getSecretStorage(source);
 	return storage ? new SecretStorageCredentialStore(storage) : new SessionCredentialStore();
+}
+
+/** Use SecretStorage when available; never put named secrets in plugin data. */
+export function createSecretValueStore(source?: unknown): SecretValueStore {
+	const storage = getSecretStorage(source);
+	return storage ? new SecretStorageValueStore(storage) : new SessionSecretValueStore();
 }
 
 /** Compatibility alias describing the feature-detected choice explicitly. */

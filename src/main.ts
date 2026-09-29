@@ -22,7 +22,9 @@ import {
     PluginDataStore,
     SyncStateStore,
     createCredentialStore,
+    createSecretValueStore,
     type CredentialStore,
+    type SecretValueStore,
     type SyncState,
 } from './services/sync/state';
 import {
@@ -34,6 +36,12 @@ import {
 import type { CalendarEvent, CalendarEventSnapshot } from './services/sync/model';
 import { sanitizeSyncUiError, type SyncUiActions, type SyncUiConflict } from './components/SyncUi';
 import { openSyncConflictModal } from './modals/SyncConflictModal';
+import {
+    createGoogleAuthenticatedRuntime,
+    extractLegacyGoogleClientSecret,
+    googleClientSecretKey,
+    migrateLegacyGoogleClientSecret,
+} from './services/sync/providers/google/GoogleRuntimeFactory';
 
 export default class ContinuousCalendarPlugin extends Plugin {
     settings: CalendarPluginSettings;
@@ -44,14 +52,24 @@ export default class ContinuousCalendarPlugin extends Plugin {
     syncLifecycle: SyncLifecycleCoordinator;
     syncRuntimeFactory?: SyncRuntimeFactory;
     syncUiActions: SyncUiActions;
+    syncAuthenticationAvailable = false;
+    syncAuthenticationErrorCode?: string;
 
     private pluginDataStore: PluginDataStore;
     private syncStateStore: SyncStateStore;
     private credentialStore: CredentialStore;
+    private clientSecretStore: SecretValueStore;
+    private temporaryLegacyClientSecret?: { clientId: string; secret: string };
     private layoutReady = false;
     private unsubscribeSyncState?: () => void;
     private calendarEventState?: SyncState;
     private calendarEventProjection?: readonly CalendarDisplayEvent[];
+
+    get syncCredentialPersistence(): CredentialStore['persistence'] {
+        return this.credentialStore?.persistence === 'secure' && this.clientSecretStore?.persistence === 'secure'
+            ? 'secure'
+            : 'session-only';
+    }
 
 
     async onload() {
@@ -74,19 +92,23 @@ export default class ContinuousCalendarPlugin extends Plugin {
 
         await this.setSyncRuntimeFactory(async (context) => {
             const sync = context.settings.sync;
-            if (sync.providerId !== 'google' || !sync.accountId || !sync.googleClientId || !sync.googleClientSecret) return undefined;
-
+            if (!sync.providerId || !sync.accountId) return undefined;
+            if (sync.providerId !== 'google') throw new Error('Only Google Calendar is currently supported for connection');
+            if (!sync.googleClientId) throw new Error('Configure a Google Client ID before reconnecting');
+            const clientId = sync.googleClientId;
+            const accountId = sync.accountId;
             const { createGoogleOAuthProvider, obsidianHttpTransport } = await import('./services/sync/providers/google/GoogleSyncRuntime');
             const { asGoogleCredentialStore } = await import('./services/sync/lifecycle/SyncLifecycleCoordinator');
             const { GoogleCalendarProvider } = await import('./services/sync/providers/google/GoogleCalendarProvider');
 
-            const provider = createGoogleOAuthProvider(sync.googleClientId, sync.googleClientSecret, asGoogleCredentialStore(context.credentialStore));
-            const result = await provider.refresh(sync.accountId, undefined);
-
-            return {
-                provider: new GoogleCalendarProvider({ transport: obsidianHttpTransport }),
-                session: result.session,
-            };
+            return createGoogleAuthenticatedRuntime({
+                clientId,
+                accountId,
+                secretStore: this.clientSecretStore,
+                credentialStore: asGoogleCredentialStore(context.credentialStore),
+                createOAuthProvider: createGoogleOAuthProvider,
+                createCalendarProvider: () => new GoogleCalendarProvider({ transport: obsidianHttpTransport }),
+            });
         });
 
         await this.configureSyncLifecycle(false);
@@ -351,6 +373,8 @@ export default class ContinuousCalendarPlugin extends Plugin {
         }
         let runtime;
         const sync = this.settings.sync;
+        this.syncAuthenticationAvailable = false;
+        this.syncAuthenticationErrorCode = undefined;
         const canConstructRuntime = Platform.isDesktopApp &&
             sync.providerId !== null &&
             sync.accountId !== null &&
@@ -367,9 +391,26 @@ export default class ContinuousCalendarPlugin extends Plugin {
                     isDesktop: true,
                     app: this.app,
                 });
+                if (runtime?.provider?.id === sync.providerId && runtime?.session?.accountId === sync.accountId) {
+                    this.syncAuthenticationAvailable = true;
+                    await this.syncStateStore.clearLastError();
+                } else if (sync.providerId && sync.accountId) {
+                    throw new Error('The saved calendar account could not create an authenticated sync session. Reconnect the account.');
+                }
             } catch (error) {
+                const code = error && typeof error === 'object' ? (error as { code?: unknown }).code : undefined;
+                this.syncAuthenticationErrorCode = typeof code === 'string' ? code : undefined;
                 await this.syncStateStore.setLastError(error);
             }
+        } else if (!sync.providerId || !sync.accountId) {
+            await this.syncStateStore.clearLastError();
+        } else if (Platform.isDesktopApp) {
+            this.syncAuthenticationErrorCode = 'google-runtime-unavailable';
+            await this.syncStateStore.setLastError(new Error(
+                this.syncRuntimeFactory
+                    ? 'Google authentication could not be initialized. Reconnect the account.'
+                    : 'Google authentication is not configured for this installation.',
+            ));
         }
         const service = resolveSyncRuntime(runtime, {
             settings: this.settings,
@@ -409,19 +450,40 @@ export default class ContinuousCalendarPlugin extends Plugin {
                 if (!this.syncRuntimeFactory) throw new Error('Google authentication is not configured for this installation');
                 const sync = this.settings.sync;
                 if (sync.providerId !== 'google') throw new Error('Only Google Calendar is currently supported for connection');
-                if (!sync.googleClientId || !sync.googleClientSecret) throw new Error('Please configure a Google Client ID and Client Secret in settings first');
-                
+                if (!sync.googleClientId) throw new Error('Please configure a Google Client ID in settings first');
+                const clientSecret = await this.getGoogleClientSecret(sync.googleClientId);
+                if (!clientSecret) throw new Error('Please save the Google Client Secret in settings first');
+
                 const { createGoogleOAuthProvider } = await import('./services/sync/providers/google/GoogleSyncRuntime');
                 const { asGoogleCredentialStore } = await import('./services/sync/lifecycle/SyncLifecycleCoordinator');
-                const provider = createGoogleOAuthProvider(sync.googleClientId, sync.googleClientSecret, asGoogleCredentialStore(this.credentialStore));
+                const provider = createGoogleOAuthProvider(sync.googleClientId, clientSecret, asGoogleCredentialStore(this.credentialStore));
                 
                 const result = await provider.authorize();
                 this.settings.sync.accountId = result.accountId;
                 await this.saveSettings();
+                if (!this.syncAuthenticationAvailable) {
+                    const error = this.syncStateStore.getState().lastError?.message;
+                    throw new Error(error ?? 'The Google account was authorized, but its sync session could not be restored.');
+                }
             },
             reconnect: async () => {
                 if (!this.syncRuntimeFactory) throw new Error('Google authentication is not configured for this installation');
-                await this.configureSyncLifecycle(true);
+                const sync = this.settings.sync;
+                if (sync.providerId !== 'google') throw new Error('Only Google Calendar is currently supported for connection');
+                if (!sync.googleClientId) throw new Error('Please configure a Google Client ID in settings first');
+                const clientSecret = await this.getGoogleClientSecret(sync.googleClientId);
+                if (!clientSecret) throw new Error('Please save the Google Client Secret in settings first');
+
+                const { createGoogleOAuthProvider } = await import('./services/sync/providers/google/GoogleSyncRuntime');
+                const { asGoogleCredentialStore } = await import('./services/sync/lifecycle/SyncLifecycleCoordinator');
+                const provider = createGoogleOAuthProvider(sync.googleClientId, clientSecret, asGoogleCredentialStore(this.credentialStore));
+                const result = await provider.reconnect(undefined, sync.accountId ?? undefined);
+                this.settings.sync.accountId = result.accountId;
+                await this.saveSettings();
+                if (!this.syncAuthenticationAvailable) {
+                    const error = this.syncStateStore.getState().lastError?.message;
+                    throw new Error(error ?? 'The Google account was authorized, but its sync session could not be restored.');
+                }
             },
             disconnect: async () => {
                 if (!this.syncStateStore.isLoaded) await this.syncStateStore.load();
@@ -465,7 +527,12 @@ export default class ContinuousCalendarPlugin extends Plugin {
                 });
             },
             getConflicts: conflicts,
-            getStatus: () => this.syncLifecycle?.service?.status,
+            getStatus: () => {
+                const status = this.syncLifecycle?.service?.status;
+                if (status) return status;
+                const lastError = this.syncStateStore.getState().lastError?.message;
+                return lastError ? { status: 'error', lastError } : undefined;
+            },
         };
     }
 
@@ -487,15 +554,59 @@ export default class ContinuousCalendarPlugin extends Plugin {
         }));
     }
     async loadSettings() {
+        const rawData = await this.loadData();
+        this.credentialStore = createCredentialStore(this.app);
+        this.clientSecretStore = createSecretValueStore(this.app);
+        this.temporaryLegacyClientSecret = extractLegacyGoogleClientSecret(rawData);
+        if (this.temporaryLegacyClientSecret) {
+            try {
+                await migrateLegacyGoogleClientSecret(rawData, this.clientSecretStore);
+                this.temporaryLegacyClientSecret = undefined;
+            } catch (error) {
+                new Notice(`A saved Google Client Secret could not be moved to SecretStorage. Re-enter it in settings. ${sanitizeSyncUiError(error)}`);
+            }
+        }
         this.pluginDataStore = new PluginDataStore({
             loadData: () => this.loadData(),
             saveData: data => this.saveData(data),
         }, { defaults: DEFAULT_SETTINGS });
         const loaded = await this.pluginDataStore.load();
         this.settings = loaded.settings;
+        this.settings.sync.googleClientSecret = null;
+        if (extractLegacyGoogleClientSecret(rawData)) await this.pluginDataStore.saveSettings(this.settings);
         this.syncStateStore = new SyncStateStore(this.pluginDataStore);
         this.calendarEventState = await this.syncStateStore.load();
-        this.credentialStore = createCredentialStore(this.app);
+    }
+
+    async saveGoogleClientSecret(value: string): Promise<void> {
+        const clientId = this.settings.sync.googleClientId?.trim();
+        const secret = value.trim();
+        if (!clientId) throw new Error('Configure a Google Client ID before saving its Client Secret');
+        if (!secret) throw new Error('Enter a Google Client Secret');
+        await this.clientSecretStore.set(googleClientSecretKey(clientId), secret);
+        this.temporaryLegacyClientSecret = undefined;
+        await this.saveSettings();
+    }
+
+    async clearGoogleClientSecret(): Promise<void> {
+        const clientId = this.settings.sync.googleClientId?.trim();
+        if (!clientId) return;
+        await this.clientSecretStore.remove(googleClientSecretKey(clientId));
+        this.temporaryLegacyClientSecret = undefined;
+        if (this.settings.sync.providerId && this.settings.sync.accountId) await this.configureSyncLifecycle(true);
+    }
+
+    private async getGoogleClientSecret(clientId: string): Promise<string | null> {
+        try {
+            const secret = await this.clientSecretStore.get(googleClientSecretKey(clientId));
+            if (secret) return secret;
+        } catch (error) {
+            if (this.temporaryLegacyClientSecret?.clientId === clientId) return this.temporaryLegacyClientSecret.secret;
+            throw error;
+        }
+        return this.temporaryLegacyClientSecret?.clientId === clientId
+            ? this.temporaryLegacyClientSecret.secret
+            : null;
     }
 
     async saveSettings() {

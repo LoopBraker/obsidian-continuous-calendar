@@ -88,6 +88,22 @@ describe('PluginDataStore', () => {
 		expect(result.syncState.cursors[cursorKey]).toEqual({ cursor: 'opaque-cursor' });
 	});
 
+	it('reloads data written after the first store load', async () => {
+		const persistence = new MemoryPersistence();
+		const longLivedStore = new PluginDataStore(persistence);
+		await longLivedStore.load();
+
+		const otherWriter = new PluginDataStore(persistence);
+		const loaded = await otherWriter.load();
+		const cursorKey = makeSyncStateKey('google', 'account-1', 'primary');
+		const updatedState = loaded.syncState;
+		updatedState.cursors[cursorKey] = { cursor: 'saved-after-initial-load' };
+		await otherWriter.saveSyncState(updatedState);
+
+		const reloaded = await longLivedStore.load();
+		expect(reloaded.syncState.cursors[cursorKey]).toEqual({ cursor: 'saved-after-initial-load' });
+	});
+
 	it('fails closed on corrupt state while preserving the prior raw value', async () => {
 		const raw = {
 			schemaVersion: PLUGIN_DATA_SCHEMA_VERSION,

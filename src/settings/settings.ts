@@ -48,6 +48,7 @@ export interface CalendarSyncSettings {
     syncMode: SyncMode;
     /** Explicitly user-supplied public Google Client ID for OAuth authentication. */
     googleClientId: string | null;
+    /** Legacy migration slot only; the client secret is kept in SecretStorage. */
     googleClientSecret: string | null;
 }
 

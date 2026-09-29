@@ -6,6 +6,7 @@ import type {
 	ProviderHttpTransport,
 } from '../../../../src/services/sync/providers/CalendarProvider';
 import { ProviderError } from '../../../../src/services/sync/providers/ProviderErrors';
+import { createCredentialStore } from '../../../../src/services/sync/state/CredentialStore';
 import {
 	GoogleOAuthProvider,
 	type GoogleCredentialStore,
@@ -70,7 +71,7 @@ function makeOAuth(options: {
 	transport: QueueTransport;
 	listener?: GoogleLoopbackListener;
 	openExternal?: (url: string) => void | Promise<void>;
-	credentials?: MemoryCredentials;
+	credentials?: GoogleCredentialStore;
 	timeoutMs?: number;
 	scope?: string;
 }) {
@@ -131,6 +132,7 @@ describe('GoogleOAuthProvider', () => {
 		expect(authorizationUrl.searchParams.get('code_challenge')).toBe('AQIDBA');
 		expect(authorizationUrl.searchParams.get('state')).toHaveLength(43);
 		expect(authorizationUrl.searchParams.get('access_type')).toBe('offline');
+		expect(authorizationUrl.searchParams.get('prompt')).toBe('consent');
 		expect(authorizationUrl.searchParams.get('scope')).toBe(REQUIRED_SCOPES);
 		expect(authorizationUrl.searchParams.get('login_hint')).toBe('person@example.com');
 
@@ -149,6 +151,48 @@ describe('GoogleOAuthProvider', () => {
 		expect(result.session.expiresAt).toBe('2026-09-20T13:00:00.000Z');
 		expect(credentials.setCalls).toEqual([['account-1', 'refresh-secret']]);
 		expect(harness.getCloseCount()).toBe(1);
+	});
+
+	it('refuses to finish a first connection without a stored refresh credential', async () => {
+		const credentials = new MemoryCredentials();
+		const harness = makeOAuth({
+			transport: new QueueTransport(tokenResponse({ refresh_token: undefined })),
+			credentials,
+		});
+
+		const error = await providerError(harness.provider.authorize());
+		expect(error).toMatchObject({ category: 'authentication', code: 'missing-refresh-token' });
+		expect(credentials.values.size).toBe(0);
+	});
+
+	it('refreshes from SecretStorage after recreating the credential store', async () => {
+		const persistedValues = new Map<string, string>();
+		const secretStorage = {
+			getSecret: (id: string) => persistedValues.get(id) ?? null,
+			setSecret: (id: string, value: string) => { persistedValues.set(id, value); },
+		};
+		const firstProcessStore = createCredentialStore({ secretStorage });
+		await firstProcessStore.set('google', 'account-1', 'persisted-refresh');
+
+		const restartedStore = createCredentialStore({ secretStorage });
+		const credentials: GoogleCredentialStore = {
+			async get(accountId) {
+				return (await restartedStore.get('google', accountId))?.refreshToken ?? null;
+			},
+			async set(accountId, refreshToken) {
+				await restartedStore.set('google', accountId, refreshToken);
+			},
+			async remove(accountId) {
+				await restartedStore.remove('google', accountId);
+			},
+		};
+		const transport = new QueueTransport(tokenResponse({ refresh_token: undefined }));
+		const { provider } = makeOAuth({ transport, credentials });
+		const refreshed = await provider.refresh('account-1');
+
+		expect(new URLSearchParams(transport.requests[0].body).get('refresh_token')).toBe('persisted-refresh');
+		expect(refreshed.session.accountId).toBe('account-1');
+		expect(await restartedStore.get('google', 'account-1')).toEqual({ refreshToken: 'persisted-refresh' });
 	});
 
 	it('discovers the account from the primary calendar when token fields omit identity', async () => {

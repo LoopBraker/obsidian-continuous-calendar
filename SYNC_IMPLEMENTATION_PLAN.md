@@ -248,6 +248,11 @@ src/services/sync/
 
 ## Current baseline evidence
 
+Recorded on 2026-09-29 after the restart-authentication fix:
+- Live inspection of the Playground vault found a saved refresh credential but no Google Client Secret in restored settings; startup therefore created no sync service while settings still showed the saved account as connected.
+- Google Client Secrets now persist in Obsidian SecretStorage and are restored before session refresh. Settings expose missing credentials and offer an explicit secure Save action; the saved account can recover without disconnecting once the secret is entered again.
+- `npm test`: 19 test files, 136 tests passed. `npm run build` and `git diff --check` pass. Changed-file lint has zero errors and five existing warnings. A live Obsidian restart check after one-time Client Secret re-entry remains pending.
+
 Recorded on 2026-09-29 after the follow-up Google sync fix:
 - Full Google event pulls now establish an unbounded incremental cursor; the configured horizon is applied when caching events. Existing bounded-query cursors trigger one automatic full resync, without disconnecting the account.
 - Manual sync reports offline and error results in the settings notice. Live Google verification is still required to confirm the reported repeat-sync failure is resolved.
