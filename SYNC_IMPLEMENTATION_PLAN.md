@@ -138,42 +138,42 @@ Contract rules:
 
 ```text
 src/services/sync/
-  model/
-    CalendarEvent.ts
-    CalendarEventValidation.ts
-    CalendarEventHash.ts
-    CalendarEventMerge.ts
-  notes/
-    FrontmatterEventCodec.ts
-    CalendarEventRepository.ts
-    CalendarEventIndex.ts
-  state/
-    PluginDataStore.ts
-    SyncStateStore.ts
-    CredentialStore.ts
-    redaction.ts
-  engine/
-    SyncService.ts
-    SyncQueue.ts
-    ConflictResolver.ts
-  providers/
-    CalendarProvider.ts
-    ProviderErrors.ts
-    FakeCalendarProvider.ts
-    google/
-      GoogleOAuthProvider.ts
-      GoogleDesktopOAuth.ts
-      GoogleCalendarProvider.ts
-      GoogleEventMapper.ts
-      GoogleSyncRuntime.ts
-    microsoft/                 # Later phase
+  model/                       # Pure canonical event domain (agnostic to Google/Vault)
+    CalendarEvent.ts           # Types and interfaces for the canonical event
+    CalendarEventValidation.ts # Strict runtime type checking and fallback logic for dates
+    CalendarEventHash.ts       # Deterministic SHA-256 hashing for event snapshots
+    CalendarEventMerge.ts      # Three-way merge logic (local vs remote vs last-sync-snapshot)
+  notes/                       # Translation between canonical models and Obsidian Markdown notes
+    FrontmatterEventCodec.ts   # Safely reads/writes frontmatter properties (date vs calendar_start)
+    CalendarEventRepository.ts # CRUD operations against the vault using safe Obsidian APIs
+    CalendarEventIndex.ts      # Read-model projection indexing events by UID, path, and date intervals
+  state/                       # Safe, encrypted (for credentials) and transactional persistence
+    PluginDataStore.ts         # Stores plugin settings, last-sync-tokens, and snapshots for diffing
+    SyncStateStore.ts          # Persists mappings, cursors, tombstones, and sanitized errors
+    CredentialStore.ts         # Safely stores OAuth refresh tokens using Obsidian SecretStorage
+    redaction.ts               # Scrubs sensitive tokens/auth headers from logs and diagnostics
+  engine/                      # The brain of the provider-neutral synchronization loops
+    SyncService.ts             # Orchestrates diffing local vs remote and executing creates/updates/deletes
+    SyncQueue.ts               # Debounces, limits, and queues asynchronous sync tasks
+    ConflictResolver.ts        # Helpers for determining conflict candidates
+  providers/                   # The interface boundaries to external servers
+    CalendarProvider.ts        # Contract that any calendar sync provider (Google, MS) must fulfill
+    ProviderErrors.ts          # Structured error types (e.g., 410 Gone, 401 Unauthorized)
+    FakeCalendarProvider.ts    # Deterministic in-memory provider for unit tests
+    google/                    # Google Calendar specific implementations
+      GoogleOAuthProvider.ts   # PKCE auth, token exchange, refresh logic
+      GoogleDesktopOAuth.ts    # Local loopback server (127.0.0.1:0) and browser launcher for Desktop auth
+      GoogleCalendarProvider.ts# Paginates lists and executes targeted PATCH/POST requests to Google API
+      GoogleEventMapper.ts     # Maps raw Google JSON properties into canonical model and vice versa
+      GoogleSyncRuntime.ts     # Wires Obsidian's HTTP transport (requestUrl) to Google services
+    microsoft/                 # Later phase (Deferred)
       MicrosoftOAuthProvider.ts
       MicrosoftCalendarProvider.ts
       MicrosoftEventMapper.ts
-  lifecycle/
-    SyncLifecycleCoordinator.ts
+  lifecycle/                   # Binds the sync engine to the Obsidian Plugin lifecycle
+    SyncLifecycleCoordinator.ts# Manages vault listeners, background polling intervals, and startup state
   util/
-    date.ts
+    date.ts                    # Date math (inclusive/exclusive translations for Google all-day events)
 ```
 
 ## Task ledger
