@@ -42,6 +42,7 @@ import {
     googleClientSecretKey,
     migrateLegacyGoogleClientSecret,
 } from './services/sync/providers/google/GoogleRuntimeFactory';
+import { registerSyncEventBanner } from './editor/SyncEventBannerInjection';
 
 export default class ContinuousCalendarPlugin extends Plugin {
     settings: CalendarPluginSettings;
@@ -62,6 +63,7 @@ export default class ContinuousCalendarPlugin extends Plugin {
     private temporaryLegacyClientSecret?: { clientId: string; secret: string };
     private layoutReady = false;
     private unsubscribeSyncState?: () => void;
+    private unregisterSyncBanner?: () => void;
     private calendarEventState?: SyncState;
     private calendarEventProjection?: readonly CalendarDisplayEvent[];
 
@@ -84,6 +86,7 @@ export default class ContinuousCalendarPlugin extends Plugin {
         this.calendarIndex.setSettings(this.settings);
         this.calendarIndex.setCalendarEventIndex(this.calendarEventRepository.index);
         registerCalendarEventSource(this.app, () => this.getCalendarEvents());
+        this.unregisterSyncBanner = registerSyncEventBanner(this);
         this.unsubscribeSyncState = this.syncStateStore.subscribe(state => {
             this.calendarEventState = state;
             this.calendarEventProjection = undefined;
@@ -226,6 +229,7 @@ export default class ContinuousCalendarPlugin extends Plugin {
     }
 
     onunload() {
+        this.unregisterSyncBanner?.();
         void this.syncLifecycle?.stop();
         this.unsubscribeSyncState?.();
         unregisterCalendarEventSource(this.app);

@@ -1866,3 +1866,163 @@
     color: var(--text-muted);
     font-weight: var(--font-semibold, 600);
 }
+
+/* ==========================================================================
+   Google Calendar Synced Event Banner
+   ========================================================================== */
+
+.sync-event-banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 8px 12px;
+    margin: 8px 0 16px 0;
+    border-radius: var(--radius-m, 6px);
+    background-color: var(--background-secondary);
+    border: 1px solid var(--background-modifier-border);
+    color: var(--text-normal);
+    box-sizing: border-box;
+    width: 100%;
+    transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.sync-event-banner.is-clickable {
+    cursor: pointer;
+}
+
+.sync-event-banner.is-clickable:hover {
+    background-color: var(--background-modifier-hover);
+    border-color: var(--background-modifier-border-hover, var(--text-accent));
+}
+
+.sync-event-banner-leading {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+    flex: 1;
+}
+
+.sync-event-banner-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    color: var(--text-accent);
+    width: 22px;
+    height: 22px;
+}
+
+.sync-event-banner-icon svg {
+    width: 20px;
+    height: 20px;
+}
+
+.sync-event-banner-content {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+    flex: 1;
+}
+
+.sync-event-banner-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+}
+
+.sync-event-banner-title {
+    font-size: var(--font-ui-medium, 14px);
+    font-weight: var(--font-semibold, 600);
+    color: var(--text-normal);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
+}
+
+.sync-event-banner-meta {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 10px;
+    color: var(--text-muted);
+    font-size: var(--font-ui-smaller, 12px);
+    line-height: var(--line-height-normal, 1.4);
+}
+
+.sync-event-banner-time,
+.sync-event-banner-location {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.sync-event-banner-meta-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 0.7;
+    width: 12px;
+    height: 12px;
+}
+
+.sync-event-banner-meta-icon svg {
+    width: 12px;
+    height: 12px;
+}
+
+.sync-event-banner-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+}
+
+.sync-event-banner-action-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px 8px;
+    font-size: var(--font-ui-smaller, 12px);
+    line-height: 1.2;
+    border-radius: var(--radius-s, 4px);
+    background: transparent;
+    border: 1px solid var(--background-modifier-border);
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.sync-event-banner-action-btn:hover {
+    color: var(--text-normal);
+    background-color: var(--background-modifier-hover);
+    border-color: var(--text-accent);
+}
+
+.sync-event-banner-action-btn svg {
+    width: 13px;
+    height: 13px;
+}
+
+.sync-event-banner.sync-banner-status-conflict {
+    border-color: color-mix(in srgb, var(--text-warning) 40%, var(--background-modifier-border));
+    background-color: color-mix(in srgb, var(--text-warning) 5%, var(--background-secondary));
+}
+
+.sync-event-banner.sync-banner-status-error {
+    border-color: color-mix(in srgb, var(--text-error) 40%, var(--background-modifier-border));
+    background-color: color-mix(in srgb, var(--text-error) 5%, var(--background-secondary));
+}
+
+.sync-event-banner.sync-banner-status-remote_deleted {
+    border-color: color-mix(in srgb, var(--text-error) 30%, var(--background-modifier-border));
+    opacity: 0.85;
+}
+

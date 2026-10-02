@@ -240,6 +240,13 @@ src/services/sync/
 - [x] Automated migration, CRUD, link, deletion, mode, and restart checks; root diff review.
 - [ ] Verify calendar rendering and actions in native Obsidian when available.
 
+### Workstream L — TaskNotes-Style Banner Injection for Synced Notes
+- Status: `TODO`
+- [ ] Implement dual-engine direct DOM injection for notes synced with Google Calendar.
+- [ ] Provide lightweight, vanilla DOM view for banner rendering.
+- [x] Ensure explicit "Edit event" interaction inside `DayDetailView.tsx` correctly triggers `SyncEventModal`.
+- [ ] Review `BANNER_IMPLEMENTATION_DETAILS.md` for architectural nuances, CodeMirror integration, and Reading Mode workarounds.
+
 ### Workstream J — Microsoft adapter
 - Status: `TODO — deferred until Google is accepted`.
 

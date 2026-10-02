@@ -6,6 +6,7 @@ import { RRule } from 'rrule';
 import { IndexService, type CalendarDisplayEvent, type RangeNote, type TaskNote } from './services/IndexService';
 import type { SyncStatus } from './services/sync/model';
 import { formatCalendarEventTime, SyncStatusBadge } from './components/SyncUi';
+import { openSyncEventModal } from './modals/SyncEventModal';
 
 interface DayDetailViewProps {
     dateKey: string;
@@ -241,6 +242,29 @@ export const DayDetailView = ({ dateKey, index, app, settings, onClose, onPrev, 
     const filteredRanges = ranges.filter(r => !displayTaskPaths.has(r.path));
     const syncEventPaths = new Set(syncEvents.flatMap(event => event.notePath ? [event.notePath] : []));
     const filteredNotes = notes.filter(n => !displayTaskPaths.has(n.path) && !syncEventPaths.has(n.path));
+
+    const handleEditSyncEvent = (syncEvent: CalendarDisplayEvent) => {
+        if (onEditSyncEvent) {
+            onEditSyncEvent(syncEvent.key);
+            return;
+        }
+
+        const sync = syncSettings;
+        const timezone = syncEvent.event.timezone || sync?.timezone || 'UTC';
+        openSyncEventModal(app, {
+            initialEvent: syncEvent.event,
+            timezone,
+            onSubmit: async (event) => {
+                const plugin = (app as any).plugins?.getPlugin?.('obsidian-Continuous-calendar')
+                    || (app as any).plugins?.plugins?.['obsidian-Continuous-calendar']
+                    || (app as any).plugins?.getPlugin?.('obsidian-continuous-calendar')
+                    || (app as any).plugins?.plugins?.['obsidian-continuous-calendar'];
+                if (plugin?.updateCalendarEvent) {
+                    await plugin.updateCalendarEvent(syncEvent.key, event);
+                }
+            },
+        });
+    };
 
     return (
         <div ref={containerRef} className="day-detail-view">
@@ -526,10 +550,10 @@ export const DayDetailView = ({ dateKey, index, app, settings, onClose, onPrev, 
                                     <div className="sync-event-time" title="Canonical event time">
                                         {formatCalendarEventTime(syncEvent.event)}
                                     </div>
-                                    {(canWriteSyncEvents && (onEditSyncEvent || onDeleteSyncEvent) || onCreateEventNote || onOpenEventNote) && (
+                                    {(canWriteSyncEvents || onCreateEventNote || onOpenEventNote || onDeleteSyncEvent) && (
                                         <div className="sync-note-actions">
-                                            {canWriteSyncEvents && syncEvent.status !== 'unsupported' && onEditSyncEvent && (
-                                                <button className="sync-note-action" onClick={() => onEditSyncEvent(syncEvent.key)} aria-label={`Edit ${syncEvent.event.title || 'Untitled event'}`}>
+                                            {canWriteSyncEvents && syncEvent.status !== 'unsupported' && (
+                                                <button className="sync-note-action" onClick={() => handleEditSyncEvent(syncEvent)} aria-label={`Edit ${syncEvent.event.title || 'Untitled event'}`}>
                                                     Edit
                                                 </button>
                                             )}
