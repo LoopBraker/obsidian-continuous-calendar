@@ -203,9 +203,36 @@ describe('GoogleCalendarProvider', () => {
 		expect(request.headers?.Authorization).toBe('Bearer secret-access-token');
 		const body = JSON.parse(request.body as string) as Record<string, unknown>;
 		expect(body).toMatchObject({ summary: 'Review', extendedProperties: { private: { calendar_uid: 'local-1' } } });
+		expect(body.recurrence).toEqual([]);
 		expect(body).not.toHaveProperty('attendees');
 		expect(body).not.toHaveProperty('reminders');
 		expect(updated).toMatchObject({ remoteId: 'remote-1', version: '"v2"', calendarUid: 'local-1' });
+	});
+
+	it('includes the recurrence timezone on an all-day recurring POST', async () => {
+		const series: CalendarEvent = {
+			...event,
+			start: '2026-09-22',
+			end: '2026-09-23',
+			allDay: true,
+			recurrence: { frequency: 'daily', interval: 1, count: 2 },
+		};
+		const responseResource = remoteResource({
+			start: { date: series.start, timeZone: series.timezone },
+			end: { date: series.end, timeZone: series.timezone },
+			recurrence: ['RRULE:FREQ=DAILY;COUNT=2'],
+		});
+		const transport = new QueueTransport(response(200, responseResource));
+		const provider = new GoogleCalendarProvider({ transport });
+		await provider.createEvent(session, 'primary', series);
+		const body = JSON.parse(transport.requests[0].body as string) as {
+			start: Record<string, unknown>;
+			end: Record<string, unknown>;
+			recurrence: readonly string[];
+		};
+		expect(body.start).toEqual({ date: series.start, timeZone: series.timezone });
+		expect(body.end).toEqual({ date: series.end, timeZone: series.timezone });
+		expect(body.recurrence).toEqual(['RRULE:FREQ=DAILY;COUNT=2']);
 	});
 
 	it('refuses to confirm a write if Google omits the echoed private UID', async () => {
@@ -216,14 +243,16 @@ describe('GoogleCalendarProvider', () => {
 		expect(error).toMatchObject({ category: 'permanent', code: 'missing-calendar-uid' });
 	});
 
-	it('maps recurrence without modifying it and sends conditional deletes', async () => {
+	it('maps supported recurrence and sends conditional deletes', async () => {
 		const pullTransport = new QueueTransport(response(200, {
 			items: [remoteResource({ recurrence: ['RRULE:FREQ=DAILY'] })],
 			nextSyncToken: 'next',
 		}));
 		const provider = new GoogleCalendarProvider({ transport: pullTransport });
 		const page = await provider.pullChanges({ session, calendarId: 'primary', window });
-		expect(page.changes[0]).toMatchObject({ type: 'upsert', value: { recurrence: 'unsupported' } });
+		expect(page.changes[0]).toMatchObject({ type: 'upsert', value: {
+			recurrenceStatus: 'supported', event: { recurrence: { frequency: 'daily', interval: 1 } },
+		} });
 
 		const deleteTransport = new QueueTransport(response(204));
 		const deleteProvider = new GoogleCalendarProvider({ transport: deleteTransport });

@@ -65,6 +65,13 @@ export interface RemoteCalendarEvent {
 	readonly calendarUid?: string;
 	readonly version?: string;
 	readonly remoteUpdatedAt?: string;
+	readonly recurrenceStatus: 'none' | 'supported' | 'unsupported';
+	/** Exact Google recurrence lines retained for unsupported rules. */
+	readonly recurrenceRaw?: readonly string[];
+	/** Present on a Google exception instance; its master is guarded as unsupported. */
+	readonly recurrenceMasterId?: string;
+	readonly recurrenceHasExceptions?: boolean;
+	/** Compatibility field for consumers persisted before typed recurrence support. */
 	readonly recurrence: 'none' | 'unsupported';
 }
 
@@ -75,6 +82,12 @@ export type RemoteChange =
 		readonly providerId: ProviderId;
 		readonly calendarId: string;
 		readonly remoteId: string;
+	}
+	| {
+		readonly type: 'series-unsupported';
+		readonly providerId: ProviderId;
+		readonly calendarId: string;
+		readonly masterRemoteId: string;
 	};
 
 export interface ChangePage {

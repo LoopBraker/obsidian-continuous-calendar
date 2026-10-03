@@ -129,6 +129,17 @@ describe('FrontmatterEventCodec', () => {
 		expect(decoded.note?.body).toBe('body bytes');
 	});
 
+	it('persists and decodes the typed recurrence frontmatter value', () => {
+		const recurring = {
+			...event,
+		recurrence: { frequency: 'weekly' as const, interval: 2, weekdays: [1, 3], until: '2026-11-30' },
+		};
+		const decoded = decodeCalendarEventNote(encodeCalendarEventNote(recurring, { body: 'keep body' }));
+		expect(decoded.note?.event).toEqual(recurring);
+		expect(decoded.note?.frontmatter.calendar_recurrence).toEqual(recurring.recurrence);
+		expect(decoded.note?.body).toBe('keep body');
+	});
+
 	it('preserves literal block descriptions, indentation, and YAML chomping indicators', () => {
 		const base = (indicator: string, lines: string) => decodeCalendarEventNote(
 			`---\ncalendar_event: true\ncalendar_uid: event-1\ncalendar_title: Project review\ndateStart: 2026-09-22T09:00:00-05:00\ndateEnd: 2026-09-22T10:00:00-05:00\ncalendar_all_day: false\ncalendar_timezone: America/Bogota\ncalendar_description: ${indicator}\n${lines}\ncalendar_location: Room 1\n---\nbody`,

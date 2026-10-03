@@ -57,6 +57,16 @@ describe('calendar event diffs and three-way merge', () => {
 		expect(result.event).toEqual(changed);
 	});
 
+	it('compares normalized recurrence objects structurally', () => {
+		const recurrence = { frequency: 'weekly' as const, interval: 2, weekdays: [1, 3], count: 8 };
+		const equivalent = { frequency: 'weekly' as const, interval: 2, weekdays: [3, 1], count: 8 };
+		expect(diffCalendarEventFields({ ...base, recurrence }, { ...base, recurrence: equivalent }).hasChanges).toBe(false);
+		const result = mergeCalendarEvents(base, { ...base, recurrence }, { ...base, recurrence: equivalent });
+		expect(result.status).toBe('merged');
+		expect(result.conflicts).toEqual([]);
+		expect(result.event?.recurrence).toEqual({ frequency: 'weekly', interval: 2, weekdays: [1, 3], count: 8 });
+	});
+
 	it('returns a conflict for divergent edits to the same field', () => {
 		const local = { ...base, title: 'Architecture review' };
 		const remote = { ...base, title: 'Release review' };

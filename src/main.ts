@@ -257,7 +257,7 @@ export default class ContinuousCalendarPlugin extends Plugin {
             const notePath = candidatePath && this.app.vault.getAbstractFileByPath(candidatePath) instanceof TFile
                 ? candidatePath
                 : undefined;
-            return [{ key, event: record.event, status: record.status, notePath }];
+            return [{ key, event: record.event, status: record.status, recurrenceStatus: record.recurrenceStatus ?? (record.recurrence === 'unsupported' ? 'unsupported' : record.event.recurrence ? 'supported' : 'none'), notePath }];
         });
         return this.calendarEventProjection;
     }

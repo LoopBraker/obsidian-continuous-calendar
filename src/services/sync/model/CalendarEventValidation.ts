@@ -5,6 +5,13 @@ import type {
 	ValidationResult,
 } from './CalendarEvent';
 import { inclusiveToExclusive } from '../util/date';
+import {
+	civilDateInTimezone,
+	EventRecurrenceValidationError,
+	isAbsentEventRecurrence,
+	normalizeEventRecurrence,
+} from './EventRecurrence';
+import type { EventRecurrence } from './CalendarEvent';
 
 export type CalendarEventValidationErrorCode =
 	| 'missing-field'
@@ -17,7 +24,8 @@ export type CalendarEventValidationErrorCode =
 	| 'invalid-timezone'
 	| 'invalid-duration'
 	| 'all-day-end-not-exclusive'
-	| 'unsupported-recurrence';
+	| 'unsupported-recurrence'
+	| 'invalid-recurrence';
 
 export type CalendarEventValidationField =
 	| CalendarEventField
@@ -207,18 +215,6 @@ function optionalString(
 	return { value };
 }
 
-function recurrenceIsAbsent(value: unknown): boolean {
-	return (
-		value === MISSING ||
-		value === undefined ||
-		value === null ||
-		value === false ||
-		value === '' ||
-		value === 'none' ||
-		(typeof value === 'object' && value !== null && (value as { type?: unknown }).type === 'none')
-	);
-}
-
 function validationFailure(
 	errors: readonly CalendarEventValidationError[],
 ): CalendarEventValidationResult {
@@ -369,21 +365,29 @@ export function validateCalendarEvent(input: unknown): CalendarEventValidationRe
 		normalizedTimezone = timezone;
 	}
 
-	const recurrence = readFirst(input, 'recurrence', 'recurrenceRule', 'calendar_recurrence');
-	if (!recurrenceIsAbsent(recurrence)) {
+	const recurrenceInput = readFirst(input, 'recurrence', 'recurrenceRule', 'calendar_recurrence');
+	let normalizedRecurrence: EventRecurrence | undefined;
+	if (recurrenceInput !== MISSING && !isAbsentEventRecurrence(recurrenceInput)) {
 		const field = Object.prototype.hasOwnProperty.call(input, 'recurrenceRule')
 			? 'recurrenceRule'
 			: Object.prototype.hasOwnProperty.call(input, 'calendar_recurrence')
 				? 'calendar_recurrence'
 				: 'recurrence';
-		errors.push(
-			makeError(
-				'unsupported-recurrence',
-				field,
-				'Recurring events are not supported by the canonical sync model',
-				recurrence,
-			),
-		);
+		try {
+			normalizedRecurrence = normalizeEventRecurrence(recurrenceInput);
+			if (normalizedRecurrence?.until && normalizedStart !== undefined && typeof allDay === 'boolean') {
+				const startDate = allDay
+					? normalizedStart
+					: normalizedTimezone ? civilDateInTimezone(normalizedStart, normalizedTimezone) : undefined;
+				if (startDate && normalizedRecurrence.until < startDate) {
+					throw new EventRecurrenceValidationError('recurrence until cannot be earlier than its start date');
+				}
+			}
+		} catch (error) {
+			const code = error instanceof EventRecurrenceValidationError ? error.code : 'invalid-recurrence';
+			const message = error instanceof Error ? error.message : 'recurrence is invalid';
+			errors.push(makeError(code, field, message, recurrenceInput));
+		}
 	}
 
 	if (normalizedStart !== undefined && normalizedEnd !== undefined) {
@@ -472,6 +476,7 @@ export function validateCalendarEvent(input: unknown): CalendarEventValidationRe
 		timezone: normalizedTimezone as string,
 		location: locationResult.value,
 		description: descriptionResult.value,
+		...(normalizedRecurrence === undefined ? {} : { recurrence: normalizedRecurrence }),
 	};
 	return { ok: true, valid: true, success: true, value: event, errors: [] };
 }

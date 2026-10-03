@@ -148,6 +148,32 @@ describe('calendar event validation and normalization', () => {
 		expect(isValidIanaTimezone('Not/A-Timezone')).toBe(false);
 	});
 
+	it('normalizes supported recurrence and validates its bounds', () => {
+		const valid = validateCalendarEvent({
+			...timedEvent,
+		recurrence: { frequency: 'weekly', interval: 2, weekdays: [3, 1], count: 6 },
+		});
+		expect(valid.ok).toBe(true);
+		if (valid.ok) expect(valid.value.recurrence).toEqual({
+			frequency: 'weekly', interval: 2, weekdays: [1, 3], count: 6,
+		});
+
+		const invalidInterval = validateCalendarEvent({
+			...timedEvent,
+			recurrence: { frequency: 'daily', interval: 0 },
+		});
+		expect(invalidInterval.ok).toBe(false);
+		if (!invalidInterval.ok) expect(invalidInterval.errors).toContainEqual(
+			expect.objectContaining({ field: 'recurrence', code: 'invalid-recurrence' }),
+		);
+
+		const earlierUntil = validateCalendarEvent({
+			...timedEvent,
+			recurrence: { frequency: 'daily', interval: 1, until: '2026-09-21' },
+		});
+		expect(earlierUntil.ok).toBe(false);
+	});
+
 	it('throws the same structured errors from strict normalization', () => {
 		expect(() => normalizeCalendarEvent({ ...timedEvent, end: timedEvent.start })).toThrow(
 		/Timed end must be later than start/,

@@ -14,9 +14,23 @@ export const CALENDAR_EVENT_FIELDS = [
 	'timezone',
 	'location',
 	'description',
+	'recurrence',
 ] as const;
 
 export type CalendarEventField = (typeof CALENDAR_EVENT_FIELDS)[number];
+
+/** The deliberately small recurrence subset supported by the sync model. */
+export type EventRecurrenceFrequency = 'daily' | 'weekly' | 'monthly' | 'yearly';
+
+export interface EventRecurrence {
+	readonly frequency: EventRecurrenceFrequency;
+	readonly interval: number;
+	/** ISO weekdays: Monday is 1 and Sunday is 7. Weekly rules only. */
+	readonly weekdays?: readonly number[];
+	readonly count?: number;
+	/** Inclusive civil date in YYYY-MM-DD form. */
+	readonly until?: string;
+}
 
 /**
  * The canonical event representation.
@@ -34,6 +48,7 @@ export interface CalendarEvent {
 	readonly timezone: string;
 	readonly location: string;
 	readonly description: string;
+	readonly recurrence?: EventRecurrence;
 }
 
 /**

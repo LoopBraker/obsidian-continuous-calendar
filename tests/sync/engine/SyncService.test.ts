@@ -94,9 +94,29 @@ class HidingFullResyncProvider extends FakeCalendarProvider {
 			return {
 				...page,
 				changes: page.changes.filter(change => {
-					const remoteId = change.type === 'upsert' ? change.value.remoteId : change.remoteId;
+					const remoteId = change.type === 'upsert'
+						? change.value.remoteId
+						: change.type === 'delete' ? change.remoteId : change.masterRemoteId;
 					return remoteId !== this.hiddenRemoteId;
 				}),
+			};
+		});
+	}
+}
+
+class ExceptionGuardProvider extends FakeCalendarProvider {
+	private reportException = true;
+
+	override pullChanges(request: Parameters<FakeCalendarProvider['pullChanges']>[0]) {
+		return super.pullChanges(request).then(page => {
+			if (!this.reportException) return page;
+			this.reportException = false;
+			return {
+				...page,
+				changes: [
+					...page.changes,
+					{ type: 'series-unsupported' as const, providerId: 'google' as const, calendarId: request.calendarId, masterRemoteId: 'exception-series' },
+				],
 			};
 		});
 	}
@@ -399,5 +419,30 @@ describe('SyncService remote event cache', () => {
 		await expect(service.deleteCalendarEvent(cached.key)).rejects.toThrow('Recurring Google Calendar events cannot be deleted');
 		expect(provider.getCallCount('updateEvent')).toBe(0);
 		expect(provider.getCallCount('deleteEvent')).toBe(0);
+	});
+
+	it('keeps a series guarded after later master updates until a full resync proves it clear', async () => {
+		const provider = new ExceptionGuardProvider({ accountId: SESSION.accountId });
+		const master = provider.seedEvent('primary', event('exception-series-event', {
+			recurrence: { frequency: 'daily', interval: 1 },
+		}), { remoteId: 'exception-series' });
+		const { service, store } = makeService(provider, new MemoryVault(), new MemoryStateStore(), 'bidirectional');
+		await service.syncNow();
+		const key = makeSyncStateKey('google', SESSION.accountId, 'primary', 'exception-series');
+		expect(store.state.remoteEvents[key]).toMatchObject({ status: 'unsupported', recurrenceHasExceptions: true });
+
+		await provider.updateEvent(SESSION, 'primary', master.remoteId, {
+			...master.event,
+			title: 'Updated master title',
+		}, master.version);
+		await service.syncNow();
+		expect(store.state.remoteEvents[key]).toMatchObject({
+			status: 'unsupported', recurrenceStatus: 'unsupported', recurrenceHasExceptions: true,
+			event: { title: 'Updated master title' },
+		});
+		await expect(service.updateCalendarEvent(key, { ...master.event, title: 'Blocked' })).rejects.toThrow('Recurring Google Calendar events cannot be edited');
+		await service.syncNow('full-resync');
+		expect(store.state.remoteEvents[key]).toMatchObject({ status: 'synced', recurrenceStatus: 'supported' });
+		expect(store.state.remoteEvents[key]?.recurrenceHasExceptions).toBeUndefined();
 	});
 });

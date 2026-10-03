@@ -46,6 +46,7 @@ function serializeRecord(value: Record<string, unknown>): string {
 export function serializeCalendarEvent(input: unknown): string {
 	const event = normalizeCalendarEvent(input);
 	return `{${CALENDAR_EVENT_FIELDS
+		.filter(field => field !== 'recurrence' || event.recurrence !== undefined)
 		.map(field => `${JSON.stringify(field)}:${stableSerialize(event[field])}`)
 		.join(',')}}`;
 }

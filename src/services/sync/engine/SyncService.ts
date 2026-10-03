@@ -202,6 +202,10 @@ function providerRemoteId(mapping: SyncMapping): string | undefined {
 	return typeof value === 'string' && value.length > 0 ? value : undefined;
 }
 
+function cachedRecurrenceStatus(event: CachedCalendarEvent): 'none' | 'supported' | 'unsupported' {
+	return event.recurrenceStatus ?? (event.recurrence === 'unsupported' ? 'unsupported' : 'none');
+}
+
 function mappingMatchesBinding(
 	mapping: SyncMapping,
 	providerId: ProviderId,
@@ -376,7 +380,7 @@ export class SyncService {
 		this.assertProviderWritesEnabled();
 		const current = this.state.remoteEvents[key];
 		if (!current || current.status === 'remote_deleted') throw new Error(`Cached calendar event "${key}" was not found`);
-		if (current.status === 'unsupported' || current.recurrence === 'unsupported') {
+		if (current.status === 'unsupported' || cachedRecurrenceStatus(current) === 'unsupported') {
 			throw new Error('Recurring Google Calendar events cannot be edited from Continuous Calendar');
 		}
 		const candidate = normalizeCalendarEvent(input);
@@ -402,7 +406,7 @@ export class SyncService {
 		if (this.mode !== 'bidirectional') return false;
 		const current = this.state.remoteEvents[key];
 		if (!current || current.status === 'remote_deleted') return false;
-		if (current.status === 'unsupported' || current.recurrence === 'unsupported') {
+		if (current.status === 'unsupported' || cachedRecurrenceStatus(current) === 'unsupported') {
 			throw new Error('Recurring Google Calendar events cannot be deleted from Continuous Calendar');
 		}
 		try {
@@ -648,9 +652,11 @@ export class SyncService {
 			for (const change of page.changes) {
 				abortIfNeeded(signal);
 				counters.pulled += 1;
-				const remoteId = change.type === 'upsert' ? change.value.remoteId : change.remoteId;
+				const remoteId = change.type === 'upsert'
+					? change.value.remoteId
+					: change.type === 'delete' ? change.remoteId : change.masterRemoteId;
 				seenRemoteEvents.add(makeSyncStateKey(this.provider.id, this.session.accountId, this.calendarId, remoteId));
-				await this.applyRemoteChange(change, counters, signal);
+				await this.applyRemoteChange(change, counters, signal, fullResync);
 				await this.saveState();
 			}
 			if (page.nextCursor !== undefined) {
@@ -679,12 +685,40 @@ export class SyncService {
 		throw new Error(`Provider change pull exceeded ${this.maxPages} pages`);
 	}
 
-	private async applyRemoteChange(change: RemoteChange, counters: MutableRunCounters, signal: AbortSignal): Promise<void> {
+	private async applyRemoteChange(
+		change: RemoteChange,
+		counters: MutableRunCounters,
+		signal: AbortSignal,
+		fullResync: boolean,
+	): Promise<void> {
 		if (change.type === 'delete') {
 			await this.applyRemoteDeletion(change, counters);
 			return;
 		}
-		await this.applyRemoteUpsert(change.value, counters, signal);
+		if (change.type === 'series-unsupported') {
+			await this.markSeriesUnsupported(change.masterRemoteId);
+			return;
+		}
+		await this.applyRemoteUpsert(change.value, counters, signal, fullResync);
+	}
+
+	private async markSeriesUnsupported(masterRemoteId: string): Promise<void> {
+		if (!masterRemoteId || this.mode === 'dry-run') return;
+		const key = makeSyncStateKey(this.provider.id, this.session.accountId, this.calendarId, masterRemoteId);
+		const current = this.state.remoteEvents[key];
+		if (!current || current.status === 'remote_deleted') return;
+		const guarded: CachedCalendarEvent = {
+			...current,
+			recurrenceStatus: 'unsupported',
+			recurrence: 'unsupported',
+			recurrenceHasExceptions: true,
+			status: 'unsupported',
+		};
+		this.state.remoteEvents[key] = guarded;
+		await this.mirrorRemoteEventToLinkedNote(guarded);
+		const binding = this.findBindingByRemote(masterRemoteId);
+		if (binding) this.state.mappings[binding.key] = { ...binding.mapping, status: 'unsupported' };
+		this.stateDirty = true;
 	}
 
 	private async applyRemoteDeletion(
@@ -714,6 +748,7 @@ export class SyncService {
 				remoteEventId: change.remoteId,
 				event: cloneEvent(eventValue),
 				version: binding.mapping.version,
+				recurrenceStatus: 'none',
 				recurrence: 'none',
 				status: 'synced',
 				...(binding.mapping.notePath === undefined ? {} : { notePath: binding.mapping.notePath }),
@@ -734,11 +769,20 @@ export class SyncService {
 		remote: RemoteCalendarEvent,
 		counters: MutableRunCounters,
 		_signal: AbortSignal,
+		fullResync = false,
 	): Promise<void> {
 		if (remote.providerId !== this.provider.id || remote.calendarId !== this.calendarId) return;
 		if (this.mode === 'dry-run') return;
 		const remoteKey = makeSyncStateKey(this.provider.id, this.session.accountId, this.calendarId, remote.remoteId);
 		const existing = this.state.remoteEvents[remoteKey];
+		if (existing?.recurrenceHasExceptions && !(fullResync && remote.recurrenceHasExceptions !== true)) {
+			remote = {
+				...remote,
+				recurrenceStatus: 'unsupported',
+				recurrence: 'unsupported',
+				recurrenceHasExceptions: true,
+			};
+		}
 		const mapping = this.findBindingByRemote(remote.remoteId);
 		let noteUid = existing?.noteUid ?? mapping?.localUid;
 		let note = noteUid ? this.repository.getByUid(noteUid) : undefined;
@@ -776,6 +820,7 @@ export class SyncService {
 		// updating previously cached or explicitly linked events when they move
 		// outside it.
 		if (!existing && !mapping && !note && !eventIntersectsWindow(remote.event, this.resolveWindow())) return;
+		if (remote.recurrenceMasterId) await this.markSeriesUnsupported(remote.recurrenceMasterId);
 
 		const cached = this.cacheRemoteEvent(remote, note?.path, noteUid);
 		if (note && noteUid) {
@@ -968,7 +1013,9 @@ export class SyncService {
 		noteUid?: string,
 	): CachedCalendarEventView {
 		const key = makeSyncStateKey(remote.providerId, this.session.accountId, remote.calendarId, remote.remoteId);
-		const status = remote.recurrence === 'unsupported' ? 'unsupported' : 'synced';
+		const recurrenceStatus = remote.recurrenceStatus ?? (remote.recurrence === 'unsupported' ? 'unsupported' : 'none');
+		const legacyRecurrence = recurrenceStatus === 'unsupported' ? 'unsupported' : 'none';
+		const status = recurrenceStatus === 'unsupported' ? 'unsupported' : 'synced';
 		const cached: CachedCalendarEvent = {
 			providerId: remote.providerId,
 			accountId: this.session.accountId,
@@ -977,7 +1024,11 @@ export class SyncService {
 			event: cloneEvent(remote.event),
 			version: remote.version,
 			remoteUpdatedAt: remote.remoteUpdatedAt,
-			recurrence: remote.recurrence,
+			recurrenceStatus,
+			recurrenceRaw: remote.recurrenceRaw,
+			recurrenceMasterId: remote.recurrenceMasterId,
+			recurrenceHasExceptions: remote.recurrenceHasExceptions,
+			recurrence: legacyRecurrence,
 			status,
 			...(notePath === undefined ? {} : { notePath }),
 			...(noteUid === undefined ? {} : { noteUid }),

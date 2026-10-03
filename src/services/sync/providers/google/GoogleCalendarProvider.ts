@@ -211,6 +211,7 @@ export class GoogleCalendarProvider implements CalendarProvider {
 			const syncToken = request.cursor ? decodeGoogleCursor(request.cursor) : undefined;
 			let pageToken: string | undefined;
 			const changes: ChangePage['changes'] = [];
+			const exceptionMasterIds = new Set<string>();
 
 			for (let page = 0; page < this.maxPages; page += 1) {
 				const response = await this.requestJson<GoogleEventsListResponse>(
@@ -232,6 +233,16 @@ export class GoogleCalendarProvider implements CalendarProvider {
 				for (const resource of response.items ?? []) {
 					const remoteId = asNonEmptyString(resource.id);
 					if (!remoteId) continue;
+					const masterRemoteId = asNonEmptyString(resource.recurringEventId);
+					if (masterRemoteId) {
+						exceptionMasterIds.add(masterRemoteId);
+						changes.push({
+							type: 'series-unsupported',
+							providerId: GOOGLE_PROVIDER_ID,
+							calendarId: request.calendarId,
+							masterRemoteId,
+						});
+					}
 					if (resource.status === 'cancelled') {
 						changes.push({
 							type: 'delete',
@@ -271,8 +282,20 @@ export class GoogleCalendarProvider implements CalendarProvider {
 						operation: 'pull-changes',
 					});
 				}
+				const guardedChanges = changes.map(change => {
+					if (change.type !== 'upsert' || !exceptionMasterIds.has(change.value.remoteId)) return change;
+					return {
+						type: 'upsert' as const,
+						value: {
+							...change.value,
+							recurrenceStatus: 'unsupported' as const,
+							recurrence: 'unsupported' as const,
+							recurrenceHasExceptions: true,
+						},
+					};
+				});
 				return {
-					changes,
+					changes: guardedChanges,
 					hasMore: false,
 					nextCursor: encodeGoogleCursor(nextSyncToken),
 				};
@@ -318,7 +341,7 @@ export class GoogleCalendarProvider implements CalendarProvider {
 			const resource = await this.requestJson<GoogleEventResource>(
 				'PATCH',
 				`/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(remoteId)}`,
-				calendarEventToGoogleResource(event),
+				calendarEventToGoogleResource(event, true),
 				headers,
 				'update-event',
 				signal,

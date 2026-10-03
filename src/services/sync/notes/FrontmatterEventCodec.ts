@@ -82,6 +82,7 @@ const CANONICAL_FRONTMATTER_KEYS = [
 	'calendar_timezone',
 	'calendar_location',
 	'calendar_description',
+	'calendar_recurrence',
 ] as const;
 
 const NON_FRONTMATTER_SYNC_KEYS = [
@@ -313,6 +314,8 @@ export function applyCalendarEventFrontmatter(
 	frontmatter.calendar_timezone = event.timezone;
 	frontmatter.calendar_location = event.location;
 	frontmatter.calendar_description = event.description;
+	if (event.recurrence === undefined) delete frontmatter.calendar_recurrence;
+	else frontmatter.calendar_recurrence = event.recurrence;
 	if (frontmatter.calendar_sync !== undefined) {
 		frontmatter.calendar_sync = sanitizeSyncFrontmatter(frontmatter.calendar_sync);
 	}

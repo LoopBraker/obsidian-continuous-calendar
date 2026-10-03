@@ -1,6 +1,8 @@
-import type { CalendarEventValidationError } from '../../model';
+import type { CalendarEvent, CalendarEventValidationError, EventRecurrence } from '../../model';
 import { normalizeCalendarEvent } from '../../model/CalendarEventValidation';
+import { EventRecurrenceValidationError, normalizeEventRecurrence } from '../../model/EventRecurrence';
 import type { RemoteCalendarEvent } from '../CalendarProvider';
+import { civilDateKey, civilDateTimeAsUtc, civilDateTimeToInstant, rruleUtcTimestamp, utcAsCivilDateTime, zonedDateTime } from '../../util/timezone';
 
 /** Google private extended-property key used for the immutable local UID. */
 export const GOOGLE_CALENDAR_UID_KEY = 'calendar_uid';
@@ -23,6 +25,8 @@ export interface GoogleEventResource {
 	readonly start?: GoogleEventDateResource;
 	readonly end?: GoogleEventDateResource;
 	readonly recurrence?: readonly string[];
+	readonly recurringEventId?: string;
+	readonly originalStartTime?: GoogleEventDateResource;
 	readonly extendedProperties?: {
 		readonly private?: Readonly<Record<string, string>>;
 		readonly shared?: Readonly<Record<string, string>>;
@@ -35,6 +39,7 @@ export interface GoogleEventPayload {
 	readonly location?: string;
 	readonly start: GoogleEventDateResource;
 	readonly end: GoogleEventDateResource;
+	readonly recurrence?: readonly string[];
 	readonly extendedProperties: {
 		readonly private: Readonly<Record<string, string>>;
 	};
@@ -104,24 +109,131 @@ export function calendarEventToGoogleResource(event: {
 	readonly timezone: string;
 	readonly location: string;
 	readonly description: string;
-}): GoogleEventPayload {
+	readonly recurrence?: EventRecurrence;
+}, includeEmptyRecurrence = false): GoogleEventPayload {
 	const start: GoogleEventDateResource = event.allDay
-		? { date: event.start }
+		? { date: event.start, ...(event.recurrence ? { timeZone: event.timezone } : {}) }
 		: { dateTime: event.start, timeZone: event.timezone };
 	const end: GoogleEventDateResource = event.allDay
-		? { date: event.end }
+		? { date: event.end, ...(event.recurrence ? { timeZone: event.timezone } : {}) }
 		: { dateTime: event.end, timeZone: event.timezone };
 
+	const recurrence = event.recurrence ? [eventRecurrenceToGoogleRRule(event.recurrence, event)] : undefined;
 	return {
 		summary: event.title,
 		description: event.description,
 		location: event.location,
 		start,
 		end,
+		...(recurrence === undefined && !includeEmptyRecurrence ? {} : { recurrence: recurrence ?? [] }),
 		extendedProperties: {
 			private: { [GOOGLE_CALENDAR_UID_KEY]: event.uid },
 		},
 	};
+}
+
+const GOOGLE_WEEKDAYS: Readonly<Record<number, string>> = {
+	1: 'MO', 2: 'TU', 3: 'WE', 4: 'TH', 5: 'FR', 6: 'SA', 7: 'SU',
+};
+const ISO_WEEKDAYS: Readonly<Record<string, number>> = {
+	MO: 1, TU: 2, WE: 3, TH: 4, FR: 5, SA: 6, SU: 7,
+};
+
+function recurrenceUntilToGoogle(until: string, event: { allDay: boolean; timezone: string }): string {
+	if (event.allDay) return until.replace(/-/g, '');
+	const [year, month, day] = until.split('-').map(Number);
+	const instant = civilDateTimeToInstant(
+		{ year, month, day, hour: 23, minute: 59, second: 59, millisecond: 0 },
+		event.timezone,
+		'forward',
+	);
+	if (instant === undefined) throw new Error('Could not resolve recurrence end date in the event timezone');
+	return rruleUtcTimestamp(instant);
+}
+
+function eventRecurrenceToGoogleRRule(
+	recurrence: EventRecurrence,
+	event: { allDay: boolean; timezone: string },
+): string {
+	const fields = [`FREQ=${recurrence.frequency.toUpperCase()}`];
+	if (recurrence.interval !== 1) fields.push(`INTERVAL=${recurrence.interval}`);
+	if (recurrence.weekdays) fields.push(`BYDAY=${recurrence.weekdays.map(day => GOOGLE_WEEKDAYS[day]).join(',')}`);
+	if (recurrence.count !== undefined) fields.push(`COUNT=${recurrence.count}`);
+	if (recurrence.until !== undefined) fields.push(`UNTIL=${recurrenceUntilToGoogle(recurrence.until, event)}`);
+	return `RRULE:${fields.join(';')}`;
+}
+
+function recurrenceFromGoogle(
+	resource: GoogleEventResource,
+	event: Pick<CalendarEvent, 'start' | 'allDay' | 'timezone'>,
+): { recurrenceStatus: RemoteCalendarEvent['recurrenceStatus']; recurrence?: EventRecurrence; recurrenceRaw?: readonly string[] } {
+	const raw = resource.recurrence && resource.recurrence.length > 0 ? [...resource.recurrence] : undefined;
+	if (nonEmptyString(resource.recurringEventId)) {
+		return { recurrenceStatus: 'unsupported', ...(raw === undefined ? {} : { recurrenceRaw: raw }) };
+	}
+	if (!raw) return { recurrenceStatus: 'none' };
+	if (raw.length !== 1 || !/^RRULE:/i.test(raw[0].trim())) {
+		return { recurrenceStatus: 'unsupported', recurrenceRaw: raw };
+	}
+	const value = raw[0].trim().slice(raw[0].trim().indexOf(':') + 1);
+	const fields: Record<string, string> = {};
+	for (const token of value.split(';')) {
+		const equalsAt = token.indexOf('=');
+		if (equalsAt <= 0 || equalsAt === token.length - 1) return { recurrenceStatus: 'unsupported', recurrenceRaw: raw };
+		const key = token.slice(0, equalsAt).toUpperCase();
+		if (Object.prototype.hasOwnProperty.call(fields, key)) return { recurrenceStatus: 'unsupported', recurrenceRaw: raw };
+		fields[key] = token.slice(equalsAt + 1).toUpperCase();
+	}
+	const allowed = new Set(['FREQ', 'INTERVAL', 'BYDAY', 'COUNT', 'UNTIL', 'WKST']);
+	if (Object.keys(fields).some(key => !allowed.has(key)) || (fields.WKST !== undefined && fields.WKST !== 'MO')) {
+		return { recurrenceStatus: 'unsupported', recurrenceRaw: raw };
+	}
+	const frequency = fields.FREQ?.toLowerCase();
+	const interval = fields.INTERVAL === undefined
+		? 1
+		: /^\d+$/.test(fields.INTERVAL) ? Number(fields.INTERVAL) : undefined;
+	let weekdays: number[] | undefined;
+	if (fields.BYDAY !== undefined) {
+		if (frequency !== 'weekly') return { recurrenceStatus: 'unsupported', recurrenceRaw: raw };
+		const parsedWeekdays = fields.BYDAY.split(',').map(day => ISO_WEEKDAYS[day]);
+		if (parsedWeekdays.some(day => day === undefined)) return { recurrenceStatus: 'unsupported', recurrenceRaw: raw };
+		weekdays = parsedWeekdays as number[];
+	}
+	const count = fields.COUNT === undefined
+		? undefined
+		: /^\d+$/.test(fields.COUNT) ? Number(fields.COUNT) : undefined;
+	if (fields.COUNT !== undefined && count === undefined) return { recurrenceStatus: 'unsupported', recurrenceRaw: raw };
+	let until: string | undefined;
+	if (fields.UNTIL !== undefined) {
+		if (/^\d{8}$/.test(fields.UNTIL)) {
+			if (!event.allDay) return { recurrenceStatus: 'unsupported', recurrenceRaw: raw };
+			until = `${fields.UNTIL.slice(0, 4)}-${fields.UNTIL.slice(4, 6)}-${fields.UNTIL.slice(6, 8)}`;
+		} else if (/^\d{8}T\d{6}Z$/.test(fields.UNTIL)) {
+			const compact = fields.UNTIL;
+			const timestamp = `${compact.slice(0, 4)}-${compact.slice(4, 6)}-${compact.slice(6, 8)}T${compact.slice(9, 11)}:${compact.slice(11, 13)}:${compact.slice(13, 15)}Z`;
+			const localDate = zonedDateTime(timestamp, event.timezone);
+			if (event.allDay || !localDate) return { recurrenceStatus: 'unsupported', recurrenceRaw: raw };
+			const localStart = zonedDateTime(event.start, event.timezone);
+			if (!localStart) return { recurrenceStatus: 'unsupported', recurrenceRaw: raw };
+			const untilClock = ((localDate.hour * 60 + localDate.minute) * 60) + localDate.second;
+			const startClock = ((localStart.hour * 60 + localStart.minute) * 60) + localStart.second;
+			const inclusiveDate = untilClock < startClock
+				? utcAsCivilDateTime(civilDateTimeAsUtc({ ...localDate, hour: 0, minute: 0, second: 0, millisecond: 0 }) - 86_400_000)
+				: localDate;
+			until = civilDateKey(inclusiveDate);
+		} else {
+			return { recurrenceStatus: 'unsupported', recurrenceRaw: raw };
+		}
+	}
+	try {
+		const recurrence = normalizeEventRecurrence({ frequency, interval, weekdays, count, until });
+		return recurrence
+			? { recurrenceStatus: 'supported', recurrence, recurrenceRaw: raw }
+			: { recurrenceStatus: 'unsupported', recurrenceRaw: raw };
+	} catch (error) {
+		if (!(error instanceof EventRecurrenceValidationError)) throw error;
+		return { recurrenceStatus: 'unsupported', recurrenceRaw: raw };
+	}
 }
 
 /**
@@ -167,9 +279,17 @@ export function googleResourceToRemoteEvent(
 		location: mapText(resource.location),
 		description: mapText(resource.description),
 	};
+	const recurrenceInfo = recurrenceFromGoogle(resource, {
+		start: allDay ? (startDate as string) : (startDateTime as string),
+		allDay,
+		timezone,
+	});
+	const candidateWithRecurrence = recurrenceInfo.recurrence
+		? { ...candidate, recurrence: recurrenceInfo.recurrence }
+		: candidate;
 	let event;
 	try {
-		event = normalizeCalendarEvent(candidate);
+		event = normalizeCalendarEvent(candidateWithRecurrence);
 	} catch (error) {
 		const validationErrors =
 			error instanceof Error && 'errors' in error
@@ -189,7 +309,12 @@ export function googleResourceToRemoteEvent(
 		event,
 		version: nonEmptyString(resource.etag),
 		remoteUpdatedAt: nonEmptyString(resource.updated),
-		recurrence: resource.recurrence && resource.recurrence.length > 0 ? 'unsupported' : 'none',
+		recurrenceStatus: recurrenceInfo.recurrenceStatus,
+		recurrence: recurrenceInfo.recurrenceStatus === 'unsupported' ? 'unsupported' : 'none',
+		...(recurrenceInfo.recurrenceRaw === undefined ? {} : { recurrenceRaw: recurrenceInfo.recurrenceRaw }),
+		...(nonEmptyString(resource.recurringEventId) === undefined
+			? {}
+			: { recurrenceMasterId: nonEmptyString(resource.recurringEventId) }),
 	};
 	if (calendarUid !== undefined) return { ...result, calendarUid };
 	return result;

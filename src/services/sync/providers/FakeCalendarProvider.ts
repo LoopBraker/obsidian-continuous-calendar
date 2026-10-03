@@ -171,6 +171,9 @@ export class FakeCalendarProvider implements CalendarProvider {
 			...(options.calendarUid === undefined ? {} : { calendarUid: options.calendarUid }),
 			version: options.version ?? this.version(versionNumber),
 			remoteUpdatedAt: options.remoteUpdatedAt ?? this.nowIso(),
+			recurrenceStatus: options.recurrence === 'unsupported'
+				? 'unsupported'
+				: canonical.recurrence ? 'supported' : 'none',
 			recurrence: options.recurrence ?? 'none',
 		};
 		this.events.get(calendarId)?.set(remoteId, { remote, versionNumber });
@@ -294,6 +297,8 @@ export class FakeCalendarProvider implements CalendarProvider {
 				calendarUid: canonical.uid,
 				version: this.version(versionNumber),
 				remoteUpdatedAt: this.nowIso(),
+				recurrenceStatus: canonical.recurrence ? 'supported' : 'none',
+				recurrence: 'none',
 			};
 			this.events.get(calendar.calendarId)?.set(remoteId, { remote: updated, versionNumber });
 			this.appendChange(calendar.calendarId, { type: 'upsert', value: updated });
@@ -468,7 +473,7 @@ export class FakeCalendarProvider implements CalendarProvider {
 	}
 
 	private changeInWindow(change: RemoteChange, window: SyncWindow): boolean {
-		if (change.type === 'delete') return true;
+		if (change.type !== 'upsert') return true;
 		const event = change.value.event;
 		const windowStart = Date.parse(window.from);
 		const windowEnd = Date.parse(window.to);

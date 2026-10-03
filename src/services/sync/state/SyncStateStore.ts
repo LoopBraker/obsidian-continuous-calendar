@@ -14,6 +14,11 @@ export interface CachedCalendarEvent {
 	readonly event: CalendarEvent;
 	readonly version?: string;
 	readonly remoteUpdatedAt?: string;
+	readonly recurrenceStatus?: 'none' | 'supported' | 'unsupported';
+	readonly recurrenceRaw?: readonly string[];
+	readonly recurrenceMasterId?: string;
+	readonly recurrenceHasExceptions?: boolean;
+	/** Legacy recurrence guard retained for reading existing schema v2 state. */
 	readonly recurrence: 'none' | 'unsupported';
 	readonly status: 'synced' | 'unsupported' | 'remote_deleted' | 'error';
 	readonly notePath?: string;

@@ -219,6 +219,7 @@ function canonicalPatch(input: CalendarEventInputLike): Record<string, unknown> 
 		['calendar_timezone', 'timezone'],
 		['calendar_location', 'location'],
 		['calendar_description', 'description'],
+		['calendar_recurrence', 'recurrence'],
 	];
 	for (const [alias, canonical] of aliases) {
 		if (!hasOwn(input, canonical) && hasOwn(input, alias)) patch[canonical] = record[alias];

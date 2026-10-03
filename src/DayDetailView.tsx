@@ -293,9 +293,10 @@ export const DayDetailView = ({ dateKey, viewMode, index, app, settings, onClose
         }
 
         const sync = syncSettings;
-        const timezone = syncEvent.event.timezone || sync?.timezone || 'UTC';
+        const masterEvent = index.getCalendarEvents().find(record => record.key === syncEvent.key)?.event ?? syncEvent.event;
+        const timezone = masterEvent.timezone || sync?.timezone || 'UTC';
         openSyncEventModal(app, {
-            initialEvent: syncEvent.event,
+            initialEvent: masterEvent,
             timezone,
             onSubmit: async (event) => {
                 const plugin = (app as any).plugins?.getPlugin?.('obsidian-Continuous-calendar')
@@ -583,7 +584,7 @@ export const DayDetailView = ({ dateKey, viewMode, index, app, settings, onClose
                             {syncEvents.map(syncEvent => {
                                 const notePath = syncEvent.notePath;
                                 return (
-                                    <li key={syncEvent.key} className="sync-event-card">
+                                    <li key={`${syncEvent.key}:${syncEvent.event.start}`} className="sync-event-card">
                                         <div className="sync-event-card-content">
                                             <div className="sync-event-title-group">
                                                 {notePath ? (

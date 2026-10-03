@@ -10,6 +10,7 @@ import { TaskManager } from './index/TaskManager';
 import { TaskNote } from './index/IndexTypes';
 import type { CalendarEventIndex } from './sync/notes/CalendarEventIndex';
 import type { CalendarEvent, SyncStatus } from './sync/model/CalendarEvent';
+import { expandCalendarEventForDate } from './sync/model/EventRecurrenceOccurrences';
 import { calendarEventIntersectsDate } from '../components/SyncUi';
 
 export interface CalendarDisplayEvent {
@@ -17,6 +18,7 @@ export interface CalendarDisplayEvent {
     readonly event: CalendarEvent;
     readonly status?: SyncStatus;
     readonly notePath?: string;
+    readonly recurrenceStatus?: 'none' | 'supported' | 'unsupported';
 }
 
 /**
@@ -126,7 +128,15 @@ export class IndexService {
     }
 
     getCalendarEventsForDate(dateStr: string): readonly CalendarDisplayEvent[] {
-        return this.getCalendarEvents().filter(record => calendarEventIntersectsDate(record.event, dateStr));
+        return this.getCalendarEvents().flatMap(record => {
+            const canExpand = record.recurrenceStatus !== 'unsupported' &&
+                record.status !== 'unsupported' && record.event.recurrence !== undefined;
+            if (canExpand) {
+                const occurrences = expandCalendarEventForDate(record.event, dateStr);
+                return occurrences.map(event => ({ ...record, event }));
+            }
+            return calendarEventIntersectsDate(record.event, dateStr) ? [record] : [];
+        });
     }
 
     /** Attach the plugin-wide event projection to a view-created index. */

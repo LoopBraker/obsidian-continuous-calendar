@@ -15,6 +15,7 @@ import {
 	validateCalendarEvent,
 	normalizeCalendarEvent,
 } from './CalendarEventValidation';
+import { stableSerialize } from './CalendarEventHash';
 
 function readField(event: CalendarEvent, field: CalendarEventField): CalendarEventValue {
 	return event[field];
@@ -56,7 +57,13 @@ function prepareMergeEvent(input: unknown): CalendarEvent {
 		timezone: record.timezone as string,
 		location: (record.location as string | undefined) ?? '',
 		description: (record.description as string | undefined) ?? '',
+		...(record.recurrence === undefined ? {} : { recurrence: record.recurrence as CalendarEvent['recurrence'] }),
 	};
+}
+
+function equalFieldValue(field: CalendarEventField, left: CalendarEventValue, right: CalendarEventValue): boolean {
+	if (field === 'recurrence') return stableSerialize(left) === stableSerialize(right);
+	return left === right;
 }
 
 /** Return a stable diff in canonical field order. */
@@ -68,7 +75,7 @@ export function diffCalendarEvents(beforeInput: unknown, afterInput: unknown): C
 	for (const field of CALENDAR_EVENT_FIELDS) {
 		const beforeValue = readField(before, field);
 		const afterValue = readField(after, field);
-		if (beforeValue !== afterValue) {
+		if (!equalFieldValue(field, beforeValue, afterValue)) {
 			changes.push({ field, before: beforeValue, after: afterValue });
 		}
 	}
@@ -84,8 +91,8 @@ export function diffCalendarEvents(beforeInput: unknown, afterInput: unknown): C
 export const diffCalendarEventFields = diffCalendarEvents;
 export const diffCalendarEvent = diffCalendarEvents;
 
-function isChanged(value: CalendarEventValue, base: CalendarEventValue): boolean {
-	return value !== base;
+function isChanged(field: CalendarEventField, value: CalendarEventValue, base: CalendarEventValue): boolean {
+	return !equalFieldValue(field, value, base);
 }
 
 function makeConflict(
@@ -172,10 +179,10 @@ export function mergeCalendarEvents(
 		const baseValue = readField(base, field);
 		const localValue = readField(local, field);
 		const remoteValue = readField(remote, field);
-		const localChanged = isChanged(localValue, baseValue);
-		const remoteChanged = isChanged(remoteValue, baseValue);
+		const localChanged = isChanged(field, localValue, baseValue);
+		const remoteChanged = isChanged(field, remoteValue, baseValue);
 
-		if (localChanged && remoteChanged && localValue !== remoteValue) {
+		if (localChanged && remoteChanged && !equalFieldValue(field, localValue, remoteValue)) {
 			conflicts.push(makeConflict(field, base, local, remote));
 			continue;
 		}
