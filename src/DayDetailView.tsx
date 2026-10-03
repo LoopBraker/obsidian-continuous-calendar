@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { useState, useEffect, useRef } from 'react';
-import { App, Platform, TFile } from 'obsidian';
+import { App, Platform, setIcon, TFile } from 'obsidian';
 import { format, parseISO, differenceInDays, addDays } from 'date-fns';
 import { RRule } from 'rrule';
 import { IndexService, type CalendarDisplayEvent, type RangeNote, type TaskNote } from './services/IndexService';
@@ -35,6 +35,21 @@ const convertTintToTextColor = (color: string | undefined): string | undefined =
         return color.replace('-tint', '-text');
     }
     return color;
+};
+
+const ObsidianIcon = ({ icon }: { icon: string }) => {
+    return (
+        <span
+            ref={el => {
+                if (el) {
+                    el.empty();
+                    setIcon(el, icon);
+                }
+            }}
+            className="react-obsidian-icon"
+            aria-hidden="true"
+        />
+    );
 };
 
 export const DayDetailView = ({ dateKey, index, app, settings, onClose, onPrev, onNext, onOpenNote, onCreateSyncEvent, canCreateSyncEvent, onEditSyncEvent, onDeleteSyncEvent, onCreateEventNote, onOpenEventNote }: DayDetailViewProps) => {
@@ -294,11 +309,6 @@ export const DayDetailView = ({ dateKey, index, app, settings, onClose, onPrev, 
                 >
                     {hasDailyNote ? 'Open Daily Note' : 'Create Daily Note'}
                 </button>
-                {canWriteSyncEvents && onCreateSyncEvent && canCreateSyncEvent && (
-                    <button className="sync-event-create-btn" onClick={() => onCreateSyncEvent(dateKey)}>
-                        Create Google Calendar event
-                    </button>
-                )}
             </div>
 
             {filteredRanges.length > 0 && (
@@ -520,67 +530,105 @@ export const DayDetailView = ({ dateKey, index, app, settings, onClose, onPrev, 
                 </div>
             )}
 
-            {syncEvents.length > 0 && (
+            {(syncEvents.length > 0 || (canWriteSyncEvents && onCreateSyncEvent && canCreateSyncEvent)) && (
                 <div className="day-detail-section sync-events-section">
-                    <h3>Google Calendar events</h3>
-                    <ul className="day-detail-list">
-                        {syncEvents.map(syncEvent => {
-                            const notePath = syncEvent.notePath;
-                            return (
-                                <li key={syncEvent.key} className="sync-note-row sync-event-card">
-                                    <div className="sync-event-card-header">
-                                        {notePath ? (
-                                            <a
-                                                href="#"
-                                                className="internal-link sync-event-title"
-                                                onClick={(e) => {
-                                                    e.preventDefault();
-                                                    app.workspace.openLinkText(notePath, '', false);
-                                                }}
-                                            >
-                                                {syncEvent.event.title || 'Untitled event'}
-                                            </a>
-                                        ) : (
-                                            <span className="sync-event-title">
-                                                {syncEvent.event.title || 'Untitled event'}
-                                            </span>
-                                        )}
-                                        <SyncStatusBadge status={syncEvent.status} />
-                                    </div>
-                                    <div className="sync-event-time" title="Canonical event time">
-                                        {formatCalendarEventTime(syncEvent.event)}
-                                    </div>
-                                    {(canWriteSyncEvents || onCreateEventNote || onOpenEventNote || onDeleteSyncEvent) && (
-                                        <div className="sync-note-actions">
-                                            {canWriteSyncEvents && syncEvent.status !== 'unsupported' && (
-                                                <button className="sync-note-action" onClick={() => handleEditSyncEvent(syncEvent)} aria-label={`Edit ${syncEvent.event.title || 'Untitled event'}`}>
-                                                    Edit
-                                                </button>
-                                            )}
+                    <div className="sync-events-header">
+                        <h3>Google Calendar events</h3>
+                        {canWriteSyncEvents && onCreateSyncEvent && canCreateSyncEvent && (
+                            <button
+                                className="sync-event-create-icon-btn clickable-icon"
+                                onClick={() => onCreateSyncEvent(dateKey)}
+                                aria-label="Create Google Calendar event"
+                                title="Create Google Calendar event"
+                            >
+                                <ObsidianIcon icon="plus" />
+                            </button>
+                        )}
+                    </div>
+                    {syncEvents.length > 0 && (
+                        <ul className="day-detail-list">
+                            {syncEvents.map(syncEvent => {
+                                const notePath = syncEvent.notePath;
+                                return (
+                                    <li key={syncEvent.key} className="sync-note-row sync-event-card">
+                                        <div className="sync-event-card-header">
                                             {notePath ? (
-                                                onOpenEventNote && (
-                                                    <button className="sync-note-action" onClick={() => onOpenEventNote(syncEvent.key)} aria-label={`Open note for ${syncEvent.event.title || 'Untitled event'}`}>
-                                                        Open note
-                                                    </button>
-                                                )
+                                                <a
+                                                    href="#"
+                                                    className="internal-link sync-event-title"
+                                                    onClick={(e) => {
+                                                        e.preventDefault();
+                                                        app.workspace.openLinkText(notePath, '', false);
+                                                    }}
+                                                >
+                                                    {syncEvent.event.title || 'Untitled event'}
+                                                </a>
                                             ) : (
-                                                onCreateEventNote && (
-                                                    <button className="sync-note-action" onClick={() => onCreateEventNote(syncEvent.key)} aria-label={`Create note for ${syncEvent.event.title || 'Untitled event'}`}>
-                                                        Create note
-                                                    </button>
-                                                )
+                                                <span className="sync-event-title">
+                                                    {syncEvent.event.title || 'Untitled event'}
+                                                </span>
                                             )}
-                                            {canWriteSyncEvents && syncEvent.status !== 'unsupported' && onDeleteSyncEvent && (
-                                                <button className="sync-note-action mod-warning" onClick={() => { void onDeleteSyncEvent(syncEvent.key); }} aria-label={`Delete Google Calendar event ${syncEvent.event.title || 'Untitled event'}`}>
-                                                    Delete event
-                                                </button>
-                                            )}
+                                            <SyncStatusBadge status={syncEvent.status} />
                                         </div>
-                                    )}
-                                </li>
-                            );
-                        })}
-                    </ul>
+                                        <div className="sync-event-time" title="Canonical event time">
+                                            {formatCalendarEventTime(syncEvent.event)}
+                                        </div>
+                                        {(canWriteSyncEvents || onCreateEventNote || onOpenEventNote || onDeleteSyncEvent) && (
+                                            <div className="sync-note-actions">
+                                                <div className="sync-note-actions-left">
+                                                    {notePath ? (
+                                                        onOpenEventNote && (
+                                                            <button
+                                                                className="sync-note-action"
+                                                                onClick={() => onOpenEventNote(syncEvent.key)}
+                                                                aria-label={`Open note for ${syncEvent.event.title || 'Untitled event'}`}
+                                                            >
+                                                                <ObsidianIcon icon="file-text" />
+                                                                <span>Open note</span>
+                                                            </button>
+                                                        )
+                                                    ) : (
+                                                        onCreateEventNote && (
+                                                            <button
+                                                                className="sync-note-action"
+                                                                onClick={() => onCreateEventNote(syncEvent.key)}
+                                                                aria-label={`Create note for ${syncEvent.event.title || 'Untitled event'}`}
+                                                            >
+                                                                <ObsidianIcon icon="file-plus" />
+                                                                <span>Create note</span>
+                                                            </button>
+                                                        )
+                                                    )}
+                                                </div>
+                                                <div className="sync-note-actions-right">
+                                                    {canWriteSyncEvents && syncEvent.status !== 'unsupported' && (
+                                                        <button
+                                                            className="sync-note-action"
+                                                            onClick={() => handleEditSyncEvent(syncEvent)}
+                                                            aria-label={`Edit ${syncEvent.event.title || 'Untitled event'}`}
+                                                        >
+                                                            <ObsidianIcon icon="pencil" />
+                                                            <span>Edit</span>
+                                                        </button>
+                                                    )}
+                                                    {canWriteSyncEvents && syncEvent.status !== 'unsupported' && onDeleteSyncEvent && (
+                                                        <button
+                                                            className="sync-note-action mod-warning"
+                                                            onClick={() => { void onDeleteSyncEvent(syncEvent.key); }}
+                                                            aria-label={`Delete Google Calendar event ${syncEvent.event.title || 'Untitled event'}`}
+                                                        >
+                                                            <ObsidianIcon icon="trash" />
+                                                            <span>Delete</span>
+                                                        </button>
+                                                    )}
+                                                </div>
+                                            </div>
+                                        )}
+                                    </li>
+                                );
+                            })}
+                        </ul>
+                    )}
                 </div>
             )}
 

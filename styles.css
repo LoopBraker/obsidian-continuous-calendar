@@ -1799,12 +1799,83 @@
     overflow-wrap: anywhere;
 }
 
-.sync-note-row .sync-note-actions {
+.sync-events-header {
     display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+}
+
+.sync-events-header h3 {
+    margin: 0 !important;
+}
+
+.sync-event-create-icon-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 4px;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: var(--radius-s, 4px);
+    color: var(--text-muted);
+    cursor: pointer;
+    line-height: 1;
+    transition: color 0.15s ease, background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.sync-event-create-icon-btn:hover {
+    color: var(--text-normal);
+    background-color: var(--background-modifier-hover);
+}
+
+.sync-event-create-icon-btn .react-obsidian-icon svg,
+.sync-event-create-icon-btn .react-obsidian-icon .svg-icon {
+    width: 16px;
+    height: 16px;
+}
+
+.sync-note-row .sync-note-actions,
+.sync-note-actions {
+    display: flex;
+    justify-content: space-between;
     align-items: center;
     flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 4px;
+}
+
+.sync-note-actions-left,
+.sync-note-actions-right {
+    display: flex;
+    align-items: center;
     gap: 6px;
-    margin-top: 2px;
+}
+
+.sync-note-actions-right {
+    margin-left: auto;
+}
+
+.sync-note-action {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    line-height: var(--line-height-normal, 1.4);
+}
+
+.react-obsidian-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 1;
+    flex-shrink: 0;
+}
+
+.react-obsidian-icon svg,
+.react-obsidian-icon .svg-icon {
+    width: 13px;
+    height: 13px;
+    display: block;
 }
 
 .sync-note-action.mod-warning {
