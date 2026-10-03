@@ -5,11 +5,12 @@ import { format, parseISO, differenceInDays, addDays } from 'date-fns';
 import { RRule } from 'rrule';
 import { IndexService, type CalendarDisplayEvent, type RangeNote, type TaskNote } from './services/IndexService';
 import type { SyncStatus } from './services/sync/model';
-import { formatCalendarEventTime, SyncStatusBadge } from './components/SyncUi';
+import { formatCalendarEventTime, syncStatusLabel, SyncStatusBadge } from './components/SyncUi';
 import { openSyncEventModal } from './modals/SyncEventModal';
 
 interface DayDetailViewProps {
     dateKey: string;
+    viewMode: 'Continuous' | 'month';
     index: IndexService;
     app: App;
     settings: any;
@@ -22,7 +23,6 @@ interface DayDetailViewProps {
     onEditSyncEvent?: (eventKey: string) => void;
     onDeleteSyncEvent?: (eventKey: string) => Promise<boolean>;
     onCreateEventNote?: (eventKey: string) => void;
-    onOpenEventNote?: (eventKey: string) => void;
 }
 
 import { type Holiday } from './services/holiday/HolidayTypes';
@@ -52,7 +52,33 @@ const ObsidianIcon = ({ icon }: { icon: string }) => {
     );
 };
 
-export const DayDetailView = ({ dateKey, index, app, settings, onClose, onPrev, onNext, onOpenNote, onCreateSyncEvent, canCreateSyncEvent, onEditSyncEvent, onDeleteSyncEvent, onCreateEventNote, onOpenEventNote }: DayDetailViewProps) => {
+const SYNC_STATUS_ICONS: Readonly<Record<SyncStatus, string>> = {
+    pending: 'clock',
+    synced: 'check',
+    conflict: 'alert-triangle',
+    remote_deleted: 'calendar-off',
+    unsupported: 'info',
+    error: 'circle-x',
+};
+
+const SyncStatusIcon = ({ status }: { status?: SyncStatus }) => {
+    if (!status) return null;
+    const label = syncStatusLabel(status);
+    if (!label) return null;
+
+    return (
+        <span
+            className={`sync-event-status-icon sync-status-${status}`}
+            title={label}
+            role="img"
+            aria-label={`Sync status: ${label}`}
+        >
+            <ObsidianIcon icon={SYNC_STATUS_ICONS[status]} />
+        </span>
+    );
+};
+
+export const DayDetailView = ({ dateKey, viewMode, index, app, settings, onClose, onPrev, onNext, onOpenNote, onCreateSyncEvent, canCreateSyncEvent, onEditSyncEvent, onDeleteSyncEvent, onCreateEventNote }: DayDetailViewProps) => {
     const containerRef = useRef<HTMLDivElement>(null);
     const onCloseRef = useRef(onClose);
     onCloseRef.current = onClose;
@@ -70,6 +96,8 @@ export const DayDetailView = ({ dateKey, index, app, settings, onClose, onPrev, 
 
     useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {
+            if (viewMode !== 'Continuous') return;
+
             if (e.key === 'Escape' || e.key === 'Esc') {
                 const doc = containerRef.current?.ownerDocument || document;
                 const isObsidianPopupOpen = !!doc.querySelector('.modal-container, .prompt, .suggestion-container, .menu');
@@ -93,7 +121,7 @@ export const DayDetailView = ({ dateKey, index, app, settings, onClose, onPrev, 
         return () => {
             doc.removeEventListener('keydown', handleKeyDown);
         };
-    }, []);
+    }, [viewMode]);
 
     useEffect(() => {
         const fetchData = () => {
@@ -283,22 +311,24 @@ export const DayDetailView = ({ dateKey, index, app, settings, onClose, onPrev, 
 
     return (
         <div ref={containerRef} className="day-detail-view">
-            <div className="day-detail-nav">
-                <div className="nav-buttons">
-                    <button onClick={onPrev} className="control-btn" title="Previous Day">
-                        &larr; Previous
-                    </button>
-                    <button onClick={onNext} className="control-btn" title="Next Day">
-                        Next &rarr;
+            {viewMode === 'Continuous' && (
+                <div className="day-detail-nav">
+                    <div className="nav-buttons">
+                        <button onClick={onPrev} className="control-btn" title="Previous Day">
+                            &larr; Previous
+                        </button>
+                        <button onClick={onNext} className="control-btn" title="Next Day">
+                            Next &rarr;
+                        </button>
+                    </div>
+                    <button onClick={onClose} className="close-btn" title="Close">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <line x1="18" y1="6" x2="6" y2="18"></line>
+                            <line x1="6" y1="6" x2="18" y2="18"></line>
+                        </svg>
                     </button>
                 </div>
-                <button onClick={onClose} className="close-btn" title="Close">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                        <line x1="18" y1="6" x2="6" y2="18"></line>
-                        <line x1="6" y1="6" x2="18" y2="18"></line>
-                    </svg>
-                </button>
-            </div>
+            )}
 
             <div className="day-detail-header">
                 <h2>{format(targetDate, 'EEEE, MMMM dd, yyyy')}</h2>
@@ -550,80 +580,70 @@ export const DayDetailView = ({ dateKey, index, app, settings, onClose, onPrev, 
                             {syncEvents.map(syncEvent => {
                                 const notePath = syncEvent.notePath;
                                 return (
-                                    <li key={syncEvent.key} className="sync-note-row sync-event-card">
-                                        <div className="sync-event-card-header">
-                                            {notePath ? (
-                                                <a
-                                                    href="#"
-                                                    className="internal-link sync-event-title"
-                                                    onClick={(e) => {
-                                                        e.preventDefault();
-                                                        app.workspace.openLinkText(notePath, '', false);
-                                                    }}
-                                                >
-                                                    {syncEvent.event.title || 'Untitled event'}
-                                                </a>
-                                            ) : (
-                                                <span className="sync-event-title">
-                                                    {syncEvent.event.title || 'Untitled event'}
-                                                </span>
-                                            )}
-                                            <SyncStatusBadge status={syncEvent.status} />
-                                        </div>
-                                        <div className="sync-event-time" title="Canonical event time">
-                                            {formatCalendarEventTime(syncEvent.event)}
-                                        </div>
-                                        {(canWriteSyncEvents || onCreateEventNote || onOpenEventNote || onDeleteSyncEvent) && (
-                                            <div className="sync-note-actions">
-                                                <div className="sync-note-actions-left">
-                                                    {notePath ? (
-                                                        onOpenEventNote && (
+                                    <li key={syncEvent.key} className="sync-event-card">
+                                        <div className="sync-event-card-content">
+                                            <div className="sync-event-title-group">
+                                                {notePath ? (
+                                                    <a
+                                                        href="#"
+                                                        className="internal-link sync-event-title sync-event-linked-title"
+                                                        onClick={(e) => {
+                                                            e.preventDefault();
+                                                            app.workspace.openLinkText(notePath, '', false);
+                                                        }}
+                                                    >
+                                                        {syncEvent.event.title || 'Untitled event'}
+                                                    </a>
+                                                ) : (
+                                                    <span className="sync-event-title">
+                                                        {syncEvent.event.title || 'Untitled event'}
+                                                    </span>
+                                                )}
+                                                <SyncStatusIcon status={syncEvent.status} />
+                                            </div>
+                                            <div className="sync-event-card-meta">
+                                                <div className="sync-event-time" title="Canonical event time">
+                                                    {formatCalendarEventTime(syncEvent.event)}
+                                                </div>
+                                                {((!notePath && onCreateEventNote) || (canWriteSyncEvents && syncEvent.status !== 'unsupported')) && (
+                                                    <div className="sync-event-actions">
+                                                        {!notePath && onCreateEventNote && (
                                                             <button
-                                                                className="sync-note-action"
-                                                                onClick={() => onOpenEventNote(syncEvent.key)}
-                                                                aria-label={`Open note for ${syncEvent.event.title || 'Untitled event'}`}
-                                                            >
-                                                                <ObsidianIcon icon="file-text" />
-                                                                <span>Open note</span>
-                                                            </button>
-                                                        )
-                                                    ) : (
-                                                        onCreateEventNote && (
-                                                            <button
-                                                                className="sync-note-action"
+                                                                type="button"
+                                                                className="sync-event-action clickable-icon"
                                                                 onClick={() => onCreateEventNote(syncEvent.key)}
                                                                 aria-label={`Create note for ${syncEvent.event.title || 'Untitled event'}`}
+                                                                title={`Create note for ${syncEvent.event.title || 'Untitled event'}`}
                                                             >
                                                                 <ObsidianIcon icon="file-plus" />
-                                                                <span>Create note</span>
                                                             </button>
-                                                        )
-                                                    )}
-                                                </div>
-                                                <div className="sync-note-actions-right">
-                                                    {canWriteSyncEvents && syncEvent.status !== 'unsupported' && (
-                                                        <button
-                                                            className="sync-note-action"
-                                                            onClick={() => handleEditSyncEvent(syncEvent)}
-                                                            aria-label={`Edit ${syncEvent.event.title || 'Untitled event'}`}
-                                                        >
-                                                            <ObsidianIcon icon="pencil" />
-                                                            <span>Edit</span>
-                                                        </button>
-                                                    )}
-                                                    {canWriteSyncEvents && syncEvent.status !== 'unsupported' && onDeleteSyncEvent && (
-                                                        <button
-                                                            className="sync-note-action mod-warning"
-                                                            onClick={() => { void onDeleteSyncEvent(syncEvent.key); }}
-                                                            aria-label={`Delete Google Calendar event ${syncEvent.event.title || 'Untitled event'}`}
-                                                        >
-                                                            <ObsidianIcon icon="trash" />
-                                                            <span>Delete</span>
-                                                        </button>
-                                                    )}
-                                                </div>
+                                                        )}
+                                                        {canWriteSyncEvents && syncEvent.status !== 'unsupported' && (
+                                                            <button
+                                                                type="button"
+                                                                className="sync-event-action clickable-icon"
+                                                                onClick={() => handleEditSyncEvent(syncEvent)}
+                                                                aria-label={`Edit ${syncEvent.event.title || 'Untitled event'}`}
+                                                                title={`Edit ${syncEvent.event.title || 'Untitled event'}`}
+                                                            >
+                                                                <ObsidianIcon icon="pencil" />
+                                                            </button>
+                                                        )}
+                                                        {canWriteSyncEvents && syncEvent.status !== 'unsupported' && onDeleteSyncEvent && (
+                                                            <button
+                                                                type="button"
+                                                                className="sync-event-action clickable-icon mod-warning"
+                                                                onClick={() => { void onDeleteSyncEvent(syncEvent.key); }}
+                                                                aria-label={`Delete Google Calendar event ${syncEvent.event.title || 'Untitled event'}`}
+                                                                title={`Delete Google Calendar event ${syncEvent.event.title || 'Untitled event'}`}
+                                                            >
+                                                                <ObsidianIcon icon="trash" />
+                                                            </button>
+                                                        )}
+                                                    </div>
+                                                )}
                                             </div>
-                                        )}
+                                        </div>
                                     </li>
                                 );
                             })}

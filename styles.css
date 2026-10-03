@@ -1763,36 +1763,144 @@
     min-width: 0;
 }
 
-.sync-event-card-header {
+.day-detail-list li.sync-event-card {
     display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: 8px;
+    flex-direction: column;
+    gap: 3px;
+    min-width: 0;
+    margin: 0 0 8px;
+    padding: 0 0 8px;
+    border: 0;
+    border-bottom: 1px solid var(--background-modifier-border);
+    border-radius: 0;
+    background: transparent;
+}
+
+.sync-event-card-content {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
     min-width: 0;
 }
 
-.sync-event-card-header > .sync-event-title,
-.sync-event-card-header > .internal-link {
+.sync-event-title-group {
+    display: flex;
+    align-items: flex-start;
+    gap: 6px;
+    width: 100%;
     min-width: 0;
-    flex: 1;
-    font-weight: var(--font-medium, 500);
+}
+
+.sync-event-title {
+    min-width: 0;
+    flex: 1 1 auto;
     color: var(--text-normal);
+    font-weight: var(--font-medium, 500);
     line-height: var(--line-height-tight, 1.3);
-    overflow-wrap: break-word;
+    overflow-wrap: anywhere;
     word-break: break-word;
 }
 
-.sync-event-card-header > a.sync-event-title:hover,
-.sync-event-card-header > .internal-link:hover {
-    color: var(--text-accent);
-    text-decoration: underline;
+.sync-event-card .sync-event-linked-title {
+    text-decoration-line: underline;
+    text-decoration-color: color-mix(in srgb, var(--text-accent) 45%, transparent);
+    text-underline-offset: 0.16em;
 }
 
-.sync-event-card-header .sync-status-badge {
+.sync-event-card .sync-event-linked-title:hover,
+.sync-event-card .sync-event-linked-title:focus-visible {
+    color: var(--text-accent);
+    text-decoration-color: var(--text-accent);
+}
+
+.sync-event-status-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    min-height: 0;
+    padding: 0;
+    border-radius: 0;
+    background: transparent;
+    line-height: 1;
+}
+
+.sync-event-status-icon .react-obsidian-icon,
+.sync-event-status-icon .react-obsidian-icon svg,
+.sync-event-status-icon .react-obsidian-icon .svg-icon {
+    display: block;
+    width: 14px;
+    height: 14px;
+}
+
+.sync-event-card-meta {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 4px 8px;
+    min-width: 0;
+}
+
+.sync-event-actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+    gap: 6px;
+    flex: 0 0 auto;
+    max-width: 100%;
+    margin-left: auto;
+}
+
+.sync-event-action {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 32px;
+    min-height: 32px;
+    padding: 5px;
+    border: 1px solid transparent;
+    border-radius: var(--radius-s, 4px);
+    color: var(--text-muted);
+    background: transparent;
+    cursor: pointer;
     flex-shrink: 0;
+    -webkit-tap-highlight-color: transparent;
+}
+
+.sync-event-action .react-obsidian-icon svg,
+.sync-event-action .react-obsidian-icon .svg-icon {
+    width: 15px;
+    height: 15px;
+}
+
+.sync-event-action.mod-warning {
+    color: var(--text-error);
+}
+
+.sync-event-action:focus-visible,
+.sync-event-card .sync-event-linked-title:focus-visible {
+    outline: 2px solid var(--interactive-accent);
+    outline-offset: 2px;
+}
+
+@media (hover: hover) and (pointer: fine) {
+    .sync-event-action:hover {
+        border-color: var(--background-modifier-border-hover);
+        color: var(--text-normal);
+        background: var(--background-modifier-hover);
+    }
+
+    .sync-event-action.mod-warning:hover {
+        border-color: var(--text-error);
+        color: var(--text-error);
+        background: color-mix(in srgb, var(--text-error) 12%, var(--background-primary));
+    }
 }
 
 .sync-event-time {
+    flex: 1 1 8rem;
+    min-width: 0;
     color: var(--text-muted);
     font-size: var(--font-ui-smaller, 12px);
     line-height: var(--line-height-normal, 1.4);
@@ -1802,12 +1910,8 @@
 .sync-events-header {
     display: flex;
     justify-content: space-between;
-    align-items: center;
+    align-items: flex-end;
     margin-bottom: 8px;
-}
-
-.sync-events-header h3 {
-    margin: 0 !important;
 }
 
 .sync-event-create-icon-btn {
@@ -2096,4 +2200,3 @@
     border-color: color-mix(in srgb, var(--text-error) 30%, var(--background-modifier-border));
     opacity: 0.85;
 }
-

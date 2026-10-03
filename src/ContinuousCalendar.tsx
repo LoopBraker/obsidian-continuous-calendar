@@ -1296,7 +1296,7 @@ export const ContinuousCalendar = (props: ContinuousCalendarProps) => {
             const start = d1 < d2 ? d1 : d2;
             const end = d1 < d2 ? d2 : d1;
             onCreateRange(start, end);
-            setSelection(null);
+            setSelection(viewMode === 'month' ? { date, type: 'cell' } : null);
             return;
         }
 
@@ -1512,6 +1512,7 @@ export const ContinuousCalendar = (props: ContinuousCalendarProps) => {
     const dayDetail = selection?.type === 'cell' ? (
         <DayDetailView
             dateKey={toDateKey(selection.date)}
+            viewMode={viewMode}
             index={index}
             app={app}
             settings={index.settings}
@@ -1526,7 +1527,6 @@ export const ContinuousCalendar = (props: ContinuousCalendarProps) => {
             onEditSyncEvent={canWriteCalendarEvents ? syncEventActions?.edit : undefined}
             onDeleteSyncEvent={canWriteCalendarEvents ? syncEventActions?.delete : undefined}
             onCreateEventNote={syncEventActions?.createNote}
-            onOpenEventNote={syncEventActions?.openNote}
         />
     ) : null;
 
