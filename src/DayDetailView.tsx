@@ -5,7 +5,7 @@ import { format, parseISO, differenceInDays, addDays } from 'date-fns';
 import { RRule } from 'rrule';
 import { IndexService, type CalendarDisplayEvent, type RangeNote, type TaskNote } from './services/IndexService';
 import type { SyncStatus } from './services/sync/model';
-import { formatCalendarEventTime, syncStatusLabel, SyncStatusBadge } from './components/SyncUi';
+import { formatCalendarEventTime, syncStatusLabel } from './components/SyncUi';
 import { openSyncEventModal } from './modals/SyncEventModal';
 
 interface DayDetailViewProps {
@@ -357,19 +357,22 @@ export const DayDetailView = ({ dateKey, viewMode, index, app, settings, onClose
                                 }
                             }
                             return (
-                                <li key={idx}>
-                                    <a
-                                        href="#"
-                                        className="internal-link"
-                                        style={{ color: convertTintToTextColor(rangeColor) || convertTintToTextColor(settings?.defaultBarColor) }}
-                                        onClick={(e) => {
-                                            e.preventDefault();
-                                            app.workspace.openLinkText(range.path, '', false);
-                                        }}
-                                    >
-                                        {symbol && <span className="note-symbol" style={{ marginRight: '6px' }}>{symbol}</span>}
-                                        {range.name} ({range.dateStart} → {range.dateEnd})
-                                    </a>
+                                <li key={idx} className="day-detail-row">
+                                    <div className="day-detail-row-title-group">
+                                        <a
+                                            href="#"
+                                            className="internal-link day-detail-row-title"
+                                            style={{ color: convertTintToTextColor(rangeColor) || convertTintToTextColor(settings?.defaultBarColor) }}
+                                            onClick={(e) => {
+                                                e.preventDefault();
+                                                app.workspace.openLinkText(range.path, '', false);
+                                            }}
+                                        >
+                                            {symbol && <span className="note-symbol" style={{ marginRight: '6px' }}>{symbol}</span>}
+                                            {range.name}
+                                        </a>
+                                    </div>
+                                    <div className="day-detail-row-meta">{range.dateStart} → {range.dateEnd}</div>
                                 </li>
                             );
                         })}
@@ -669,23 +672,25 @@ export const DayDetailView = ({ dateKey, viewMode, index, app, settings, onClose
                             }
 
                             return (
-                                <li key={idx} className={note.status ? 'sync-note-row' : undefined}>
-                                    <a
-                                        href="#"
-                                        className="internal-link"
-                                        style={{ color: convertTintToTextColor(noteColor) || convertTintToTextColor(settings?.defaultDotColor) }}
-                                        onClick={(e) => {
-                                            e.preventDefault();
-                                            app.workspace.openLinkText(note.path, '', false);
-                                        }}
-                                    >
-                                        {symbol && <span className="note-symbol" style={{ marginRight: '6px' }}>{symbol}</span>}
-                                        {note.name}
-                                        {note.isRecurring && (
-                                            <span className="recurrence-symbol" style={{ marginLeft: '6px', fontSize: '0.9em', opacity: 0.8 }}>↻</span>
-                                        )}
-                                    </a>
-                                    {note.status && <SyncStatusBadge status={note.status} />}
+                                <li key={idx} className="day-detail-row">
+                                    <div className="day-detail-row-title-group">
+                                        <a
+                                            href="#"
+                                            className="internal-link day-detail-row-title"
+                                            style={{ color: convertTintToTextColor(noteColor) || convertTintToTextColor(settings?.defaultDotColor) }}
+                                            onClick={(e) => {
+                                                e.preventDefault();
+                                                app.workspace.openLinkText(note.path, '', false);
+                                            }}
+                                        >
+                                            {symbol && <span className="note-symbol" style={{ marginRight: '6px' }}>{symbol}</span>}
+                                            {note.name}
+                                            {note.isRecurring && (
+                                                <span className="recurrence-symbol" style={{ marginLeft: '6px', fontSize: '0.9em', opacity: 0.8 }}>↻</span>
+                                            )}
+                                        </a>
+                                        {note.status && <SyncStatusIcon status={note.status} />}
+                                    </div>
                                 </li>
                             );
                         })}
