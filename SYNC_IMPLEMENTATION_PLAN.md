@@ -46,7 +46,7 @@ The 2026-09-27 snapshot below describes the previous note-backed implementation.
 
 1. **Dual Frontmatter Mapping for Optional Notes (`date` / `dateStart` / `dateEnd` vs `calendar_start` / `calendar_end`)**:
    - *Original Plan*: Rely solely on `calendar_start`, `calendar_end`, and `calendar_all_day` with Google's exclusive end dates (`[start, end)`).
-   - *Deviation*: `FrontmatterEventCodec` and `CalendarEventValidation` maintain native Continuous Calendar frontmatter properties alongside canonical sync properties. Single-day events map to `date`. Multi-day events map to `dateStart` and `dateEnd` using inclusive ends (`exclusiveToInclusive(end)`). Timed events extract the `YYYY-MM-DD` date into `date` while keeping exact RFC 3339 timestamps and offsets in `calendar_start`/`calendar_end`.
+   - *Deviation*: `FrontmatterEventCodec` and `CalendarEventValidation` maintain native Continuous Calendar frontmatter properties alongside canonical sync properties. All-day notes use `date` for one date or `dateStart`/`dateEnd` with an inclusive end; they omit `calendar_start`/`calendar_end` so the exclusive next day is not shown as a separate technical date. The canonical exclusive end is derived from those visible dates when decoded. Timed events extract the `YYYY-MM-DD` date into `date` while keeping exact RFC 3339 timestamps and offsets in `calendar_start`/`calendar_end`. Legacy all-day notes with canonical date keys continue to decode and migrate on write.
    - *Reason*: Preserves native dated-note interoperability for notes the user chooses to create. Cached Google events now contribute their own calendar indicators.
 2. **Google OAuth Client Secret Requirement**:
    - *Original Plan*: Assumed public-client PKCE without client secrets.
@@ -139,7 +139,7 @@ Contract rules (only when a note is explicitly created):
 - `calendar_title`, not the filename, is authoritative.
 - Native keys (`date` or `dateStart`/`dateEnd`) coexist to render on Continuous Calendar views.
 - Timed values are RFC 3339 timestamps with offsets and an IANA timezone in `calendar_start`/`calendar_end`.
-- All-day values in `calendar_start`/`calendar_end` are `YYYY-MM-DD` where `calendar_end` is exclusive.
+- All-day values use `date` for one day or `dateStart`/`dateEnd` with an inclusive last date; `calendar_start` and `calendar_end` are omitted. Decode derives the canonical exclusive end, while legacy all-day `calendar_*` dates remain readable and migrate on write.
 - `calendar_description` synchronizes in both directions; note markdown bodies remain local-only.
 - Status values include: `pending`, `synced`, `conflict`, `remote_deleted`, `unsupported`, and `error`.
 

@@ -54,6 +54,34 @@ function previousCivilDate(value: string): string {
 	return shiftCivilDate(value, -1);
 }
 
+function isSingleAllDayDate(start: string, end: string): boolean {
+	return parseDate(start) !== undefined && end === nextCivilDate(start);
+}
+
+export function allDayDateMode(start: string, exclusiveEnd: string): 'single' | 'range' {
+	return isSingleAllDayDate(start, exclusiveEnd) ? 'single' : 'range';
+}
+
+/** Convert an inclusive all-day end date to the canonical exclusive end. */
+export function allDayEndExclusive(startDate: string, inclusiveLastDate?: string): string | undefined {
+	if (!parseDate(startDate)) return undefined;
+	const lastDate = inclusiveLastDate ?? startDate;
+	if (!parseDate(lastDate) || lastDate < startDate) return undefined;
+	return nextCivilDate(lastDate);
+}
+
+/** Default a newly-added all-day range to include the following date. */
+export function defaultAllDayRangeEndExclusive(startDate: string): string | undefined {
+	if (!parseDate(startDate)) return undefined;
+	return allDayEndExclusive(startDate, nextCivilDate(startDate));
+}
+
+/** Convert a canonical exclusive all-day end to the visible inclusive date. */
+export function allDayEndInclusive(exclusiveEnd: string): string | undefined {
+	if (!parseDate(exclusiveEnd)) return undefined;
+	return previousCivilDate(exclusiveEnd);
+}
+
 function isoWeekday(value: string): number {
 	const date = parseDate(value);
 	if (!date) return 1;
@@ -229,6 +257,7 @@ export class SyncEventModal extends Modal {
 	private startTimeInput?: HTMLInputElement;
 	private endDateInput?: HTMLInputElement;
 	private endTimeInput?: HTMLInputElement;
+	private allDayRange: boolean;
 	private startDraftTimezone: string;
 	private endDraftTimezone: string;
 	private submitButton?: HTMLButtonElement;
@@ -238,6 +267,7 @@ export class SyncEventModal extends Modal {
 		super(app);
 		this.options = options;
 		this.draft = createSyncEventDraft(options.initialEvent, options.dateKey, options.timezone);
+		this.allDayRange = this.draft.allDay && allDayDateMode(this.draft.start, this.draft.end) === 'range';
 		this.startDraftTimezone = this.draft.timezone;
 		this.endDraftTimezone = this.draft.timezone;
 	}
@@ -253,6 +283,10 @@ export class SyncEventModal extends Modal {
 	private render(): void {
 		const { contentEl } = this;
 		contentEl.empty();
+		this.startDateInput = undefined;
+		this.startTimeInput = undefined;
+		this.endDateInput = undefined;
+		this.endTimeInput = undefined;
 		contentEl.addClass('sync-event-modal');
 		contentEl.createEl('h2', { text: this.options.title ?? (this.options.initialEvent ? 'Edit calendar event' : 'Create calendar event') });
 		contentEl.createEl('p', {
@@ -270,7 +304,7 @@ export class SyncEventModal extends Modal {
 			? { date: this.draft.start, time: '' }
 			: readZonedDateTime(this.draft.start, this.draft.timezone) ?? { date: '', time: '' };
 		const inclusiveEnd = this.draft.allDay
-			? previousCivilDate(this.draft.end)
+			? this.allDayRange ? allDayEndInclusive(this.draft.end) : undefined
 			: readZonedDateTime(this.draft.end, this.draft.timezone);
 		const endFields = typeof inclusiveEnd === 'string'
 			? { date: inclusiveEnd, time: '' }
@@ -299,27 +333,49 @@ export class SyncEventModal extends Modal {
 			});
 		}
 
-		const endSetting = new Setting(form)
-			.setName('End')
-			.setDesc(this.draft.allDay ? 'Choose the last day of the event.' : 'The end must be after the start.');
-		endSetting.addText(component => {
-			component.inputEl.type = 'date';
-			component.inputEl.classList.add('sync-event-date-input');
-			component.setValue(endFields.date);
-			this.setAccessibleInput(component.inputEl, this.draft.allDay ? 'Last day' : 'End date');
-			component.inputEl.addEventListener('input', () => this.handleEndChange());
-			this.endDateInput = component.inputEl;
-		});
-		if (!this.draft.allDay) {
+		if (!this.draft.allDay || this.allDayRange) {
+			const endSetting = new Setting(form)
+				.setName('End')
+				.setDesc(this.draft.allDay ? 'Choose the inclusive last day of the event.' : 'The end must be after the start.');
 			endSetting.addText(component => {
-				component.inputEl.type = 'time';
-				component.inputEl.step = '1';
-				component.inputEl.classList.add('sync-event-time-input');
-				component.setValue(endFields.time);
-				this.setAccessibleInput(component.inputEl, 'End time');
+				component.inputEl.type = 'date';
+				component.inputEl.classList.add('sync-event-date-input');
+				component.setValue(endFields.date);
+				this.setAccessibleInput(component.inputEl, this.draft.allDay ? 'Last day' : 'End date');
 				component.inputEl.addEventListener('input', () => this.handleEndChange());
-				this.endTimeInput = component.inputEl;
+				this.endDateInput = component.inputEl;
 			});
+			if (!this.draft.allDay) {
+				endSetting.addText(component => {
+					component.inputEl.type = 'time';
+					component.inputEl.step = '1';
+					component.inputEl.classList.add('sync-event-time-input');
+					component.setValue(endFields.time);
+					this.setAccessibleInput(component.inputEl, 'End time');
+					component.inputEl.addEventListener('input', () => this.handleEndChange());
+					this.endTimeInput = component.inputEl;
+				});
+			}
+			if (this.draft.allDay) {
+				const removeEnd = endSetting.controlEl.createEl('button', {
+					text: 'Remove end date',
+					cls: 'sync-event-range-action',
+				});
+				removeEnd.type = 'button';
+				removeEnd.setAttribute('aria-label', 'Make this an all-day event on one date');
+				removeEnd.addEventListener('click', () => this.removeAllDayEndDate());
+			}
+		} else {
+			const addEnd = new Setting(form)
+				.setName('End date')
+				.setDesc('This event lasts one day. Add a last date to make it a range.');
+			const addButton = addEnd.controlEl.createEl('button', {
+				text: 'Add end date',
+				cls: 'sync-event-range-action',
+			});
+			addButton.type = 'button';
+			addButton.setAttribute('aria-label', 'Add end date');
+			addButton.addEventListener('click', () => this.addAllDayEndDate());
 		}
 
 		new Setting(form)
@@ -527,7 +583,16 @@ export class SyncEventModal extends Modal {
 	private handleStartChange(): void {
 		this.clearError();
 		if (this.draft.allDay) {
-			this.draft.start = this.startDateInput?.value ?? '';
+			const start = this.startDateInput?.value ?? '';
+			this.draft.start = start;
+			if (!this.allDayRange && parseDate(start)) {
+				this.draft.end = nextCivilDate(start);
+			} else if (this.allDayRange) {
+				const lastDay = this.endDateInput?.value ?? '';
+				if (parseDate(start) && parseDate(lastDay) && lastDay < start) {
+					this.showError('The last day must be on or after the start date.');
+				}
+			}
 			return;
 		}
 		if (!this.startDateInput?.value || !this.startTimeInput?.value) return;
@@ -564,7 +629,11 @@ export class SyncEventModal extends Modal {
 		this.clearError();
 		if (this.draft.allDay) {
 			const lastDay = this.endDateInput?.value ?? '';
+			const start = this.startDateInput?.value ?? this.draft.start;
 			this.draft.end = parseDate(lastDay) ? nextCivilDate(lastDay) : '';
+			if (parseDate(start) && parseDate(lastDay) && lastDay < start) {
+				this.showError('The last day must be on or after the start date.');
+			}
 			return;
 		}
 		if (!this.endDateInput?.value || !this.endTimeInput?.value) return;
@@ -604,26 +673,56 @@ export class SyncEventModal extends Modal {
 			this.draft.start = startFields.date;
 			this.draft.end = nextCivilDate(inclusiveEnd);
 			this.draft.allDay = true;
+			this.allDayRange = inclusiveEnd > startFields.date;
 		} else {
 			const startDate = this.startDateInput?.value || this.draft.start;
-			const inclusiveEnd = this.endDateInput?.value || previousCivilDate(this.draft.end);
+			const inclusiveEnd = this.allDayRange
+				? this.endDateInput?.value || previousCivilDate(this.draft.end)
+				: startDate;
 			this.draft.start = zonedDraftTimestamp(startDate, 9, this.draft.timezone);
 			this.draft.end = zonedDraftTimestamp(inclusiveEnd, 10, this.draft.timezone);
 			this.draft.allDay = false;
+			this.allDayRange = false;
 		}
+		this.render();
+	}
+
+	private addAllDayEndDate(): void {
+		const start = this.startDateInput?.value || this.draft.start;
+		const end = defaultAllDayRangeEndExclusive(start);
+		if (!end) {
+			this.showError('Choose a valid start date before adding an end date.');
+			return;
+		}
+		this.draft.start = start;
+		this.draft.end = end;
+		this.allDayRange = true;
+		this.clearError();
+		this.render();
+	}
+
+	private removeAllDayEndDate(): void {
+		const start = this.startDateInput?.value || this.draft.start;
+		this.draft.start = start;
+		this.draft.end = parseDate(start) ? nextCivilDate(start) : '';
+		this.allDayRange = false;
+		this.clearError();
 		this.render();
 	}
 
 	private eventFromInputs(): CalendarEvent | undefined {
 		if (this.draft.allDay) {
 			const start = this.startDateInput?.value ?? '';
-			const lastDay = this.endDateInput?.value ?? '';
-			if (!start || !lastDay) {
-				this.showError('Choose a start date and last day for the event.');
+			const lastDay = this.allDayRange ? this.endDateInput?.value ?? '' : start;
+			const end = allDayEndExclusive(start, lastDay);
+			if (!end) {
+				this.showError(this.allDayRange
+					? 'Choose a valid start date and a last day on or after it.'
+					: 'Choose a valid start date for the event.');
 				return undefined;
 			}
 			this.draft.start = start;
-			this.draft.end = nextCivilDate(lastDay);
+			this.draft.end = end;
 		} else {
 			const startDate = this.startDateInput?.value ?? '';
 			const startTime = this.startTimeInput?.value ?? '';

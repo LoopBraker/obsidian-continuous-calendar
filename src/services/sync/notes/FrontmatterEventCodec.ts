@@ -308,8 +308,16 @@ export function applyCalendarEventFrontmatter(
 		delete frontmatter.date;
 	}
 	
-	frontmatter.calendar_start = event.start;
-	frontmatter.calendar_end = event.end;
+	if (event.allDay) {
+		// The visible native date fields are inclusive and readable in Obsidian.
+		// Omit the provider's exclusive end so it cannot appear as the next day
+		// in YAML; validation derives the canonical end from date/dateEnd.
+		delete frontmatter.calendar_start;
+		delete frontmatter.calendar_end;
+	} else {
+		frontmatter.calendar_start = event.start;
+		frontmatter.calendar_end = event.end;
+	}
 	frontmatter.calendar_all_day = event.allDay;
 	frontmatter.calendar_timezone = event.timezone;
 	frontmatter.calendar_location = event.location;

@@ -2080,6 +2080,24 @@
     gap: 6px;
 }
 
+.sync-event-modal .sync-event-range-action {
+    padding: 6px 10px;
+    color: var(--text-accent);
+    background: var(--background-primary);
+    border: 1px solid var(--background-modifier-border);
+    border-radius: var(--radius-s);
+    cursor: pointer;
+}
+
+.sync-event-modal .sync-event-range-action:hover {
+    background: var(--background-modifier-hover);
+}
+
+.sync-event-modal .sync-event-range-action:focus-visible {
+    outline: 2px solid var(--interactive-accent);
+    outline-offset: 2px;
+}
+
 .sync-event-modal .sync-recurrence-interval-input {
     width: 6em;
 }

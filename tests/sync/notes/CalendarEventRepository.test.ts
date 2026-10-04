@@ -23,6 +23,24 @@ const event = {
 	description: 'Discuss the release.',
 };
 
+const allDaySingle = {
+	uid: 'all-day-single',
+	title: 'Workshop',
+	start: '2026-10-03',
+	end: '2026-10-04',
+	allDay: true,
+	timezone: 'America/Bogota',
+	location: '',
+	description: '',
+};
+
+const allDayRange = {
+	...allDaySingle,
+	uid: 'all-day-range',
+	start: '2026-10-03',
+	end: '2026-10-06',
+};
+
 const googleReference: ProviderReference<'google'> = {
 	providerId: 'google',
 	accountId: 'account-1',
@@ -129,6 +147,27 @@ describe('FrontmatterEventCodec', () => {
 		expect(decoded.note?.body).toBe('body bytes');
 	});
 
+	it('stores a single all-day date without exposing its exclusive next-day end', () => {
+		const decoded = decodeCalendarEventNote(encodeCalendarEventNote(allDaySingle));
+
+		expect(decoded.note?.event).toEqual(allDaySingle);
+		expect(decoded.note?.frontmatter.date).toBe('2026-10-03');
+		expect(decoded.note?.frontmatter).not.toHaveProperty('calendar_start');
+		expect(decoded.note?.frontmatter).not.toHaveProperty('calendar_end');
+		expect(decoded.note?.frontmatter.calendar_all_day).toBe(true);
+	});
+
+	it('stores an all-day range with an inclusive visible last date', () => {
+		const decoded = decodeCalendarEventNote(encodeCalendarEventNote(allDayRange));
+
+		expect(decoded.note?.event).toEqual(allDayRange);
+		expect(decoded.note?.frontmatter.dateStart).toBe('2026-10-03');
+		expect(decoded.note?.frontmatter.dateEnd).toBe('2026-10-05');
+		expect(decoded.note?.frontmatter).not.toHaveProperty('calendar_start');
+		expect(decoded.note?.frontmatter).not.toHaveProperty('calendar_end');
+		expect(decoded.note?.frontmatter.calendar_all_day).toBe(true);
+	});
+
 	it('persists and decodes the typed recurrence frontmatter value', () => {
 		const recurring = {
 			...event,
@@ -165,6 +204,55 @@ describe('FrontmatterEventCodec', () => {
 });
 
 describe('CalendarEventRepository', () => {
+	it('migrates legacy all-day canonical dates on the next frontmatter write', async () => {
+		const body = '\r\n# Keep this body\r\n';
+		const legacy = `---\ncalendar_event: true\ncalendar_uid: all-day-range\ncalendar_title: Workshop\ndateStart: 2026-10-03\ndateEnd: 2026-10-05\ncalendar_start: 2026-10-03\ncalendar_end: 2026-10-06\ncalendar_all_day: true\ncalendar_timezone: America/Bogota\ncalendar_location: ""\ncalendar_description: ""\ncustom_field: retain\n---\n${body}`;
+		const vault = new MemoryVault({ 'Events/Workshop.md': legacy });
+		const repository = new CalendarEventRepository(vault, { folder: 'Events' });
+		await repository.reload();
+
+		await repository.update('Events/Workshop.md', { title: 'Workshop updated' });
+		const stored = await vault.read('Events/Workshop.md');
+		const decoded = decodeCalendarEventNote(stored);
+
+		expect(decoded.note?.event).toMatchObject({
+			...allDayRange,
+			title: 'Workshop updated',
+		});
+		expect(decoded.note?.frontmatter.dateStart).toBe('2026-10-03');
+		expect(decoded.note?.frontmatter.dateEnd).toBe('2026-10-05');
+		expect(decoded.note?.frontmatter).not.toHaveProperty('calendar_start');
+		expect(decoded.note?.frontmatter).not.toHaveProperty('calendar_end');
+		expect(decoded.note?.frontmatter.custom_field).toBe('retain');
+		expect(decoded.note?.body).toBe(body);
+	});
+
+	it('switches one linked note between single-date and range frontmatter cleanly', async () => {
+		const vault = new MemoryVault();
+		const repository = new CalendarEventRepository(vault, { folder: 'Events' });
+		const created = await repository.createLinkedNote(allDaySingle, googleReference);
+
+		const range = await repository.update(created.path, { end: '2026-10-06' });
+		const rangeNote = decodeCalendarEventNote(await vault.read(created.path));
+		expect(rangeNote.note?.event).toMatchObject({ start: '2026-10-03', end: '2026-10-06', allDay: true });
+		expect(rangeNote.note?.frontmatter.dateStart).toBe('2026-10-03');
+		expect(rangeNote.note?.frontmatter.dateEnd).toBe('2026-10-05');
+		expect(rangeNote.note?.frontmatter).not.toHaveProperty('date');
+		expect(rangeNote.note?.frontmatter).not.toHaveProperty('calendar_start');
+		expect(rangeNote.note?.frontmatter).not.toHaveProperty('calendar_end');
+		expect(range.event.end).toBe('2026-10-06');
+
+		const single = await repository.update(created.path, { end: '2026-10-04' });
+		const singleNote = decodeCalendarEventNote(await vault.read(created.path));
+		expect(singleNote.note?.event).toMatchObject({ start: '2026-10-03', end: '2026-10-04', allDay: true });
+		expect(singleNote.note?.frontmatter.date).toBe('2026-10-03');
+		expect(singleNote.note?.frontmatter).not.toHaveProperty('dateStart');
+		expect(singleNote.note?.frontmatter).not.toHaveProperty('dateEnd');
+		expect(singleNote.note?.frontmatter).not.toHaveProperty('calendar_start');
+		expect(singleNote.note?.frontmatter).not.toHaveProperty('calendar_end');
+		expect(single.event.end).toBe('2026-10-04');
+	});
+
 	it('exposes explicit trash only when the vault can move files to trash', async () => {
 		const withoutTrash = new CalendarEventRepository(new MemoryVault(), { folder: 'Events' });
 		expect(withoutTrash.trash).toBeUndefined();
