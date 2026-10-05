@@ -1,6 +1,6 @@
 import type { CalendarPluginSettings, SyncMode } from '../../../settings/settings';
 import type { CalendarEvent } from '../model/CalendarEvent';
-import type { CachedCalendarEvent } from '../state/SyncStateStore';
+import type { CachedCalendarEvent, CachedCalendarOccurrence } from '../state/SyncStateStore';
 import type { CalendarEventIndex } from '../notes/CalendarEventIndex';
 import type {
 	CalendarEventRepository,
@@ -48,6 +48,7 @@ export interface SyncLifecycleService {
 	deleteSyncedEvent?(localUid: string, signal?: AbortSignal): Promise<boolean>;
 	createCalendarEvent?(event: CalendarEvent): Promise<CachedCalendarEvent & { key: string }>;
 	updateCalendarEvent?(key: string, event: CalendarEvent): Promise<CachedCalendarEvent & { key: string }>;
+	updateCalendarOccurrence?(key: string, event: CalendarEvent): Promise<CachedCalendarOccurrence & { key: string; localRepairPending?: boolean }>;
 	deleteCalendarEvent?(key: string): Promise<boolean>;
 	linkNote?(key: string, path: string, uid: string): Promise<unknown>;
 	resolveConflict?(key: string, choice: 'local' | 'remote'): Promise<SyncConflictResolutionResult>;

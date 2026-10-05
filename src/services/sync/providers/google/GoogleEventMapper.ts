@@ -1,7 +1,12 @@
 import type { CalendarEvent, CalendarEventValidationError, EventRecurrence } from '../../model';
 import { normalizeCalendarEvent } from '../../model/CalendarEventValidation';
 import { EventRecurrenceValidationError, normalizeEventRecurrence } from '../../model/EventRecurrence';
-import type { RemoteCalendarEvent } from '../CalendarProvider';
+import type {
+	CancelledRemoteOccurrence,
+	ProviderDateTimeValue,
+	RemoteCalendarEvent,
+	RemoteOccurrence,
+} from '../CalendarProvider';
 import { civilDateKey, civilDateTimeAsUtc, civilDateTimeToInstant, rruleUtcTimestamp, utcAsCivilDateTime, zonedDateTime } from '../../util/timezone';
 
 /** Google private extended-property key used for the immutable local UID. */
@@ -43,6 +48,15 @@ export interface GoogleEventPayload {
 	readonly extendedProperties: {
 		readonly private: Readonly<Record<string, string>>;
 	};
+}
+
+/** Occurrence PATCH payload deliberately excludes recurrence and private metadata. */
+export interface GoogleEventInstancePatch {
+	readonly summary: string;
+	readonly description?: string;
+	readonly location?: string;
+	readonly start: GoogleEventDateResource;
+	readonly end: GoogleEventDateResource;
 }
 
 export interface GoogleEventMappingContext {
@@ -91,6 +105,68 @@ function mappingFailure(message: string): never {
 	throw new GoogleEventMappingError(message, 'invalid-resource');
 }
 
+function validCivilDate(value: string): boolean {
+	const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+	if (!match) return false;
+	const year = Number(match[1]);
+	const month = Number(match[2]);
+	const day = Number(match[3]);
+	const date = new Date(0);
+	date.setUTCHours(0, 0, 0, 0);
+	date.setUTCFullYear(year, month - 1, day);
+	return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
+}
+
+function validTimeZone(value: string): boolean {
+	try {
+		new Intl.DateTimeFormat('en-US', { timeZone: value });
+		return true;
+	} catch (_error) {
+		return false;
+	}
+}
+
+/** Copy and validate a Google date/dateTime without converting its identity representation. */
+export function googleDateTimeToProviderValue(value: GoogleEventDateResource | undefined): ProviderDateTimeValue | undefined {
+	if (!value) return undefined;
+	const hasDate = typeof value.date === 'string' && value.date.length > 0;
+	const hasDateTime = typeof value.dateTime === 'string' && value.dateTime.length > 0;
+	if (hasDate === hasDateTime) return undefined;
+	if (hasDate && !validCivilDate(value.date as string)) return undefined;
+	if (hasDateTime) {
+		const dateTime = value.dateTime as string;
+		const match = /^(\d{4}-\d{2}-\d{2})T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?$/.exec(dateTime);
+		if (!match || !validCivilDate(match[1]) || !Number.isFinite(Date.parse(dateTime))) return undefined;
+		if (!/(?:Z|[+-]\d{2}:\d{2})$/.test(dateTime) && !nonEmptyString(value.timeZone)) return undefined;
+	}
+	const timeZone = typeof value.timeZone === 'string' && value.timeZone.length > 0 ? value.timeZone : undefined;
+	if (timeZone !== undefined && !validTimeZone(timeZone)) return undefined;
+	return {
+		...(hasDate ? { date: value.date } : {}),
+		...(hasDateTime ? { dateTime: value.dateTime } : {}),
+		...(timeZone === undefined ? {} : { timeZone }),
+	};
+}
+
+function requiredProviderDateTime(
+	value: GoogleEventDateResource | undefined,
+	field: string,
+): ProviderDateTimeValue {
+	const mapped = googleDateTimeToProviderValue(value);
+	if (!mapped) mappingFailure(`Google event has an invalid ${field}`);
+	return mapped;
+}
+
+function optionalProviderDateTime(
+	value: GoogleEventDateResource | undefined,
+	field: string,
+): ProviderDateTimeValue | undefined {
+	if (!value) return undefined;
+	const mapped = googleDateTimeToProviderValue(value);
+	if (!mapped) mappingFailure(`Google event has an invalid ${field}`);
+	return mapped;
+}
+
 function makePlaceholderUid(calendarId: string, remoteId: string): string {
 	return `google:${calendarId}:${remoteId}`;
 }
@@ -111,12 +187,7 @@ export function calendarEventToGoogleResource(event: {
 	readonly description: string;
 	readonly recurrence?: EventRecurrence;
 }, includeEmptyRecurrence = false): GoogleEventPayload {
-	const start: GoogleEventDateResource = event.allDay
-		? { date: event.start, ...(event.recurrence ? { timeZone: event.timezone } : {}) }
-		: { dateTime: event.start, timeZone: event.timezone };
-	const end: GoogleEventDateResource = event.allDay
-		? { date: event.end, ...(event.recurrence ? { timeZone: event.timezone } : {}) }
-		: { dateTime: event.end, timeZone: event.timezone };
+	const { start, end } = canonicalRangeToGoogleDates(event);
 
 	const recurrence = event.recurrence ? [eventRecurrenceToGoogleRRule(event.recurrence, event)] : undefined;
 	return {
@@ -130,6 +201,42 @@ export function calendarEventToGoogleResource(event: {
 			private: { [GOOGLE_CALENDAR_UID_KEY]: event.uid },
 		},
 	};
+}
+
+/** Build an occurrence-only patch without recurrence rules or local UID metadata. */
+export function calendarEventToGoogleInstancePatch(event: {
+	readonly title: string;
+	readonly start: string;
+	readonly end: string;
+	readonly allDay: boolean;
+	readonly timezone: string;
+	readonly location: string;
+	readonly description: string;
+}): GoogleEventInstancePatch {
+	const { start, end } = canonicalRangeToGoogleDates(event);
+	return {
+		summary: event.title,
+		description: event.description,
+		location: event.location,
+		start,
+		end,
+	};
+}
+
+function canonicalRangeToGoogleDates(event: {
+	readonly start: string;
+	readonly end: string;
+	readonly allDay: boolean;
+	readonly timezone: string;
+	readonly recurrence?: EventRecurrence;
+}): { readonly start: GoogleEventDateResource; readonly end: GoogleEventDateResource } {
+	const start: GoogleEventDateResource = event.allDay
+		? { date: event.start, ...(event.recurrence ? { timeZone: event.timezone } : {}) }
+		: { dateTime: event.start, timeZone: event.timezone };
+	const end: GoogleEventDateResource = event.allDay
+		? { date: event.end, ...(event.recurrence ? { timeZone: event.timezone } : {}) }
+		: { dateTime: event.end, timeZone: event.timezone };
+	return { start, end };
 }
 
 const GOOGLE_WEEKDAYS: Readonly<Record<number, string>> = {
@@ -312,10 +419,60 @@ export function googleResourceToRemoteEvent(
 		recurrenceStatus: recurrenceInfo.recurrenceStatus,
 		recurrence: recurrenceInfo.recurrenceStatus === 'unsupported' ? 'unsupported' : 'none',
 		...(recurrenceInfo.recurrenceRaw === undefined ? {} : { recurrenceRaw: recurrenceInfo.recurrenceRaw }),
-		...(nonEmptyString(resource.recurringEventId) === undefined
-			? {}
-			: { recurrenceMasterId: nonEmptyString(resource.recurringEventId) }),
+		actualStart: requiredProviderDateTime(resource.start, 'actual start'),
+		actualEnd: requiredProviderDateTime(resource.end, 'actual end'),
+		...(nonEmptyString(resource.recurringEventId) === undefined ? {} : {
+			recurrenceMasterId: nonEmptyString(resource.recurringEventId),
+			originalStartTime: requiredProviderDateTime(resource.originalStartTime, 'originalStartTime'),
+		}),
 	};
+	if (resource.originalStartTime && !nonEmptyString(resource.recurringEventId)) {
+		mappingFailure('Google event has originalStartTime without a recurring master id');
+	}
 	if (calendarUid !== undefined) return { ...result, calendarUid };
 	return result;
+}
+
+/** Map an active or cancelled Google instance while retaining its immutable slot identity. */
+export function googleResourceToRemoteOccurrence(
+	resource: GoogleEventResource,
+	context: GoogleEventMappingContext,
+): RemoteOccurrence {
+	const instanceRemoteId = nonEmptyString(resource.id);
+	const masterRemoteId = nonEmptyString(resource.recurringEventId);
+	if (!instanceRemoteId || !masterRemoteId) mappingFailure('Google occurrence is missing its instance or master id');
+	const originalStartTime = requiredProviderDateTime(resource.originalStartTime, 'originalStartTime');
+	const actualStart = optionalProviderDateTime(resource.start, 'actual start');
+	const actualEnd = optionalProviderDateTime(resource.end, 'actual end');
+	const version = nonEmptyString(resource.etag);
+	if (resource.status === 'cancelled') {
+		const cancelled: CancelledRemoteOccurrence = {
+			status: 'cancelled',
+			providerId: 'google',
+			calendarId: context.calendarId,
+			masterRemoteId,
+			instanceRemoteId,
+			originalStartTime,
+			...(actualStart === undefined ? {} : { actualStart }),
+			...(actualEnd === undefined ? {} : { actualEnd }),
+			...(version === undefined ? {} : { version }),
+		};
+		return cancelled;
+	}
+	const event = googleResourceToRemoteEvent(resource, context);
+	if (event.recurrenceMasterId !== masterRemoteId || !event.actualStart || !event.actualEnd) {
+		mappingFailure('Google returned an invalid recurring occurrence');
+	}
+	return {
+		status: 'active',
+		providerId: 'google',
+		calendarId: context.calendarId,
+		masterRemoteId,
+		instanceRemoteId,
+		originalStartTime,
+		actualStart: event.actualStart,
+		actualEnd: event.actualEnd,
+		event: { ...event, originalStartTime },
+		...(event.version === undefined ? {} : { version: event.version }),
+	};
 }

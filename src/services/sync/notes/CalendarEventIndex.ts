@@ -4,19 +4,30 @@ import type {
 	SyncStatus,
 } from '../model/CalendarEvent';
 import type { FrontmatterRecord } from './FrontmatterEventCodec';
+import {
+	occurrenceTargetKey,
+	targetKey,
+	type CalendarNoteTarget,
+} from './CalendarNoteTarget';
 
 export interface IndexedCalendarEvent {
 	readonly path: string;
 	readonly event: CalendarEvent;
 	readonly status?: SyncStatus;
 	readonly association?: CalendarEventAssociation;
+	readonly target?: CalendarNoteTarget;
+	readonly targetErrors?: readonly string[];
 	/** The parsed frontmatter is retained for diagnostics/read-model consumers. */
 	readonly frontmatter?: FrontmatterRecord;
 	/** The body is retained as an observed value; the repository never rewrites it. */
 	readonly body?: string;
 }
 
-export type CalendarEventIndexErrorCode = 'duplicate-uid' | 'duplicate-path';
+export type CalendarEventIndexErrorCode =
+	| 'duplicate-uid'
+	| 'duplicate-path'
+	| 'duplicate-target'
+	| 'target-representation-conflict';
 
 /** Recoverable, deterministic index collision. */
 export class CalendarEventIndexError extends Error {
@@ -24,6 +35,7 @@ export class CalendarEventIndexError extends Error {
 	readonly uid?: string;
 	readonly path: string;
 	readonly conflictingPath?: string;
+	readonly targetKey?: string;
 
 	constructor(
 		code: CalendarEventIndexErrorCode,
@@ -32,6 +44,7 @@ export class CalendarEventIndexError extends Error {
 			uid?: string;
 			path: string;
 			conflictingPath?: string;
+			targetKey?: string;
 		},
 	) {
 		super(message);
@@ -40,6 +53,7 @@ export class CalendarEventIndexError extends Error {
 		this.uid = metadata.uid;
 		this.path = metadata.path;
 		this.conflictingPath = metadata.conflictingPath;
+		this.targetKey = metadata.targetKey;
 		Object.setPrototypeOf(this, CalendarEventIndexError.prototype);
 	}
 }
@@ -68,6 +82,30 @@ export class CalendarEventPathCollisionError extends CalendarEventIndexError {
 	}
 }
 
+export class DuplicateCalendarNoteTargetError extends CalendarEventIndexError {
+	constructor(key: string, path: string, conflictingPath: string) {
+		super(
+			'duplicate-target',
+			`Duplicate calendar note target at "${path}"; already claimed by "${conflictingPath}"`,
+			{ path, conflictingPath, targetKey: key },
+		);
+		this.name = 'DuplicateCalendarNoteTargetError';
+		Object.setPrototypeOf(this, DuplicateCalendarNoteTargetError.prototype);
+	}
+}
+
+export class CalendarNoteTargetRepresentationConflictError extends CalendarEventIndexError {
+	constructor(key: string, path: string, conflictingPath: string) {
+		super(
+			'target-representation-conflict',
+			`Whole-occurrence and occurrence-day notes cannot both claim the same occurrence at "${path}" and "${conflictingPath}"`,
+			{ path, conflictingPath, targetKey: key },
+		);
+		this.name = 'CalendarNoteTargetRepresentationConflictError';
+		Object.setPrototypeOf(this, CalendarNoteTargetRepresentationConflictError.prototype);
+	}
+}
+
 function normalizePath(path: string): string {
 	return path.replace(/\\/g, '/').replace(/^\.\//, '');
 }
@@ -82,6 +120,7 @@ function comparePaths(left: string, right: string): number {
  */
 export class CalendarEventIndex {
 	private readonly uidToPathStorage = new Map<string, string>();
+	private readonly targetToPathStorage = new Map<string, string>();
 	private readonly pathToRecordStorage = new Map<string, IndexedCalendarEvent>();
 
 	get uidToPath(): ReadonlyMap<string, string> {
@@ -119,6 +158,7 @@ export class CalendarEventIndex {
 
 	clear(): void {
 		this.uidToPathStorage.clear();
+		this.targetToPathStorage.clear();
 		this.pathToRecordStorage.clear();
 	}
 
@@ -131,6 +171,24 @@ export class CalendarEventIndex {
 		const existingPath = this.uidToPathStorage.get(record.event.uid);
 		if (existingPath !== undefined && existingPath !== path) {
 			throw new DuplicateCalendarEventUidError(record.event.uid, path, existingPath);
+		}
+		if (record.target) {
+			const key = targetKey(record.target);
+			const existingTargetPath = this.targetToPathStorage.get(key);
+			if (existingTargetPath !== undefined && existingTargetPath !== path) {
+				throw new DuplicateCalendarNoteTargetError(key, path, existingTargetPath);
+			}
+			if (record.target.scope !== 'series') {
+				const occurrenceKey = occurrenceTargetKey(record.target);
+				const conflicting = Array.from(this.pathToRecordStorage.values()).find(candidate =>
+					candidate.path !== path &&
+					candidate.target?.scope !== undefined &&
+					candidate.target.scope !== 'series' &&
+					occurrenceTargetKey(candidate.target) === occurrenceKey &&
+					candidate.target.scope !== record.target?.scope,
+				);
+				if (conflicting) throw new CalendarNoteTargetRepresentationConflictError(occurrenceKey, path, conflicting.path);
+			}
 		}
 		return path;
 	}
@@ -145,6 +203,8 @@ export class CalendarEventIndex {
 		}
 		this.pathToRecordStorage.set(path, normalizedRecord);
 		this.uidToPathStorage.set(normalizedRecord.event.uid, path);
+		if (existing?.target) this.targetToPathStorage.delete(targetKey(existing.target));
+		if (normalizedRecord.target) this.targetToPathStorage.set(targetKey(normalizedRecord.target), path);
 	}
 
 	/** Alias emphasizing that callers are registering a newly observed note. */
@@ -171,8 +231,13 @@ export class CalendarEventIndex {
 		if (existing.event.uid !== event.uid) {
 			throw new DuplicateCalendarEventUidError(event.uid, path, existing.path);
 		}
-		this.pathToRecordStorage.set(path, { ...existing, ...extra, event, path });
+		const candidate = { ...existing, ...extra, event, path };
+		this.assertCanSet(candidate);
+		this.pathToRecordStorage.set(path, candidate);
 		this.uidToPathStorage.set(event.uid, path);
+		if (existing.target) this.targetToPathStorage.delete(targetKey(existing.target));
+		const target = extra.target ?? existing.target;
+		if (target) this.targetToPathStorage.set(targetKey(target), path);
 	}
 
 	/** Move a mapping locally; this method does not perform vault I/O. */
@@ -188,6 +253,7 @@ export class CalendarEventIndex {
 		const moved = { ...record, path: nextPath };
 		this.pathToRecordStorage.set(nextPath, moved);
 		this.uidToPathStorage.set(record.event.uid, nextPath);
+		if (record.target) this.targetToPathStorage.set(targetKey(record.target), nextPath);
 		return moved;
 	}
 
@@ -197,6 +263,7 @@ export class CalendarEventIndex {
 		if (!record) return undefined;
 		this.pathToRecordStorage.delete(path);
 		this.uidToPathStorage.delete(record.event.uid);
+		if (record.target) this.targetToPathStorage.delete(targetKey(record.target));
 		return record;
 	}
 
@@ -230,6 +297,15 @@ export class CalendarEventIndex {
 		return this.pathToRecordStorage.get(normalizePath(pathInput));
 	}
 
+	getByTarget(target: CalendarNoteTarget): IndexedCalendarEvent | undefined {
+		const path = this.targetToPathStorage.get(targetKey(target));
+		return path === undefined ? undefined : this.pathToRecordStorage.get(path);
+	}
+
+	getPathByTarget(target: CalendarNoteTarget): string | undefined {
+		return this.targetToPathStorage.get(targetKey(target));
+	}
+
 	getEventByPath(pathInput: string): CalendarEvent | undefined {
 		return this.getByPath(pathInput)?.event;
 	}
@@ -254,6 +330,7 @@ export class CalendarEventIndex {
 		this.uidToPathStorage.clear();
 		this.pathToRecordStorage.clear();
 		for (const [uid, path] of candidate.uidToPathStorage) this.uidToPathStorage.set(uid, path);
+		for (const [key, path] of candidate.targetToPathStorage) this.targetToPathStorage.set(key, path);
 		for (const [path, record] of candidate.pathToRecordStorage) this.pathToRecordStorage.set(path, record);
 	}
 }

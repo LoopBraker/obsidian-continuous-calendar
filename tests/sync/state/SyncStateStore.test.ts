@@ -61,10 +61,33 @@ describe('SyncStateStore state helpers', () => {
 
 	it('migrates older sync state by adding independent event cache collections', () => {
 		const state = normalizeSyncState({ schemaVersion: 1, mappings: {}, cursors: { old: 'cursor' } });
-		expect(state.schemaVersion).toBe(2);
+		expect(state.schemaVersion).toBe(3);
 		expect(state.cursors.old).toBe('cursor');
 		expect(state.remoteEvents).toEqual({});
 		expect(state.eventCacheInitialized).toEqual({});
+		expect(state.remoteOccurrences).toEqual({});
+		expect(state.occurrenceCoverage).toEqual({});
+		expect(state.localRepairs).toEqual({});
+		expect(state.providerCreateIntents).toEqual({});
+	});
+
+	it('defaults cached occurrence resolution state and preserves unresolved pinned slots', () => {
+		const state = normalizeSyncState({
+			schemaVersion: 3,
+			remoteOccurrences: {
+				legacy: {
+					providerId: 'google', accountId: 'account', calendarId: 'primary', masterRemoteId: 'series',
+					instanceRemoteId: 'instance-1', originalStartTime: { date: '2026-10-01' }, cancelled: false,
+				},
+				missingPinned: {
+					providerId: 'google', accountId: 'account', calendarId: 'primary', masterRemoteId: 'series',
+					instanceRemoteId: 'instance-2', originalStartTime: { date: '2026-10-08' }, cancelled: false, unresolved: true,
+				},
+			},
+		});
+
+		expect(state.remoteOccurrences.legacy.unresolved).toBe(false);
+		expect(state.remoteOccurrences.missingPinned.unresolved).toBe(true);
 	});
 
 	it('notifies cloned state snapshots after load, save, and disconnect', async () => {

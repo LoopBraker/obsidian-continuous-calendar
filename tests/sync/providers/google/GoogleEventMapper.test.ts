@@ -5,6 +5,7 @@ import {
 	calendarEventToGoogleResource,
 	GOOGLE_CALENDAR_UID_KEY,
 	GoogleEventMappingError,
+	googleResourceToRemoteOccurrence,
 	googleResourceToRemoteEvent,
 } from '../../../../src/services/sync/providers/google/GoogleEventMapper';
 
@@ -109,10 +110,68 @@ describe('GoogleEventMapper', () => {
 		const exception = googleResourceToRemoteEvent({
 			id: 'series-instance',
 			recurringEventId: 'series-master',
+			originalStartTime: { dateTime: timed.start, timeZone: timed.timezone },
 			start: { dateTime: timed.start, timeZone: timed.timezone },
 			end: { dateTime: timed.end, timeZone: timed.timezone },
 		}, { calendarId: 'primary' });
-		expect(exception).toMatchObject({ recurrenceStatus: 'unsupported', recurrenceMasterId: 'series-master' });
+		expect(exception).toMatchObject({
+			recurrenceStatus: 'unsupported',
+			recurrenceMasterId: 'series-master',
+			originalStartTime: { dateTime: timed.start, timeZone: timed.timezone },
+			actualStart: { dateTime: timed.start, timeZone: timed.timezone },
+		});
+	});
+
+	it('keeps a moved timed instance attached to its exact recurrence slot across DST', () => {
+		const occurrence = googleResourceToRemoteOccurrence({
+			id: 'instance-after-dst-move',
+			etag: '"instance-v4"',
+			recurringEventId: 'new-york-master',
+			originalStartTime: { dateTime: '2026-03-08T02:30:00-05:00', timeZone: 'America/New_York' },
+			start: { dateTime: '2026-03-08T03:30:00-04:00', timeZone: 'America/New_York' },
+			end: { dateTime: '2026-03-08T04:30:00-04:00', timeZone: 'America/New_York' },
+			summary: 'Moved occurrence',
+		}, { calendarId: 'primary' });
+
+		expect(occurrence).toMatchObject({
+			status: 'active',
+			masterRemoteId: 'new-york-master',
+			instanceRemoteId: 'instance-after-dst-move',
+			originalStartTime: { dateTime: '2026-03-08T02:30:00-05:00', timeZone: 'America/New_York' },
+			actualStart: { dateTime: '2026-03-08T03:30:00-04:00', timeZone: 'America/New_York' },
+			version: '"instance-v4"',
+			event: { event: { start: '2026-03-08T03:30:00-04:00' } },
+		});
+	});
+
+	it('maps a sparse cancelled recurring exception using only its guaranteed identity fields', () => {
+		const occurrence = googleResourceToRemoteOccurrence({
+			id: 'cancelled-instance',
+			status: 'cancelled',
+			etag: '"cancel-v2"',
+			recurringEventId: 'all-day-master',
+			originalStartTime: { date: '2026-10-25', timeZone: 'Europe/Paris' },
+		}, { calendarId: 'primary' });
+
+		expect(occurrence).toEqual({
+			status: 'cancelled',
+			providerId: 'google',
+			calendarId: 'primary',
+			masterRemoteId: 'all-day-master',
+			instanceRemoteId: 'cancelled-instance',
+			originalStartTime: { date: '2026-10-25', timeZone: 'Europe/Paris' },
+			version: '"cancel-v2"',
+		});
+	});
+
+	it('rejects malformed recurrence-slot identity', () => {
+		expect(() => googleResourceToRemoteOccurrence({
+			id: 'bad-instance',
+			recurringEventId: 'master',
+			originalStartTime: { dateTime: 'not-a-time', timeZone: 'America/Bogota' },
+			start: { dateTime: timed.start, timeZone: timed.timezone },
+			end: { dateTime: timed.end, timeZone: timed.timezone },
+		}, { calendarId: 'primary' })).toThrow(GoogleEventMappingError);
 	});
 
 	it('maps timed UNTIL cutoffs to the last included local civil date', () => {

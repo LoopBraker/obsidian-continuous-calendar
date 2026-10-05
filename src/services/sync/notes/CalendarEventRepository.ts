@@ -16,11 +16,24 @@ import {
 } from './FrontmatterEventCodec';
 import {
 	CalendarEventIndex,
-	CalendarEventIndexError,
 	CalendarEventPathCollisionError,
+	CalendarNoteTargetRepresentationConflictError,
+	DuplicateCalendarNoteTargetError,
 	DuplicateCalendarEventUidError,
 	type IndexedCalendarEvent,
 } from './CalendarEventIndex';
+import {
+	addCivilDays,
+	calendarNoteTargetClaim,
+	calendarNoteTargetMatchesProviderReference,
+	decodeCalendarNoteTarget,
+	encodeCalendarNoteTarget,
+	eventDateForDayOffset,
+	occurrenceTargetKey,
+	targetKey,
+	type CalendarNoteTarget,
+	type CalendarNoteTargetClaim,
+} from './CalendarNoteTarget';
 
 /** A minimal file descriptor understood by the injected vault operations. */
 export interface CalendarVaultFile {
@@ -67,11 +80,39 @@ export interface CalendarEventCreateOptions extends CalendarEventFrontmatterOpti
 	readonly filename?: string;
 }
 
+export interface CalendarNoteDayConfirmation {
+	readonly action: 'accept-proposed'
+		| 'keep-unresolved'
+		| 'rebind-offset';
+	readonly newDayOffset?: number;
+	readonly confirmedDate?: string;
+	readonly occurrenceStartDate?: string;
+	readonly occurrenceEndDateExclusive?: string;
+}
+
+export interface CalendarNoteTargetClaimant {
+	readonly path: string;
+	readonly uid?: string;
+	readonly target?: CalendarNoteTarget;
+	readonly targetErrors?: readonly string[];
+	readonly record?: CalendarEventNoteRecord;
+	readonly reference?: ProviderReference;
+	readonly marked: boolean;
+	readonly claim: CalendarNoteTargetClaim;
+}
+
+export interface CalendarNoteLegacyMigrationResult {
+	readonly migrated: readonly CalendarEventNoteRecord[];
+	readonly unresolved: readonly CalendarEventNoteRecord[];
+	readonly alreadyTargeted: readonly CalendarEventNoteRecord[];
+}
+
 export type CalendarEventUpdateOptions = CalendarEventFrontmatterOptions;
 
 export interface CalendarEventNoteRecord extends IndexedCalendarEvent {
 	readonly body: string;
 	readonly frontmatter: FrontmatterRecord;
+	readonly targetErrors?: readonly string[];
 }
 
 export interface LocalCalendarEventDeletion {
@@ -88,7 +129,10 @@ export type CalendarEventRepositoryErrorCode =
 	| 'not-found'
 	| 'immutable-uid'
 	| 'immutable-association'
-	| 'invalid-path';
+	| 'invalid-path'
+	| 'invalid-target'
+	| 'duplicate-target'
+	| 'target-representation-conflict';
 
 export class CalendarEventRepositoryError extends Error {
 	readonly code: CalendarEventRepositoryErrorCode;
@@ -120,7 +164,13 @@ export class CalendarEventRepositoryError extends Error {
 
 export interface CalendarEventRepositoryErrorReport {
 	readonly path: string;
-	readonly code: 'invalid-event-note' | 'duplicate-uid' | 'duplicate-path';
+	readonly code:
+		| 'invalid-event-note'
+		| 'duplicate-uid'
+		| 'duplicate-path'
+		| 'invalid-target'
+		| 'duplicate-target'
+		| 'target-representation-conflict';
 	readonly message: string;
 	readonly validationErrors?: readonly CalendarEventValidationError[];
 	readonly error: Error;
@@ -131,6 +181,7 @@ export interface CalendarEventReloadResult {
 	readonly events: readonly CalendarEventNoteRecord[];
 	readonly deleted: readonly LocalCalendarEventDeletion[];
 	readonly errors: readonly CalendarEventRepositoryErrorReport[];
+	readonly ownedPaths: readonly string[];
 }
 
 export type LocalDeletionListener = (deletion: LocalCalendarEventDeletion) => void;
@@ -227,10 +278,6 @@ function canonicalPatch(input: CalendarEventInputLike): Record<string, unknown> 
 	return patch;
 }
 
-function asError(value: unknown): Error {
-	return value instanceof Error ? value : new Error(String(value));
-}
-
 function pathOrUidError(pathOrUid: string): CalendarEventRepositoryError {
 	return new CalendarEventRepositoryError(
 		'not-found',
@@ -275,6 +322,47 @@ function providerReferenceKey(reference: ProviderReference): string {
 	]);
 }
 
+function rawProviderReference(frontmatter: FrontmatterRecord): ProviderReference | undefined {
+	const rawSync = frontmatter.calendar_sync;
+	if (typeof rawSync !== 'object' || rawSync === null || Array.isArray(rawSync)) return undefined;
+	const sync = rawSync as Record<string, unknown>;
+	for (const providerId of Object.keys(sync).filter(key => key !== 'status' && key !== 'error').sort()) {
+		const rawProvider = sync[providerId];
+		if (typeof rawProvider !== 'object' || rawProvider === null || Array.isArray(rawProvider)) continue;
+		const provider = rawProvider as Record<string, unknown>;
+		const accountId = provider.account_id;
+		const calendarId = provider.calendar_id;
+		const remoteEventId = provider.event_id ?? provider.remote_event_id;
+		if (
+			typeof accountId === 'string' && accountId.length > 0 &&
+			typeof calendarId === 'string' && calendarId.length > 0 &&
+			typeof remoteEventId === 'string' && remoteEventId.length > 0
+		) return { providerId, accountId, calendarId, remoteEventId };
+	}
+	return undefined;
+}
+
+function civilDateSpan(startDate: string, endDateExclusive: string): number | undefined {
+	const nextDay = addCivilDays(startDate, 0);
+	if (!nextDay || !addCivilDays(endDateExclusive, 0) || endDateExclusive <= startDate) return undefined;
+	let count = 0;
+	let cursor = startDate;
+	while (cursor < endDateExclusive && count < 4000) {
+		count += 1;
+		cursor = addCivilDays(cursor, 1) ?? '';
+	}
+	return cursor === endDateExclusive ? count : undefined;
+}
+
+function errorReport(
+	path: string,
+	code: CalendarEventRepositoryErrorReport['code'],
+	message: string,
+	error: Error,
+): CalendarEventRepositoryErrorReport {
+	return { path, code, message, error };
+}
+
 /**
  * Vault-backed repository for explicitly marked Markdown event notes.
  * Provider APIs are intentionally absent: renames, updates, and deletion
@@ -290,11 +378,18 @@ export class CalendarEventRepository {
 	private readonly filenameFactory?: CalendarEventRepositoryOptions['filenameFactory'];
 	private readonly deletionListeners = new Set<LocalDeletionListener>();
 	private readonly linkedNoteCreations = new Map<string, Promise<CalendarEventNoteRecord>>();
+	private readonly targetCreations = new Map<string, Promise<CalendarEventNoteRecord>>();
+	private readonly targetClaimants = new Map<string, CalendarNoteTargetClaimant[]>();
+	private readonly occurrenceClaimants = new Map<string, CalendarNoteTargetClaimant[]>();
+	private readonly uidClaimants = new Map<string, CalendarNoteTargetClaimant[]>();
+	private noteClaimants: CalendarNoteTargetClaimant[] = [];
+	private ownedPathStorage: string[] = [];
 	private lastReloadResult: CalendarEventReloadResult = {
 		records: [],
 		events: [],
 		deleted: [],
 		errors: [],
+		ownedPaths: [],
 	};
 
 	constructor(
@@ -388,39 +483,86 @@ export class CalendarEventRepository {
 	): Promise<{
 		records: CalendarEventNoteRecord[];
 		errors: CalendarEventRepositoryErrorReport[];
+		claimants: CalendarNoteTargetClaimant[];
+		uidClaimants: Map<string, CalendarNoteTargetClaimant[]>;
+		ownedPaths: string[];
 	}> {
 		const records: CalendarEventNoteRecord[] = [];
 		const errors: CalendarEventRepositoryErrorReport[] = [];
+		const claimants: CalendarNoteTargetClaimant[] = [];
+		const uidClaimants = new Map<string, CalendarNoteTargetClaimant[]>();
+		const ownedPaths: string[] = [];
 		for (const file of files) {
 			const path = normalizePath(filePath(file));
 			const content = await this.vault.read(file);
 			const decoded = decodeCalendarEventNote(content);
-			if (!decoded.marked) continue;
-			if (!decoded.note) {
+			const rawTarget = decoded.parsed.frontmatter.calendar_note_target;
+			const hasTarget = Object.prototype.hasOwnProperty.call(decoded.parsed.frontmatter, 'calendar_note_target');
+			if (!decoded.marked && !hasTarget) continue;
+			if (decoded.marked || hasTarget) ownedPaths.push(path);
+			const rawUid = decoded.parsed.frontmatter.calendar_uid;
+			const decodedTarget = hasTarget ? decodeCalendarNoteTarget(rawTarget) : undefined;
+			const target = decodedTarget?.ok ? decodedTarget.target : undefined;
+			const reference = decoded.note?.association?.reference ?? rawProviderReference(decoded.parsed.frontmatter);
+			const ownershipErrors = target
+				? !reference
+					? ['calendar_note_target has no matching provider association']
+					: calendarNoteTargetMatchesProviderReference(target, reference)
+						? []
+						: ['calendar_note_target disagrees with its provider association']
+				: [];
+			const targetErrors = [
+				...(decodedTarget && !decodedTarget.ok ? decodedTarget.errors : []),
+				...ownershipErrors,
+			];
+			if (decoded.marked && !decoded.note) {
 				const error = new CalendarEventRepositoryError(
 					'invalid-event-note',
 					`Invalid calendar event frontmatter in "${path}"`,
 					{ path, validationErrors: decoded.errors },
 				);
-				errors.push({
-					path,
-					code: 'invalid-event-note',
-					message: error.message,
-					validationErrors: decoded.errors,
-					error,
-				});
-				continue;
+				errors.push({ path, code: 'invalid-event-note', message: error.message, validationErrors: decoded.errors, error });
 			}
-			records.push({
+			let record: CalendarEventNoteRecord | undefined;
+			if (decoded.note) {
+				record = {
+					path,
+					event: decoded.note.event,
+					status: decoded.note.status,
+					association: decoded.note.association,
+					...(target === undefined ? {} : { target }),
+					...(targetErrors.length === 0 ? {} : { targetErrors }),
+					frontmatter: decoded.note.frontmatter,
+					body: decoded.note.body,
+				};
+				records.push(record);
+			}
+			if (targetErrors.length > 0) {
+				const error = new CalendarEventRepositoryError(
+					'invalid-target',
+					`Invalid calendar_note_target in "${path}": ${targetErrors.join('; ')}`,
+					{ path },
+				);
+				errors.push(errorReport(path, 'invalid-target', error.message, error));
+			}
+			const claimant: CalendarNoteTargetClaimant = {
 				path,
-				event: decoded.note.event,
-				status: decoded.note.status,
-				association: decoded.note.association,
-				frontmatter: decoded.note.frontmatter,
-				body: decoded.note.body,
-			});
+				...(typeof rawUid === 'string' ? { uid: rawUid } : {}),
+				...(target === undefined ? {} : { target }),
+				...(targetErrors.length === 0 ? {} : { targetErrors }),
+				...(record === undefined ? {} : { record }),
+				...(reference === undefined ? {} : { reference }),
+				marked: decoded.marked,
+				claim: hasTarget ? calendarNoteTargetClaim(rawTarget) : {},
+			};
+			if (decoded.marked && typeof rawUid === 'string' && rawUid.length > 0) {
+				const uidGroup = uidClaimants.get(rawUid) ?? [];
+				uidGroup.push(claimant);
+				uidClaimants.set(rawUid, uidGroup);
+			}
+			if (decoded.marked || hasTarget) claimants.push(claimant);
 		}
-		return { records, errors };
+		return { records, errors, claimants, uidClaimants, ownedPaths: ownedPaths.sort(comparePaths) };
 	}
 
 	/**
@@ -446,32 +588,87 @@ export class CalendarEventRepository {
 		}
 
 		const scanned = await this.reloadRecords(files);
-		const acceptedRecords: CalendarEventNoteRecord[] = [];
-		for (const record of scanned.records) {
-			try {
-				const candidate = new CalendarEventIndex();
-				candidate.rebuild([...acceptedRecords, record]);
-				acceptedRecords.push(record);
-			} catch (value) {
-				const error = value instanceof CalendarEventIndexError ? value : asError(value);
-				scanned.errors.push({
-					path: record.path,
-					code: error instanceof CalendarEventIndexError && error.code === 'duplicate-path'
-						? 'duplicate-path'
-						: 'duplicate-uid',
-					message: error.message,
-					error,
-				});
+		const quarantinedPaths = new Set(scanned.errors
+			.filter(error => error.code === 'invalid-target')
+			.map(error => error.path));
+		const targetGroups = new Map<string, CalendarNoteTargetClaimant[]>();
+		const occurrenceGroups = new Map<string, CalendarNoteTargetClaimant[]>();
+		for (const claimant of scanned.claimants) {
+			if (claimant.claim.key) {
+				const group = targetGroups.get(claimant.claim.key) ?? [];
+				group.push(claimant);
+				targetGroups.set(claimant.claim.key, group);
+			}
+			if (claimant.claim.occurrenceKey) {
+				const group = occurrenceGroups.get(claimant.claim.occurrenceKey) ?? [];
+				group.push(claimant);
+				occurrenceGroups.set(claimant.claim.occurrenceKey, group);
 			}
 		}
 
+		for (const [uid, claimants] of scanned.uidClaimants) {
+			if (claimants.length < 2) continue;
+			for (const claimant of claimants) {
+				quarantinedPaths.add(claimant.path);
+				const conflict = claimants.find(candidate => candidate.path !== claimant.path);
+				const error = new DuplicateCalendarEventUidError(uid, claimant.path, conflict?.path ?? claimant.path);
+				scanned.errors.push(errorReport(claimant.path, 'duplicate-uid', error.message, error));
+			}
+		}
+		for (const [key, claimants] of targetGroups) {
+			if (claimants.length < 2) continue;
+			for (const claimant of claimants) {
+				quarantinedPaths.add(claimant.path);
+				const conflict = claimants.find(candidate => candidate.path !== claimant.path);
+				const error = new DuplicateCalendarNoteTargetError(key, claimant.path, conflict?.path ?? claimant.path);
+				scanned.errors.push(errorReport(claimant.path, 'duplicate-target', error.message, error));
+			}
+		}
+		for (const [key, claimants] of occurrenceGroups) {
+			const hasWhole = claimants.some(claimant => claimant.claim.scope === 'occurrence');
+			const hasDays = claimants.some(claimant => claimant.claim.scope === 'occurrence-day');
+			if (!hasWhole || !hasDays) continue;
+			for (const claimant of claimants.filter(candidate =>
+				candidate.claim.scope === 'occurrence' || candidate.claim.scope === 'occurrence-day')) {
+				quarantinedPaths.add(claimant.path);
+				const conflict = claimants.find(candidate =>
+					candidate.path !== claimant.path && candidate.claim.scope !== claimant.claim.scope &&
+					(candidate.claim.scope === 'occurrence' || candidate.claim.scope === 'occurrence-day'),
+				);
+				const error = new CalendarNoteTargetRepresentationConflictError(key, claimant.path, conflict?.path ?? claimant.path);
+				scanned.errors.push(errorReport(claimant.path, 'target-representation-conflict', error.message, error));
+			}
+		}
+
+		const pathGroups = new Map<string, CalendarEventNoteRecord[]>();
+		for (const record of scanned.records) {
+			const group = pathGroups.get(record.path) ?? [];
+			group.push(record);
+			pathGroups.set(record.path, group);
+		}
+		for (const [path, group] of pathGroups) {
+			if (group.length < 2) continue;
+			quarantinedPaths.add(path);
+			const error = new CalendarEventPathCollisionError(path, path);
+			scanned.errors.push(errorReport(path, 'duplicate-path', error.message, error));
+		}
+
+		const acceptedRecords = scanned.records.filter(record => !quarantinedPaths.has(record.path));
 		this.index.rebuild(acceptedRecords);
+		this.targetClaimants.clear();
+		this.occurrenceClaimants.clear();
+		this.uidClaimants.clear();
+		for (const [key, claimants] of targetGroups) this.targetClaimants.set(key, claimants);
+		for (const [key, claimants] of occurrenceGroups) this.occurrenceClaimants.set(key, claimants);
+		for (const [key, claimants] of scanned.uidClaimants) this.uidClaimants.set(key, claimants);
+		this.noteClaimants = scanned.claimants;
+		this.ownedPathStorage = scanned.ownedPaths;
 		const records: CalendarEventNoteRecord[] = this.index.values().map(record => ({
 			...record,
 			frontmatter: record.frontmatter ?? {},
 			body: record.body ?? '',
 		}));
-		this.lastReloadResult = { records, events: records, deleted, errors: scanned.errors };
+		this.lastReloadResult = { records, events: records, deleted, errors: scanned.errors, ownedPaths: this.ownedPathStorage };
 		return this.lastReloadResult;
 	}
 
@@ -548,9 +745,10 @@ export class CalendarEventRepository {
 	}
 
 	private throwIfUidExists(uid: string): void {
-		const existingPath = this.index.getPath(uid);
+		const existingPath = this.uidClaimants.get(uid)?.[0]?.path ?? this.index.getPath(uid);
 		if (existingPath !== undefined) {
-			throw new DuplicateCalendarEventUidError(uid, existingPath, existingPath);
+			const conflictPath = this.uidClaimants.get(uid)?.find(claimant => claimant.path !== existingPath)?.path ?? existingPath;
+			throw new DuplicateCalendarEventUidError(uid, existingPath, conflictPath);
 		}
 	}
 
@@ -583,11 +781,192 @@ export class CalendarEventRepository {
 			event,
 			status: options.status,
 			association: recordAssociation(event.uid, options.association, options.status),
+			...(options.target === undefined ? {} : { target: options.target }),
 			frontmatter: encodeFrontmatterForRecord(event, options),
 			body: options.body ?? '',
 		};
 		this.index.set(record);
 		return record;
+	}
+
+	private targetRepresentationConflict(target: CalendarNoteTarget, excludingPath?: string): CalendarNoteTargetClaimant | undefined {
+		if (target.scope === 'series') return undefined;
+		return (this.occurrenceClaimants.get(occurrenceTargetKey(target)) ?? []).find(claimant =>
+			claimant.path !== excludingPath &&
+			((target.scope === 'occurrence' && claimant.claim.scope === 'occurrence-day') ||
+				(target.scope === 'occurrence-day' && claimant.claim.scope === 'occurrence')),
+		);
+	}
+
+	private async createTargetNote(
+		input: CalendarEventInputLike,
+		target: CalendarNoteTarget,
+		reference: ProviderReference,
+		options: Omit<CalendarEventCreateOptions, 'association' | 'target'>,
+	): Promise<CalendarEventNoteRecord> {
+		await this.reload();
+		const key = targetKey(target);
+		const claims = this.targetClaimants.get(key) ?? [];
+		if (claims.length > 0) {
+			if (claims.length > 1) {
+				const conflict = new DuplicateCalendarNoteTargetError(key, claims[1].path, claims[0].path);
+				throw new CalendarEventRepositoryError('duplicate-target', conflict.message, { path: claims[1].path, cause: conflict });
+			}
+			const claimant = claims[0];
+			if (!claimant.record || claimant.targetErrors || !claimant.target) {
+				throw new CalendarEventRepositoryError(
+					'invalid-target',
+					`Calendar note target at "${claimant.path}" is malformed and needs repair`,
+					{ path: claimant.path, uid: claimant.uid },
+				);
+			}
+			return claimant.record;
+		}
+		const unresolvedProviderClaim = this.noteClaimants.find(claimant =>
+			claimant.marked &&
+			claimant.reference !== undefined &&
+			sameProviderReference(claimant.reference, reference) &&
+			(!claimant.target || claimant.targetErrors !== undefined),
+		);
+		if (unresolvedProviderClaim) {
+			throw new CalendarEventRepositoryError(
+				'invalid-target',
+				`Existing linked note at "${unresolvedProviderClaim.path}" has no verified target; resolve its legacy ownership before creating another note`,
+				{ path: unresolvedProviderClaim.path, uid: unresolvedProviderClaim.uid },
+			);
+		}
+		const representationConflict = this.targetRepresentationConflict(target);
+		if (target.scope !== 'series' && representationConflict) {
+			const conflict = new CalendarNoteTargetRepresentationConflictError(
+				occurrenceTargetKey(target),
+				'requested target',
+				representationConflict.path,
+			);
+			throw new CalendarEventRepositoryError('target-representation-conflict', conflict.message, {
+				path: representationConflict.path,
+				cause: conflict,
+			});
+		}
+		if (target.scope !== 'series') {
+			const ambiguousSameScope = (this.occurrenceClaimants.get(occurrenceTargetKey(target)) ?? []).find(claimant =>
+				claimant.claim.scope === target.scope && claimant.claim.key === undefined,
+			);
+			if (ambiguousSameScope) {
+				throw new CalendarEventRepositoryError(
+					'invalid-target',
+					`Malformed ${target.scope} target metadata at "${ambiguousSameScope.path}" blocks creation until repaired`,
+					{ path: ambiguousSameScope.path },
+				);
+			}
+		}
+
+		const previewEvent = target.scope === 'series'
+			? undefined
+			: normalizeCalendarEvent({ ...input, uid: getUidInput(input) ?? 'calendar-note-preview' });
+		let finalTarget = target;
+		let noteInput = input;
+		let occurrenceDate = previewEvent ? eventDateForDayOffset(previewEvent, 0) : undefined;
+		if (target.scope === 'occurrence-day') {
+			if (!previewEvent) throw new CalendarEventRepositoryError('invalid-target', 'Occurrence event is missing');
+			const expectedDate = eventDateForDayOffset(previewEvent, target.dayOffset);
+			if (!expectedDate) {
+				throw new CalendarEventRepositoryError(
+					'invalid-target',
+					`Day offset ${target.dayOffset} is outside the occurrence date range`,
+				);
+			}
+			if (target.confirmedDate !== undefined && target.confirmedDate !== expectedDate) {
+				throw new CalendarEventRepositoryError(
+					'invalid-target',
+					`Confirmed occurrence-day date must be ${expectedDate} for offset ${target.dayOffset}`,
+				);
+			}
+			finalTarget = {
+				...target,
+				confirmedDate: target.confirmedDate ?? expectedDate,
+				dayStatus: target.dayStatus ?? 'confirmed',
+			};
+			const nextDay = addCivilDays(expectedDate, 1);
+			if (!nextDay) throw new CalendarEventRepositoryError('invalid-target', 'Occurrence day is invalid');
+			noteInput = { ...input, start: expectedDate, end: nextDay, allDay: true, recurrence: undefined };
+			occurrenceDate = expectedDate;
+		}
+		if (previewEvent && !occurrenceDate) {
+			throw new CalendarEventRepositoryError('invalid-target', 'Occurrence has no valid civil date');
+		}
+		const filename = options.filename ?? (previewEvent && occurrenceDate
+			? `${occurrenceDate} ${slugifyTitle(previewEvent.title)}`
+			: undefined);
+		const status = options.status ?? 'pending';
+		try {
+			await this.create(noteInput, {
+				...options,
+				filename,
+				status,
+				association: reference,
+				target: finalTarget,
+			});
+		} catch (value) {
+			// A create may have committed to the vault before reporting a failure.
+			// Rescan by immutable target before deciding that the operation failed.
+			await this.reload();
+			const recovered = this.targetClaimants.get(targetKey(finalTarget)) ?? [];
+			if (recovered.length === 1 && recovered[0].record && !recovered[0].targetErrors) return recovered[0].record;
+			throw value;
+		}
+		await this.reload();
+		const created = this.targetClaimants.get(targetKey(finalTarget)) ?? [];
+		if (created.length !== 1 || !created[0].record || created[0].targetErrors) {
+			throw new CalendarEventRepositoryError(
+				'duplicate-target',
+				`Created calendar note target could not be uniquely rediscovered`,
+				{ path: created[0]?.path },
+			);
+		}
+		return created[0].record;
+	}
+
+	/**
+	 * Create or rediscover one explicitly requested target note. Calls for the
+	 * same occurrence are serialized so whole-occurrence/day exclusivity is
+	 * checked after any earlier request has completed.
+	 */
+	async createForTarget(
+		input: CalendarEventInputLike,
+		target: CalendarNoteTarget,
+		association: CalendarEventAssociation | ProviderReference,
+		options: Omit<CalendarEventCreateOptions, 'association' | 'target'> = {},
+	): Promise<CalendarEventNoteRecord> {
+		const reference = providerReferenceOf(association);
+		const targetResult = decodeCalendarNoteTarget(encodeCalendarNoteTarget(target));
+		if (!targetResult.ok) {
+			throw new CalendarEventRepositoryError('invalid-target', targetResult.errors.join('; '));
+		}
+		const validTarget = targetResult.target;
+		if (!calendarNoteTargetMatchesProviderReference(validTarget, reference)) {
+			throw new CalendarEventRepositoryError(
+				'immutable-association',
+				'Calendar note target provider, account, calendar, or event identity does not match its provider association',
+			);
+		}
+		const lockKey = validTarget.scope === 'series' ? targetKey(validTarget) : occurrenceTargetKey(validTarget);
+		const active = this.targetCreations.get(lockKey);
+		if (active) {
+			const existing = await active;
+			if (existing.target && targetKey(existing.target) === targetKey(validTarget)) return existing;
+			return this.createForTarget(input, validTarget, association, options);
+		}
+		const status = options.status ?? ('reference' in association ? association.status : undefined);
+		const operation = this.createTargetNote(input, validTarget, reference, {
+			...options,
+			...(status === undefined ? {} : { status }),
+		});
+		this.targetCreations.set(lockKey, operation);
+		try {
+			return await operation;
+		} finally {
+			if (this.targetCreations.get(lockKey) === operation) this.targetCreations.delete(lockKey);
+		}
 	}
 
 	/**
@@ -654,6 +1033,8 @@ export class CalendarEventRepository {
 			event: decoded.note.event,
 			status: decoded.note.status,
 			association: decoded.note.association,
+			...(decoded.note.target === undefined ? {} : { target: decoded.note.target }),
+			...(decoded.note.targetErrors === undefined ? {} : { targetErrors: decoded.note.targetErrors }),
 			frontmatter: decoded.note.frontmatter,
 			body: decoded.note.body,
 		};
@@ -674,12 +1055,214 @@ export class CalendarEventRepository {
 		) as CalendarEventNoteRecord | undefined;
 	}
 
+	getByTarget(target: CalendarNoteTarget): CalendarEventNoteRecord | undefined {
+		return this.index.getByTarget(target) as CalendarEventNoteRecord | undefined;
+	}
+
+	/** All frontmatter claimants, including quarantined or malformed candidates. */
+	getTargetClaimants(target: CalendarNoteTarget): readonly CalendarNoteTargetClaimant[] {
+		return [...(this.targetClaimants.get(targetKey(target)) ?? [])];
+	}
+
+	/** Every note marked as calendar-owned, including malformed or quarantined notes. */
+	listOwnedPaths(): readonly string[] {
+		return [...this.ownedPathStorage];
+	}
+
 	get(pathOrUid: string): CalendarEventNoteRecord | undefined {
 		return this.getByPath(pathOrUid) ?? this.getByUid(pathOrUid);
 	}
 
 	list(): CalendarEventNoteRecord[] {
 		return this.index.values() as CalendarEventNoteRecord[];
+	}
+
+	private async persistTarget(
+		existing: CalendarEventNoteRecord,
+		target: CalendarNoteTarget,
+		association = existing.association,
+	): Promise<CalendarEventNoteRecord> {
+		if (existing.target && JSON.stringify(existing.target) === JSON.stringify(target) &&
+			association === existing.association) return existing;
+		const frontmatterForRecord = { ...existing.frontmatter };
+		await this.processPath(existing.path, frontmatter => {
+			applyCalendarEventFrontmatter(frontmatter, existing.event, {
+				target,
+				...(existing.status === undefined ? {} : { status: existing.status }),
+				...(association === undefined ? {} : { association }),
+			});
+			Object.assign(frontmatterForRecord, frontmatter);
+		});
+		const updated: CalendarEventNoteRecord = { ...existing, association, target, targetErrors: undefined, frontmatter: frontmatterForRecord };
+		this.index.update(existing.path, existing.event, {
+			status: updated.status,
+			association,
+			target,
+			targetErrors: undefined,
+			frontmatter: frontmatterForRecord,
+		});
+		return updated;
+	}
+
+	/**
+	 * Retain a suggested date until the user explicitly accepts or resolves it.
+	 * Day keys remain stable because confirmation fields are excluded by targetKey.
+	 */
+	async proposeDayTargetDate(pathOrUid: string, nextEventInput: CalendarEventInputLike): Promise<CalendarEventNoteRecord> {
+		const path = this.resolveExistingPath(pathOrUid);
+		const existing = this.index.getByPath(path) as CalendarEventNoteRecord;
+		if (existing.target?.scope !== 'occurrence-day') {
+			throw new CalendarEventRepositoryError('invalid-target', `Calendar note "${path}" is not an occurrence-day target`, { path });
+		}
+		const nextEvent = normalizeCalendarEvent({ ...nextEventInput, uid: existing.event.uid });
+		const nextDate = eventDateForDayOffset(nextEvent, existing.target.dayOffset);
+		if (!existing.target.confirmedDate && nextDate) {
+			return this.persistTarget(existing, { ...existing.target, confirmedDate: nextDate, dayStatus: 'confirmed' });
+		}
+		if (nextDate === existing.target.confirmedDate) {
+			return this.persistTarget(existing, { ...existing.target, proposedDate: undefined, dayStatus: 'confirmed' });
+		}
+		if (nextDate) {
+			return this.persistTarget(existing, { ...existing.target, proposedDate: nextDate, dayStatus: 'unresolved' });
+		}
+		return this.persistTarget(existing, { ...existing.target, proposedDate: undefined, dayStatus: 'unresolved' });
+	}
+
+	async confirmDayTarget(pathOrUid: string, decision: CalendarNoteDayConfirmation): Promise<CalendarEventNoteRecord> {
+		const path = this.resolveExistingPath(pathOrUid);
+		const existing = this.index.getByPath(path) as CalendarEventNoteRecord;
+		const currentTarget = existing.target;
+		if (currentTarget?.scope !== 'occurrence-day') {
+			throw new CalendarEventRepositoryError('invalid-target', `Calendar note "${path}" is not an occurrence-day target`, { path });
+		}
+		let nextTarget: CalendarNoteTarget;
+		if (decision.action === 'accept-proposed') {
+			if (!currentTarget.proposedDate) {
+				throw new CalendarEventRepositoryError('invalid-target', `Calendar note "${path}" has no proposed day to accept`, { path });
+			}
+			const { proposedDate, ...rest } = currentTarget;
+			nextTarget = { ...rest, confirmedDate: proposedDate, dayStatus: 'confirmed' };
+		} else if (decision.action === 'keep-unresolved') {
+			nextTarget = { ...currentTarget, dayStatus: 'unresolved' };
+		} else {
+			const { newDayOffset, confirmedDate, occurrenceStartDate, occurrenceEndDateExclusive } = decision;
+			if (
+				!Number.isInteger(newDayOffset) || newDayOffset === undefined || newDayOffset < 0 ||
+				!confirmedDate || !occurrenceStartDate || !occurrenceEndDateExclusive
+			) {
+				throw new CalendarEventRepositoryError('invalid-target', 'Rebinding a day target requires a valid offset and occurrence civil-date bounds', { path });
+			}
+			const span = civilDateSpan(occurrenceStartDate, occurrenceEndDateExclusive);
+			const expectedDate = addCivilDays(occurrenceStartDate, newDayOffset);
+			if (span === undefined || newDayOffset >= span || expectedDate !== confirmedDate) {
+				throw new CalendarEventRepositoryError('invalid-target', 'The chosen offset is outside the occurrence or does not match its civil date', { path });
+			}
+			const candidate: CalendarNoteTarget = {
+				...currentTarget,
+				dayOffset: newDayOffset,
+				confirmedDate,
+				proposedDate: undefined,
+				dayStatus: 'confirmed',
+			};
+			await this.reload();
+			const conflicts = (this.targetClaimants.get(targetKey(candidate)) ?? []).filter(claimant => claimant.path !== path);
+			if (conflicts.length > 0) {
+				const conflict = new DuplicateCalendarNoteTargetError(targetKey(candidate), path, conflicts[0].path);
+				throw new CalendarEventRepositoryError('duplicate-target', conflict.message, { path, uid: existing.event.uid, cause: conflict });
+			}
+			const representationConflict = this.targetRepresentationConflict(candidate, path);
+			if (representationConflict) {
+				const conflict = new CalendarNoteTargetRepresentationConflictError(
+					occurrenceTargetKey(candidate), path, representationConflict.path,
+				);
+				throw new CalendarEventRepositoryError('target-representation-conflict', conflict.message, { path, uid: existing.event.uid, cause: conflict });
+			}
+			nextTarget = candidate;
+		}
+		const updated = await this.persistTarget(existing, nextTarget);
+		await this.reload();
+		return this.getByUid(updated.event.uid) ?? updated;
+	}
+
+	/**
+	 * Apply only caller-verified target identities to legacy provider links.
+	 * Returning undefined leaves that note unchanged for explicit reconciliation.
+	 */
+	async migrateLegacyTargets(
+		resolveVerifiedTarget: (record: CalendarEventNoteRecord) =>
+			| CalendarNoteTarget
+			| { target: CalendarNoteTarget; association?: CalendarEventAssociation }
+			| undefined
+			| Promise<CalendarNoteTarget | { target: CalendarNoteTarget; association?: CalendarEventAssociation } | undefined>,
+	): Promise<CalendarNoteLegacyMigrationResult> {
+		await this.reload();
+		const migratedUids: string[] = [];
+		const unresolved: CalendarEventNoteRecord[] = [];
+		const alreadyTargeted: CalendarEventNoteRecord[] = [];
+		const reservedTargetKeys = new Set(this.targetClaimants.keys());
+		const reservedOccurrenceModes = new Map<string, Set<string>>();
+		for (const [occurrenceKey, claimants] of this.occurrenceClaimants) {
+			reservedOccurrenceModes.set(occurrenceKey, new Set(claimants.map(claimant => claimant.claim.scope ?? 'unknown')));
+		}
+		for (const record of this.list()) {
+			if (record.target || record.targetErrors) {
+				if (record.target) alreadyTargeted.push(record);
+				continue;
+			}
+			if (!record.association) {
+				unresolved.push(record);
+				continue;
+			}
+			const resolution = await resolveVerifiedTarget(record);
+			if (!resolution) {
+				unresolved.push(record);
+				continue;
+			}
+			const target = 'target' in resolution ? resolution.target : resolution;
+			const association = 'target' in resolution ? resolution.association ?? record.association : record.association;
+			const decodedTarget = decodeCalendarNoteTarget(encodeCalendarNoteTarget(target));
+			if (!decodedTarget.ok || !association || association.calendarUid !== record.event.uid ||
+				!calendarNoteTargetMatchesProviderReference(target, association.reference) ||
+				association.reference.providerId !== record.association.reference.providerId ||
+				association.reference.accountId !== record.association.reference.accountId ||
+				association.reference.calendarId !== record.association.reference.calendarId) {
+				unresolved.push(record);
+				continue;
+			}
+			const key = targetKey(target);
+			const occurrenceKey = target.scope === 'series' ? undefined : occurrenceTargetKey(target);
+			const modes = occurrenceKey === undefined ? new Set<string>() : reservedOccurrenceModes.get(occurrenceKey) ?? new Set<string>();
+			const hasRepresentationConflict = target.scope === 'occurrence'
+				? modes.has('occurrence-day')
+				: target.scope === 'occurrence-day' && modes.has('occurrence');
+			if (reservedTargetKeys.has(key) || hasRepresentationConflict) {
+				unresolved.push(record);
+				continue;
+			}
+			// Re-read just before the write: another vault action may have claimed
+			// this target or moved/changed the legacy note while the resolver ran.
+			await this.reload();
+			const current = this.getByUid(record.event.uid);
+			if (!current || current.path !== record.path || current.target || !current.association ||
+				!sameProviderReference(current.association.reference, record.association.reference) ||
+				(this.targetClaimants.get(key)?.length ?? 0) > 0 ||
+				this.targetRepresentationConflict(target)) {
+				unresolved.push(record);
+				continue;
+			}
+			await this.persistTarget(current, target, association);
+			migratedUids.push(record.event.uid);
+			reservedTargetKeys.add(key);
+			if (occurrenceKey !== undefined) {
+				modes.add(target.scope);
+				reservedOccurrenceModes.set(occurrenceKey, modes);
+			}
+		}
+		await this.reload();
+		const migrated = migratedUids
+			.map(uid => this.getByUid(uid))
+			.filter((record): record is CalendarEventNoteRecord => record !== undefined);
+		return { migrated, unresolved, alreadyTargeted };
 	}
 
 	private mergedEventInput(

@@ -15,17 +15,26 @@ import type {
 	CalendarProvider,
 	CalendarProviderDependencies,
 	ChangePage,
+	ListInstancesRequest,
 	OpaqueCursor,
+	ProviderDateTimeValue,
 	ProviderHttpRequest,
 	ProviderHttpResponse,
 	ProviderSession,
 	PullChangesRequest,
 	RemoteCalendar,
 	RemoteCalendarEvent,
+	RemoteEventLookupResult,
+	RemoteEventTombstone,
+	RemoteOccurrence,
+	UpdateOccurrenceRequest,
 } from '../CalendarProvider';
 import {
 	calendarEventToGoogleResource,
+	calendarEventToGoogleInstancePatch,
 	GoogleEventMappingError,
+	googleDateTimeToProviderValue,
+	googleResourceToRemoteOccurrence,
 	googleResourceToRemoteEvent,
 	type GoogleEventResource,
 } from './GoogleEventMapper';
@@ -141,6 +150,41 @@ function supportedWritableAccessRole(role: unknown): boolean {
 	return role === 'owner' || role === 'writer';
 }
 
+function validateGoogleEventId(requestId: string | undefined): void {
+	if (requestId === undefined) return;
+	if (!/^[0-9a-v]{5,1024}$/.test(requestId)) {
+		throw permanentError('Google event ID must use 5 to 1024 lowercase base32hex characters', {
+			providerId: GOOGLE_PROVIDER_ID,
+			code: 'invalid-event-id',
+			operation: 'create-event',
+		});
+	}
+}
+
+function providerDateTimeQueryValue(value: ProviderDateTimeValue): string | undefined {
+	const mapped = googleDateTimeToProviderValue(value);
+	return mapped?.dateTime ?? mapped?.date;
+}
+
+function sameProviderDateTime(
+	left: ProviderDateTimeValue | undefined,
+	right: ProviderDateTimeValue,
+	masterTimeZone?: string,
+): boolean {
+	if (left?.date !== undefined || right.date !== undefined) return left?.date === right.date;
+	if (left?.dateTime !== right.dateTime) return false;
+	if (left?.timeZone === right.timeZone) return true;
+	if (!masterTimeZone) return false;
+	return (left?.timeZone ?? masterTimeZone) === (right.timeZone ?? masterTimeZone);
+}
+
+function occurrenceSlotKey(occurrence: Pick<RemoteOccurrence, 'masterRemoteId' | 'originalStartTime'>, masterTimeZone?: string): string {
+	const slot = occurrence.originalStartTime;
+	return slot.date !== undefined
+		? JSON.stringify([occurrence.masterRemoteId, 'date', slot.date])
+		: JSON.stringify([occurrence.masterRemoteId, 'dateTime', slot.dateTime, slot.timeZone ?? masterTimeZone]);
+}
+
 /** Google Calendar adapter with all network and clock behavior injected. */
 export class GoogleCalendarProvider implements CalendarProvider {
 	readonly id = GOOGLE_PROVIDER_ID;
@@ -211,7 +255,6 @@ export class GoogleCalendarProvider implements CalendarProvider {
 			const syncToken = request.cursor ? decodeGoogleCursor(request.cursor) : undefined;
 			let pageToken: string | undefined;
 			const changes: ChangePage['changes'] = [];
-			const exceptionMasterIds = new Set<string>();
 
 			for (let page = 0; page < this.maxPages; page += 1) {
 				const response = await this.requestJson<GoogleEventsListResponse>(
@@ -234,16 +277,19 @@ export class GoogleCalendarProvider implements CalendarProvider {
 					const remoteId = asNonEmptyString(resource.id);
 					if (!remoteId) continue;
 					const masterRemoteId = asNonEmptyString(resource.recurringEventId);
-					if (masterRemoteId) {
-						exceptionMasterIds.add(masterRemoteId);
-						changes.push({
-							type: 'series-unsupported',
-							providerId: GOOGLE_PROVIDER_ID,
-							calendarId: request.calendarId,
-							masterRemoteId,
-						});
-					}
 					if (resource.status === 'cancelled') {
+						if (masterRemoteId || resource.originalStartTime !== undefined) {
+							const occurrence = this.mapRemoteOccurrence(resource, request.calendarId, 'pull-changes');
+							if (occurrence.status !== 'cancelled') {
+								throw permanentError('Google returned a non-cancelled occurrence tombstone', {
+									providerId: GOOGLE_PROVIDER_ID,
+									code: 'invalid-occurrence-tombstone',
+									operation: 'pull-changes',
+								});
+							}
+							changes.push({ type: 'occurrence-cancelled', occurrence });
+							continue;
+						}
 						changes.push({
 							type: 'delete',
 							providerId: GOOGLE_PROVIDER_ID,
@@ -282,20 +328,8 @@ export class GoogleCalendarProvider implements CalendarProvider {
 						operation: 'pull-changes',
 					});
 				}
-				const guardedChanges = changes.map(change => {
-					if (change.type !== 'upsert' || !exceptionMasterIds.has(change.value.remoteId)) return change;
-					return {
-						type: 'upsert' as const,
-						value: {
-							...change.value,
-							recurrenceStatus: 'unsupported' as const,
-							recurrence: 'unsupported' as const,
-							recurrenceHasExceptions: true,
-						},
-					};
-				});
 				return {
-					changes: guardedChanges,
+					changes,
 					hasMore: false,
 					nextCursor: encodeGoogleCursor(nextSyncToken),
 				};
@@ -308,17 +342,226 @@ export class GoogleCalendarProvider implements CalendarProvider {
 		});
 	}
 
+	listInstances(request: ListInstancesRequest): Promise<RemoteOccurrence[]> {
+		return this.withSession(request.session, request.signal, async () => {
+			const staged = new Map<string, RemoteOccurrence>();
+			const pinnedStarts: ProviderDateTimeValue[] = [];
+			const pinnedKeys = new Set<string>();
+			for (const originalStart of request.pinnedOriginalStarts ?? []) {
+				if (!providerDateTimeQueryValue(originalStart)) {
+					throw permanentError('Pinned Google occurrence has an invalid original start time', {
+						providerId: GOOGLE_PROVIDER_ID,
+						code: 'invalid-original-start-time',
+						operation: 'list-instances',
+					});
+				}
+					const key = originalStart.date !== undefined
+						? JSON.stringify(['date', originalStart.date])
+						: JSON.stringify(['dateTime', originalStart.dateTime, originalStart.timeZone ?? request.masterTimeZone]);
+				if (pinnedKeys.has(key)) continue;
+				pinnedKeys.add(key);
+				pinnedStarts.push(originalStart);
+			}
+			const appendPages = async (originalStart?: ProviderDateTimeValue): Promise<void> => {
+				let pageToken: string | undefined;
+				for (let page = 0; page < this.maxPages; page += 1) {
+					const response = await this.requestJson<GoogleEventsListResponse>(
+						'GET',
+						`/calendars/${encodeURIComponent(request.calendarId)}/events/${encodeURIComponent(request.masterRemoteId)}/instances`,
+						undefined,
+						this.authHeaders(request.session),
+						'list-instances',
+						request.signal,
+						{
+							showDeleted: 'true',
+							maxResults: this.maxResults,
+							pageToken,
+							...(originalStart === undefined
+								? { timeMin: request.window.from, timeMax: request.window.to }
+								: { originalStart: providerDateTimeQueryValue(originalStart) }),
+						},
+					);
+					for (const resource of response.items ?? []) {
+						const occurrence = this.mapRemoteOccurrence(resource, request.calendarId, 'list-instances');
+						if (occurrence.masterRemoteId !== request.masterRemoteId) {
+							throw permanentError('Google returned an occurrence for a different recurring master', {
+								providerId: GOOGLE_PROVIDER_ID,
+								code: 'occurrence-master-mismatch',
+								operation: 'list-instances',
+							});
+						}
+						if (originalStart !== undefined && !sameProviderDateTime(occurrence.originalStartTime, originalStart, request.masterTimeZone)) continue;
+						const key = occurrenceSlotKey(occurrence, request.masterTimeZone);
+						const previous = staged.get(key);
+						if (
+							previous &&
+							(previous.instanceRemoteId !== occurrence.instanceRemoteId || previous.status !== occurrence.status)
+						) {
+							throw permanentError('Google returned conflicting occurrences for the same recurrence slot', {
+								providerId: GOOGLE_PROVIDER_ID,
+								code: 'occurrence-slot-conflict',
+								operation: 'list-instances',
+							});
+						}
+						staged.set(key, occurrence);
+					}
+					pageToken = asNonEmptyString(response.nextPageToken);
+					if (!pageToken) return;
+				}
+				throw transientError('Google occurrence fetch exceeded the page limit', {
+					providerId: GOOGLE_PROVIDER_ID,
+					code: 'page-limit',
+					operation: 'list-instances',
+				});
+			};
+
+			await appendPages();
+			for (const originalStart of pinnedStarts) await appendPages(originalStart);
+			return [...staged.values()];
+		});
+	}
+
+	async fetchEvent(
+		session: ProviderSession,
+		calendarId: string,
+		remoteId: string,
+		signal?: AbortSignal,
+	): Promise<RemoteEventLookupResult> {
+		try {
+			return await this.withSession(session, signal, async () => {
+				const resource = await this.requestJson<GoogleEventResource>(
+					'GET',
+					`/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(remoteId)}`,
+					undefined,
+					this.authHeaders(session),
+					'get-event',
+					signal,
+				);
+				if (resource.status === 'cancelled') {
+					const tombstone = this.mapTombstone(resource, calendarId, 'get-event');
+					return { status: 'cancelled', tombstone };
+				}
+				try {
+					return {
+						status: 'active',
+						event: googleResourceToRemoteEvent(resource, {
+							calendarId,
+							calendarTimezone: this.calendarTimezones.get(calendarId),
+						}),
+					};
+				} catch (error) {
+					if (error instanceof GoogleEventMappingError) {
+						throw permanentError('Google returned an invalid event resource', {
+							providerId: GOOGLE_PROVIDER_ID,
+							code: error.code,
+							operation: 'get-event',
+						});
+					}
+					throw error;
+				}
+			});
+		} catch (error) {
+			if (error instanceof ProviderError && error.status === 404 && error.operation === 'get-event') {
+				return { status: 'not-found', providerId: GOOGLE_PROVIDER_ID, calendarId, remoteId };
+			}
+			throw error;
+		}
+	}
+
+	updateOccurrence(request: UpdateOccurrenceRequest): Promise<Extract<RemoteOccurrence, { readonly status: 'active' }>> {
+		return this.withSession(request.session, request.signal, async () => {
+			const latest = await this.fetchEvent(
+				request.session,
+				request.calendarId,
+				request.instanceRemoteId,
+				request.signal,
+			);
+			if (latest.status !== 'active') {
+				throw conflictError('Google occurrence is no longer active', {
+					providerId: GOOGLE_PROVIDER_ID,
+					status: latest.status === 'not-found' ? 404 : 412,
+					code: latest.status === 'not-found' ? 'occurrence-not-found' : 'occurrence-cancelled',
+					operation: 'update-occurrence',
+				});
+			}
+			if (
+				latest.event.originalStartTime?.dateTime &&
+				(latest.event.originalStartTime.timeZone === undefined || request.originalStartTime.timeZone === undefined)
+			) {
+				const master = await this.fetchEvent(request.session, request.calendarId, request.masterRemoteId, request.signal);
+				if (master.status !== 'active' || !request.masterTimeZone || master.event.event.timezone !== request.masterTimeZone) {
+					throw conflictError('Google recurring master timezone changed before occurrence update', {
+						providerId: GOOGLE_PROVIDER_ID,
+						status: 412,
+						code: 'master-timezone-mismatch',
+						operation: 'update-occurrence',
+					});
+				}
+			}
+			if (
+				latest.event.recurrenceMasterId !== request.masterRemoteId ||
+				!sameProviderDateTime(latest.event.originalStartTime, request.originalStartTime, request.masterTimeZone)
+			) {
+				throw conflictError('Google occurrence identity no longer matches the requested recurrence slot', {
+					providerId: GOOGLE_PROVIDER_ID,
+					status: 412,
+					code: 'occurrence-identity-mismatch',
+					operation: 'update-occurrence',
+				});
+			}
+			if (request.expectedVersion && latest.event.version !== request.expectedVersion) {
+				throw conflictError('Google occurrence version changed before update', {
+					providerId: GOOGLE_PROVIDER_ID,
+					status: 412,
+					code: 'version-mismatch',
+					operation: 'update-occurrence',
+				});
+			}
+
+			const headers = this.jsonHeaders(request.session);
+			const expectedVersion = request.expectedVersion ?? latest.event.version;
+			if (expectedVersion) headers['If-Match'] = expectedVersion;
+			const resource = await this.requestJson<GoogleEventResource>(
+				'PATCH',
+				`/calendars/${encodeURIComponent(request.calendarId)}/events/${encodeURIComponent(request.instanceRemoteId)}`,
+				calendarEventToGoogleInstancePatch(request.event),
+				headers,
+				'update-occurrence',
+				request.signal,
+			);
+			const occurrence = this.mapRemoteOccurrence(resource, request.calendarId, 'update-occurrence');
+			if (
+				occurrence.status !== 'active' ||
+				occurrence.masterRemoteId !== request.masterRemoteId ||
+				occurrence.instanceRemoteId !== request.instanceRemoteId ||
+				!sameProviderDateTime(occurrence.originalStartTime, request.originalStartTime, request.masterTimeZone)
+			) {
+				throw permanentError('Google occurrence update returned a different occurrence identity', {
+					providerId: GOOGLE_PROVIDER_ID,
+					code: 'occurrence-identity-mismatch',
+					operation: 'update-occurrence',
+				});
+			}
+			return occurrence;
+		});
+	}
+
 	createEvent(
 		session: ProviderSession,
 		calendarId: string,
 		event: CalendarEvent,
 		signal?: AbortSignal,
+		requestId?: string,
 	): Promise<RemoteCalendarEvent> {
 		return this.withSession(session, signal, async () => {
+			validateGoogleEventId(requestId);
 			const resource = await this.requestJson<GoogleEventResource>(
 				'POST',
 				`/calendars/${encodeURIComponent(calendarId)}/events`,
-				calendarEventToGoogleResource(event),
+				{
+					...calendarEventToGoogleResource(event),
+					...(requestId === undefined ? {} : { id: requestId }),
+				},
 				this.jsonHeaders(session),
 				'create-event',
 				signal,
@@ -398,6 +641,70 @@ export class GoogleCalendarProvider implements CalendarProvider {
 			}
 			throw error;
 		}
+	}
+
+	private mapRemoteOccurrence(
+		resource: GoogleEventResource,
+		calendarId: string,
+		operation: string,
+	): RemoteOccurrence {
+		try {
+			return googleResourceToRemoteOccurrence(resource, {
+				calendarId,
+				calendarTimezone: this.calendarTimezones.get(calendarId),
+			});
+		} catch (error) {
+			if (error instanceof GoogleEventMappingError) {
+				throw permanentError('Google returned an invalid occurrence resource', {
+					providerId: GOOGLE_PROVIDER_ID,
+					code: error.code,
+					operation,
+				});
+			}
+			throw error;
+		}
+	}
+
+	private mapTombstone(
+		resource: GoogleEventResource,
+		calendarId: string,
+		operation: string,
+	): RemoteEventTombstone {
+		const remoteId = asNonEmptyString(resource.id);
+		if (!remoteId) {
+			throw permanentError('Google returned a cancelled event without an id', {
+				providerId: GOOGLE_PROVIDER_ID,
+				code: 'invalid-resource',
+				operation,
+			});
+		}
+		const masterRemoteId = asNonEmptyString(resource.recurringEventId);
+		if (masterRemoteId || resource.originalStartTime !== undefined) {
+			const occurrence = this.mapRemoteOccurrence(resource, calendarId, operation);
+			if (occurrence.status !== 'cancelled') {
+				throw permanentError('Google returned an invalid cancelled exception', {
+					providerId: GOOGLE_PROVIDER_ID,
+					code: 'invalid-occurrence-tombstone',
+					operation,
+				});
+			}
+			return {
+				providerId: GOOGLE_PROVIDER_ID,
+				calendarId,
+				remoteId,
+				...(occurrence.version === undefined ? {} : { version: occurrence.version }),
+				recurrenceMasterId: occurrence.masterRemoteId,
+				originalStartTime: occurrence.originalStartTime,
+				...(occurrence.actualStart === undefined ? {} : { actualStart: occurrence.actualStart }),
+				...(occurrence.actualEnd === undefined ? {} : { actualEnd: occurrence.actualEnd }),
+			};
+		}
+		return {
+			providerId: GOOGLE_PROVIDER_ID,
+			calendarId,
+			remoteId,
+			...(asNonEmptyString(resource.etag) === undefined ? {} : { version: asNonEmptyString(resource.etag) }),
+		};
 	}
 
 	private authHeaders(session: ProviderSession): Record<string, string> {

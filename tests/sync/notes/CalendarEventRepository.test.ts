@@ -11,6 +11,7 @@ import {
 	type CalendarVaultFileLike,
 } from '../../../src/services/sync/notes/CalendarEventRepository';
 import type { ProviderReference } from '../../../src/services/sync/model/CalendarEvent';
+import type { CalendarNoteTarget } from '../../../src/services/sync/notes/CalendarNoteTarget';
 
 const event = {
 	uid: 'event-1',
@@ -46,6 +47,25 @@ const googleReference: ProviderReference<'google'> = {
 	accountId: 'account-1',
 	calendarId: 'primary',
 	remoteEventId: 'remote-1',
+};
+
+const occurrenceTarget: CalendarNoteTarget = {
+	version: 1,
+	providerId: 'google',
+	accountId: 'account-1',
+	calendarId: 'primary',
+	scope: 'occurrence',
+	occurrence: { kind: 'event', eventId: 'remote-1' },
+};
+
+const occurrenceDayTarget: CalendarNoteTarget = {
+	version: 1,
+	providerId: 'google',
+	accountId: 'account-1',
+	calendarId: 'primary',
+	scope: 'occurrence-day',
+	occurrence: { kind: 'event', eventId: 'remote-1' },
+	dayOffset: 0,
 };
 
 class MemoryVault implements CalendarEventVault {
@@ -398,7 +418,7 @@ describe('CalendarEventRepository', () => {
 		expect(vault.processCalls).toEqual([]);
 	});
 
-	it('reports duplicate UIDs deterministically and keeps the first path indexed', async () => {
+	it('quarantines every duplicate UID claimant without choosing a path', async () => {
 		const duplicate = { ...event, title: 'Second title' };
 		const vault = new MemoryVault({
 			'Events/a.md': encodeCalendarEventNote(event),
@@ -407,10 +427,203 @@ describe('CalendarEventRepository', () => {
 		const repository = new CalendarEventRepository(vault, { folder: 'Events' });
 
 		const result = await repository.reload();
-		expect(result.errors).toHaveLength(1);
-		expect(result.errors[0].code).toBe('duplicate-uid');
-		expect(result.errors[0].message).toContain('Events/b.md');
-		expect(repository.getByUid(event.uid)?.path).toBe('Events/a.md');
+		expect(result.errors.filter(error => error.code === 'duplicate-uid')).toHaveLength(2);
+		expect(result.errors.every(error => error.message.includes('Events/'))).toBe(true);
+		expect(repository.getByUid(event.uid)).toBeUndefined();
+		expect(repository.listOwnedPaths()).toEqual(['Events/a.md', 'Events/b.md']);
+	});
+
+	it('creates one explicit target under concurrent retries and rediscovers it after restart', async () => {
+		const vault = new MemoryVault();
+		const repository = new CalendarEventRepository(vault, {
+			folder: 'Events',
+			uuidFactory: () => 'target-uid',
+		});
+		const [first, repeated] = await Promise.all([
+			repository.createForTarget({ ...event, uid: undefined }, occurrenceTarget, googleReference, { body: 'local body' }),
+			repository.createForTarget({ ...event, uid: undefined }, occurrenceTarget, googleReference, { body: 'ignored retry body' }),
+		]);
+		expect(first.path).toBe(repeated.path);
+		expect(first.target).toEqual(occurrenceTarget);
+		expect(first.body).toBe('local body');
+		expect(vault.createCalls).toHaveLength(1);
+
+		const restarted = new CalendarEventRepository(vault, { folder: 'Events' });
+		const rediscovered = await restarted.createForTarget(event, occurrenceTarget, googleReference, { body: 'should remain local' });
+		expect(rediscovered.path).toBe(first.path);
+		expect(rediscovered.body).toBe('local body');
+		expect(restarted.getByTarget(occurrenceTarget)?.path).toBe(first.path);
+		expect(restarted.getTargetClaimants(occurrenceTarget).map(claimant => claimant.path)).toEqual([first.path]);
+	});
+
+	it('prefixes an occurrence filename with its event-local date while a series note keeps the title', async () => {
+		const repository = new CalendarEventRepository(new MemoryVault(), { folder: 'Events' });
+		const seriesTarget: CalendarNoteTarget = {
+			version: 1, providerId: 'google', accountId: 'account-1', calendarId: 'primary',
+			scope: 'series', seriesId: 'remote-1',
+		};
+		const recurringTarget: CalendarNoteTarget = {
+			version: 1, providerId: 'google', accountId: 'account-1', calendarId: 'primary',
+			scope: 'occurrence', occurrence: {
+				kind: 'recurrence', masterEventId: 'remote-1',
+				originalStartTime: { dateTime: event.start, timeZone: event.timezone },
+			},
+		};
+		const series = await repository.createForTarget({ ...event, uid: undefined }, seriesTarget, googleReference);
+		const occurrence = await repository.createForTarget({ ...event, uid: undefined }, recurringTarget, googleReference);
+		expect(series.path).toBe('Events/Project review.md');
+		expect(occurrence.path).toBe('Events/2026-09-22 Project review.md');
+		expect(series.event.uid).not.toBe(occurrence.event.uid);
+	});
+
+	it('creates a selected-day note at the selected date even when its input UID is absent', async () => {
+		const repository = new CalendarEventRepository(new MemoryVault(), { folder: 'Events' });
+		const dayTarget: CalendarNoteTarget = { ...occurrenceDayTarget, dayOffset: 1, confirmedDate: '2026-10-04' };
+		const day = await repository.createForTarget({ ...allDayRange, uid: undefined }, dayTarget, googleReference,
+			{ body: '\n# Keep this day\n' });
+		expect(day.path).toBe('Events/2026-10-04 Workshop.md');
+		expect(day.event.start).toBe('2026-10-04');
+		expect(day.event.end).toBe('2026-10-05');
+		expect(day.body).toBe('\n# Keep this day\n');
+	});
+
+	it('serializes whole-occurrence versus day creation and rejects mixed representation', async () => {
+		const vault = new MemoryVault();
+		const repository = new CalendarEventRepository(vault, { folder: 'Events' });
+		const outcomes = await Promise.all([
+			repository.createForTarget(event, occurrenceTarget, googleReference).then(
+				value => ({ ok: true as const, value }),
+				error => ({ ok: false as const, error }),
+			),
+			repository.createForTarget(event, occurrenceDayTarget, googleReference).then(
+				value => ({ ok: true as const, value }),
+				error => ({ ok: false as const, error }),
+			),
+		]);
+		expect(outcomes.filter(outcome => outcome.ok)).toHaveLength(1);
+		expect(outcomes.filter(outcome => !outcome.ok)).toHaveLength(1);
+		expect(repository.list()).toHaveLength(1);
+	});
+
+	it('quarantines all duplicate target and mixed-mode claimants, including invalid target metadata', async () => {
+		const first = encodeCalendarEventNote(event, { target: occurrenceTarget, association: googleReference });
+		const duplicate = encodeCalendarEventNote({ ...event, uid: 'duplicate-target-uid' }, { target: occurrenceTarget, association: googleReference });
+		const invalidDayTarget = {
+			...occurrenceDayTarget,
+			confirmedDate: undefined,
+			proposedDate: '2026-09-23',
+		};
+		const mixed = encodeCalendarEventNote({ ...event, uid: 'mixed-target-uid' }, { target: invalidDayTarget, association: googleReference })
+			.replace('proposed_date: "2026-09-23"', 'proposed_date: "not-a-date"');
+		const vault = new MemoryVault({
+			'Events/a.md': first,
+			'Events/b.md': duplicate,
+			'Events/c.md': mixed,
+		});
+		const repository = new CalendarEventRepository(vault, { folder: 'Events' });
+		const result = await repository.reload();
+		expect(result.errors.filter(error => error.code === 'duplicate-target')).toHaveLength(2);
+		expect(result.errors.filter(error => error.code === 'invalid-target')).toHaveLength(1);
+		expect(result.errors.filter(error => error.code === 'target-representation-conflict')).toHaveLength(3);
+		expect(repository.list()).toHaveLength(0);
+		expect(repository.getTargetClaimants(occurrenceTarget).map(claimant => claimant.path)).toEqual(['Events/a.md', 'Events/b.md']);
+		expect(repository.listOwnedPaths()).toEqual(['Events/a.md', 'Events/b.md', 'Events/c.md']);
+	});
+
+	it('leaves ambiguous legacy links unresolved and migrates verified links idempotently', async () => {
+		const body = '\r\n# Preserve exact bytes\r\n';
+		const secondReference: ProviderReference<'google'> = { ...googleReference, remoteEventId: 'remote-2' };
+		const secondEvent = { ...event, uid: 'event-2', title: 'Second legacy note' };
+		const vault = new MemoryVault({
+			'Events/legacy.md': encodeCalendarEventNote(event, {
+				association: googleReference,
+				body,
+				unknownFrontmatter: { project: 'local' },
+			}),
+			'Events/ambiguous.md': encodeCalendarEventNote(secondEvent, { association: secondReference, body: '# no inference' }),
+		});
+		const repository = new CalendarEventRepository(vault, { folder: 'Events' });
+		let resolutionCalls = 0;
+		const resolver = (record: { event: { uid: string } }) => {
+			resolutionCalls += 1;
+			return record.event.uid === event.uid
+				? { ...occurrenceTarget, scope: 'series' as const, seriesId: 'remote-1' }
+				: undefined;
+		};
+		const first = await repository.migrateLegacyTargets(resolver);
+		expect(first.migrated).toHaveLength(1);
+		expect(first.unresolved.map(record => record.path)).toEqual(['Events/ambiguous.md']);
+		expect(decodeCalendarEventNote(await vault.read('Events/legacy.md')).note?.target?.scope).toBe('series');
+		expect(decodeCalendarEventNote(await vault.read('Events/legacy.md')).note?.body).toBe(body);
+		expect(decodeCalendarEventNote(await vault.read('Events/legacy.md')).note?.frontmatter.project).toBe('local');
+		const callsAfterFirstRun = resolutionCalls;
+		const second = await repository.migrateLegacyTargets(resolver);
+		expect(second.migrated).toHaveLength(0);
+		expect(second.alreadyTargeted).toHaveLength(1);
+		expect(second.unresolved.map(record => record.path)).toEqual(['Events/ambiguous.md']);
+		expect(resolutionCalls).toBe(callsAfterFirstRun + 1);
+	});
+
+	it('migrates a verified legacy exception to its original slot and master reference', async () => {
+		const exceptionReference = { ...googleReference, remoteEventId: 'exception-7' };
+		const body = '\n# Local notes about this instance\n';
+		const vault = new MemoryVault({
+			'Events/exception.md': encodeCalendarEventNote(event, { association: exceptionReference, body }),
+		});
+		const repository = new CalendarEventRepository(vault, { folder: 'Events' });
+		const target: CalendarNoteTarget = {
+			...occurrenceTarget,
+			occurrence: {
+				kind: 'recurrence',
+				masterEventId: 'remote-1',
+				originalStartTime: { dateTime: '2026-09-22T09:00:00-05:00', timeZone: 'America/Bogota' },
+			},
+		};
+		const first = await repository.migrateLegacyTargets(record => ({
+			target,
+			association: { calendarUid: record.event.uid, reference: googleReference, status: 'synced' },
+		}));
+		expect(first.migrated).toHaveLength(1);
+		const decoded = decodeCalendarEventNote(await vault.read('Events/exception.md')).note;
+		expect(decoded?.body).toBe(body);
+		expect(decoded?.target).toEqual(target);
+		expect(decoded?.association?.reference.remoteEventId).toBe('remote-1');
+		expect((await repository.migrateLegacyTargets(() => undefined)).alreadyTargeted).toHaveLength(1);
+	});
+
+	it('quarantines a target whose provider association points to another event', async () => {
+		const vault = new MemoryVault({
+			'Events/mismatch.md': encodeCalendarEventNote(event, {
+				association: { ...googleReference, remoteEventId: 'other-event' },
+				target: occurrenceTarget,
+				body: '# keep this body',
+			}),
+		});
+		const repository = new CalendarEventRepository(vault, { folder: 'Events' });
+		const result = await repository.reload();
+		expect(result.errors.map(error => error.code)).toContain('invalid-target');
+		expect(repository.list()).toEqual([]);
+		expect(repository.getTargetClaimants(occurrenceTarget).map(value => value.path)).toEqual(['Events/mismatch.md']);
+		expect(repository.listOwnedPaths()).toEqual(['Events/mismatch.md']);
+	});
+
+	it('keeps target lookup stable across file renames and explicitly confirms a proposed day', async () => {
+		const target: CalendarNoteTarget = {
+			...occurrenceDayTarget,
+			confirmedDate: '2026-09-22',
+			dayStatus: 'confirmed',
+		};
+		const vault = new MemoryVault();
+		const repository = new CalendarEventRepository(vault, { folder: 'Events' });
+		const created = await repository.createForTarget(event, target, googleReference, { body: 'body' });
+		await repository.rename(created.path, 'Events/Renamed.md');
+		expect(repository.getByTarget(target)?.path).toBe('Events/Renamed.md');
+		const suggested = await repository.proposeDayTargetDate('Events/Renamed.md', { ...event, start: '2026-09-23T09:00:00-05:00', end: '2026-09-23T10:00:00-05:00' });
+		expect(suggested.target?.scope === 'occurrence-day' && suggested.target.proposedDate).toBe('2026-09-23');
+		const accepted = await repository.confirmDayTarget(suggested.event.uid, { action: 'accept-proposed' });
+		expect(accepted.target?.scope === 'occurrence-day' && accepted.target.confirmedDate).toBe('2026-09-23');
+		expect(accepted.target?.scope === 'occurrence-day' && accepted.target.proposedDate).toBeUndefined();
+		expect(accepted.body).toBe('body');
 	});
 
 	it('rejects explicit path collisions while auto-suffixing implicit filenames', async () => {

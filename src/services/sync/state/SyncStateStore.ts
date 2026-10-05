@@ -3,7 +3,67 @@ import type { CalendarPluginSettings, SyncProviderId } from '../../../settings/s
 import type { PluginDataMutationEnvelope } from './PluginDataStore';
 import { sanitizeSyncError, type SanitizedSyncError, redactSecrets } from './redaction';
 
-export const SYNC_STATE_SCHEMA_VERSION = 2;
+export const SYNC_STATE_SCHEMA_VERSION = 3;
+
+/** A recurrence slot is identified independently from its displayed range. */
+export interface CachedOccurrenceSlot {
+	readonly date?: string;
+	readonly dateTime?: string;
+	readonly timeZone?: string;
+}
+
+/** One Google occurrence or cancelled-slot tombstone in the last complete generation. */
+export interface CachedCalendarOccurrence {
+	readonly providerId: string;
+	readonly accountId: string;
+	readonly calendarId: string;
+	readonly masterRemoteId: string;
+	readonly instanceRemoteId: string;
+	readonly originalStartTime: CachedOccurrenceSlot;
+	readonly event?: CalendarEvent;
+	readonly cancelled: boolean;
+	readonly version?: string;
+	/** The provider completed a refresh without returning a still-pinned slot. */
+	readonly unresolved?: boolean;
+}
+
+/** A complete instance-query generation; dirty keeps its prior rows visible as stale. */
+export interface OccurrenceCoverage {
+	readonly providerId: string;
+	readonly accountId: string;
+	readonly calendarId: string;
+	readonly masterRemoteId: string;
+	readonly windowFrom: string;
+	readonly windowTo: string;
+	readonly masterVersion?: string;
+	readonly occurrenceKeys: readonly string[];
+	readonly completedAt?: string;
+	readonly dirty?: boolean;
+}
+
+/** A recoverable post-provider-write or note-frontmatter problem. */
+export interface LocalRepairRecord {
+	readonly providerId: string;
+	readonly accountId: string;
+	readonly calendarId: string;
+	readonly remoteEventId?: string;
+	readonly noteUid?: string;
+	readonly targetKey?: string;
+	readonly reason: string;
+	readonly recordedAt: string;
+}
+
+/** Durable correlation for a Google insert whose response might be lost. */
+export interface ProviderCreateIntent {
+	readonly providerId: string;
+	readonly accountId: string;
+	readonly calendarId: string;
+	readonly eventUid: string;
+	readonly requestId: string;
+	readonly status: 'pending' | 'unknown' | 'confirmed';
+	readonly remoteEventId?: string;
+	readonly createdAt: string;
+}
 
 /** Provider event data cached independently from any optional Markdown note. */
 export interface CachedCalendarEvent {
@@ -17,6 +77,9 @@ export interface CachedCalendarEvent {
 	readonly recurrenceStatus?: 'none' | 'supported' | 'unsupported';
 	readonly recurrenceRaw?: readonly string[];
 	readonly recurrenceMasterId?: string;
+	readonly originalStartTime?: CachedOccurrenceSlot;
+	readonly actualStart?: CachedOccurrenceSlot;
+	readonly actualEnd?: CachedOccurrenceSlot;
 	readonly recurrenceHasExceptions?: boolean;
 	/** Legacy recurrence guard retained for reading existing schema v2 state. */
 	readonly recurrence: 'none' | 'unsupported';
@@ -95,6 +158,13 @@ export interface SyncState {
 	readonly retry: Record<string, SyncRetryState>;
 	/** Event cache keyed by provider/account/calendar/remote event identity. */
 	readonly remoteEvents: Record<string, CachedCalendarEvent>;
+	/** Complete recurrence instances, keyed by provider/account/calendar/master/slot. */
+	readonly remoteOccurrences: Record<string, CachedCalendarOccurrence>;
+	/** Published instance coverage, with a dirty flag for incomplete refreshes. */
+	readonly occurrenceCoverage: Record<string, OccurrenceCoverage>;
+	/** Repairs are independent from whether the provider operation succeeded. */
+	readonly localRepairs: Record<string, LocalRepairRecord>;
+	readonly providerCreateIntents: Record<string, ProviderCreateIntent>;
 	/** Calendars that have completed a full event-cache population. */
 	readonly eventCacheInitialized: Record<string, boolean>;
 	lastError: SanitizedSyncError | null;
@@ -154,6 +224,10 @@ export function createDefaultSyncState(): SyncState {
 		tombstones: {},
 		retry: {},
 		remoteEvents: {},
+		remoteOccurrences: {},
+		occurrenceCoverage: {},
+		localRepairs: {},
+		providerCreateIntents: {},
 		eventCacheInitialized: {},
 		lastError: null,
 	};
@@ -172,6 +246,10 @@ export function normalizeSyncState(raw: unknown): SyncState {
 	}
 
 	const redacted = redactSecrets(raw);
+	const remoteOccurrences = copyRecord<CachedCalendarOccurrence>(raw.remoteOccurrences ?? {});
+	for (const [key, occurrence] of Object.entries(remoteOccurrences)) {
+		remoteOccurrences[key] = { ...occurrence, unresolved: occurrence.unresolved === true };
+	}
 	const state = {
 		...createDefaultSyncState(),
 		...(isRecord(redacted) ? redacted : {}),
@@ -183,6 +261,10 @@ export function normalizeSyncState(raw: unknown): SyncState {
 		tombstones: copyRecord<SyncTombstone>(raw.tombstones ?? {}),
 		retry: copyRecord<SyncRetryState>(raw.retry ?? raw.retries ?? {}),
 		remoteEvents: copyRecord<CachedCalendarEvent>(raw.remoteEvents ?? {}),
+		remoteOccurrences,
+		occurrenceCoverage: copyRecord<OccurrenceCoverage>(raw.occurrenceCoverage ?? {}),
+		localRepairs: copyRecord<LocalRepairRecord>(raw.localRepairs ?? {}),
+		providerCreateIntents: copyRecord<ProviderCreateIntent>(raw.providerCreateIntents ?? {}),
 		eventCacheInitialized: copyRecord<boolean>(raw.eventCacheInitialized ?? {}),
 		lastError: raw.lastError === null || raw.lastError === undefined
 			? null
@@ -273,6 +355,10 @@ export function disconnectSyncState(
 	});
 	removedStateKeys += removeMatchingRecord(state.retry, selection, (key) => stateKeyMatches(key, selection));
 	removedStateKeys += removeMatchingRecord(state.remoteEvents, selection, (key) => stateKeyMatches(key, selection));
+	removedStateKeys += removeMatchingRecord(state.remoteOccurrences, selection, (key) => stateKeyMatches(key, selection));
+	removedStateKeys += removeMatchingRecord(state.occurrenceCoverage, selection, (key) => stateKeyMatches(key, selection));
+	removedStateKeys += removeMatchingRecord(state.localRepairs, selection, (key) => stateKeyMatches(key, selection));
+	removedStateKeys += removeMatchingRecord(state.providerCreateIntents, selection, (key) => stateKeyMatches(key, selection));
 	removedStateKeys += removeMatchingRecord(state.eventCacheInitialized, selection, (key) => stateKeyMatches(key, selection));
 	state.lastError = null;
 

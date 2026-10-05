@@ -89,7 +89,7 @@ export class CalendarBasesView extends BasesView {
             new Notice('Enable a connected bidirectional calendar before creating, editing, or deleting a Google Calendar event.');
         };
         const syncEventActions: SyncEventActions = {
-            createNote: eventKey => { void this.plugin.createNoteForCalendarEvent(eventKey); },
+            createNote: (eventKey, scope, selectedDate) => { void this.plugin.createNoteForCalendarEvent(eventKey, scope, selectedDate); },
             openNote: eventKey => this.plugin.openNoteForCalendarEvent(eventKey),
             create: (dateKey: string) => {
                 if (!canWriteCalendarEvents()) {
@@ -108,16 +108,7 @@ export class CalendarBasesView extends BasesView {
                     rejectUnavailableEventWrite();
                     return;
                 }
-                const existing = this.plugin.getCalendarEvent(eventKey);
-                if (!existing) {
-                    new Notice('The Google Calendar event is no longer available.');
-                    return;
-                }
-                openSyncEventModal(this.plugin.app, {
-                    initialEvent: existing.event,
-                    timezone: existing.event.timezone,
-                    onSubmit: event => this.plugin.updateCalendarEvent(eventKey, event),
-                });
+                this.plugin.openCalendarEventEditor(eventKey);
             },
             delete: (eventKey: string) => {
                 if (!canWriteCalendarEvents()) {
@@ -125,10 +116,14 @@ export class CalendarBasesView extends BasesView {
                     return Promise.resolve(false);
                 }
                 return new Promise<boolean>(resolve => {
+                    const row = this.plugin.getCalendarEvent(eventKey);
+                    const isSeries = Boolean(row?.masterRemoteId || row?.scope === 'series');
                     createConfirmationDialog(this.plugin.app, {
-                        title: 'Delete Google Calendar event?',
-                        text: 'This deletes the event from Google Calendar. Any linked note will be kept.',
-                        cta: 'Delete event',
+                        title: `Delete Google Calendar ${isSeries ? 'series' : 'event'}?`,
+                        text: isSeries
+                            ? 'This deletes the entire series and its occurrences from Google Calendar. Linked notes will be kept.'
+                            : 'This deletes the event from Google Calendar. Any linked note will be kept.',
+                        cta: isSeries ? 'Delete series' : 'Delete event',
                         onAccept: async () => {
                             if (!canWriteCalendarEvents()) {
                                 rejectUnavailableEventWrite();

@@ -17,6 +17,11 @@ import {
     CalendarEventRepository,
     ObsidianCalendarEventVaultAdapter,
     type FrontmatterProcessor,
+    type CalendarNoteTarget,
+    type CalendarNoteOccurrenceIdentity,
+    eventCivilDayBounds,
+    addCivilDays,
+    targetKey,
 } from './services/sync/notes';
 import {
     PluginDataStore,
@@ -26,6 +31,8 @@ import {
     type CredentialStore,
     type SecretValueStore,
     type SyncState,
+    type CachedCalendarEvent,
+    type CachedCalendarOccurrence,
 } from './services/sync/state';
 import {
     SyncLifecycleCoordinator,
@@ -43,6 +50,57 @@ import {
     migrateLegacyGoogleClientSecret,
 } from './services/sync/providers/google/GoogleRuntimeFactory';
 import { registerSyncEventBanner } from './editor/SyncEventBannerInjection';
+import { openSyncEventModal } from './modals/SyncEventModal';
+import { openSyncEventEditScopeModal } from './modals/SyncEventEditScopeModal';
+
+function noteOccurrenceIdentity(
+    record: Pick<CachedCalendarOccurrence, 'masterRemoteId' | 'originalStartTime'> | CachedCalendarEvent,
+    fallbackTimezone?: string,
+): CalendarNoteOccurrenceIdentity | undefined {
+    if ('masterRemoteId' in record) {
+        const original = record.originalStartTime;
+        if (original.date) return { kind: 'recurrence', masterEventId: record.masterRemoteId, originalStartTime: { date: original.date } };
+        const timeZone = original.timeZone ?? fallbackTimezone;
+        if (original.dateTime && timeZone) {
+            return { kind: 'recurrence', masterEventId: record.masterRemoteId, originalStartTime: { dateTime: original.dateTime, timeZone } };
+        }
+        return undefined;
+    }
+    return { kind: 'event', eventId: record.remoteEventId };
+}
+
+function civilDayOffset(event: CalendarEvent, selectedDate: string): number | undefined {
+    const bounds = eventCivilDayBounds(event);
+    if (!bounds || selectedDate < bounds.startDate || selectedDate >= bounds.endDateExclusive) return undefined;
+    const start = Date.parse(`${bounds.startDate}T00:00:00Z`);
+    const selected = Date.parse(`${selectedDate}T00:00:00Z`);
+    const offset = Math.round((selected - start) / 86_400_000);
+    return Number.isInteger(offset) && addCivilDays(bounds.startDate, offset) === selectedDate ? offset : undefined;
+}
+
+/** Sparse Google cancellation tombstones need a visible, noneditable row. */
+function cancelledOccurrencePlaceholder(
+    occurrence: CachedCalendarOccurrence,
+    master: CalendarEvent,
+): CalendarEvent | undefined {
+    const slot = occurrence.originalStartTime;
+    if (slot.date) {
+        const masterStart = Date.parse(`${master.start}T00:00:00Z`);
+        const masterEnd = Date.parse(`${master.end}T00:00:00Z`);
+        const days = Math.max(1, Math.round((masterEnd - masterStart) / 86_400_000));
+        const end = addCivilDays(slot.date, Number.isFinite(days) ? days : 1);
+        if (!end) return undefined;
+        return { ...master, uid: `cancelled:${occurrence.instanceRemoteId}`, title: 'Cancelled occurrence',
+            start: slot.date, end, allDay: true, location: '', description: '', recurrence: undefined };
+    }
+    if (!slot.dateTime || !/(?:Z|[+-]\d{2}:\d{2})$/.test(slot.dateTime)) return undefined;
+    const start = Date.parse(slot.dateTime);
+    const duration = Date.parse(master.end) - Date.parse(master.start);
+    if (!Number.isFinite(start) || !Number.isFinite(duration)) return undefined;
+    return { ...master, uid: `cancelled:${occurrence.instanceRemoteId}`, title: 'Cancelled occurrence',
+        start: slot.dateTime, end: new Date(start + Math.max(1, duration)).toISOString(),
+        allDay: false, location: '', description: '', recurrence: undefined };
+}
 
 export default class ContinuousCalendarPlugin extends Plugin {
     settings: CalendarPluginSettings;
@@ -85,7 +143,7 @@ export default class ContinuousCalendarPlugin extends Plugin {
         this.calendarIndex = new IndexService(this.app);
         this.calendarIndex.setSettings(this.settings);
         this.calendarIndex.setCalendarEventIndex(this.calendarEventRepository.index);
-        registerCalendarEventSource(this.app, () => this.getCalendarEvents());
+        registerCalendarEventSource(this.app, () => this.getCalendarEvents(), () => this.calendarEventRepository.listOwnedPaths());
         this.unregisterSyncBanner = registerSyncEventBanner(this);
         this.unsubscribeSyncState = this.syncStateStore.subscribe(state => {
             this.calendarEventState = state;
@@ -243,27 +301,148 @@ export default class ContinuousCalendarPlugin extends Plugin {
         if (this.calendarEventProjection) return this.calendarEventProjection;
         const sync = this.settings.sync;
         if (sync.syncMode === 'disabled' || sync.syncMode === 'dry-run' || !sync.providerId || !sync.accountId || !sync.calendarId) return [];
-        const records = Object.entries(this.calendarEventState?.remoteEvents ?? {});
-        const notePaths = new Map<string, string>();
-        for (const note of this.calendarEventRepository.index.values()) {
-            const ref = note.association?.reference;
-            if (ref) notePaths.set(JSON.stringify([ref.providerId, ref.accountId, ref.calendarId, ref.remoteEventId]), note.path);
-        }
-        this.calendarEventProjection = records.flatMap(([key, record]) => {
-            if (record.providerId !== sync.providerId || record.accountId !== sync.accountId || record.calendarId !== sync.calendarId || record.status === 'remote_deleted') return [];
-            const indexedPath = record.noteUid ? this.calendarEventRepository.index.getByUid(record.noteUid)?.path : undefined;
-            const associatedPath = notePaths.get(JSON.stringify([record.providerId, record.accountId, record.calendarId, record.remoteEventId]));
-            const candidatePath = indexedPath ?? associatedPath ?? record.notePath;
-            const notePath = candidatePath && this.app.vault.getAbstractFileByPath(candidatePath) instanceof TFile
-                ? candidatePath
-                : undefined;
-            return [{ key, event: record.event, status: record.status, recurrenceStatus: record.recurrenceStatus ?? (record.recurrence === 'unsupported' ? 'unsupported' : record.event.recurrence ? 'supported' : 'none'), notePath }];
+        const { providerId, accountId, calendarId } = sync;
+        const state = this.calendarEventState ?? this.syncStateStore.getState();
+        const ownerMatches = (record: { providerId: string; accountId: string; calendarId: string }) =>
+            record.providerId === providerId && record.accountId === accountId && record.calendarId === calendarId;
+        const ownedNotes = this.calendarEventRepository.list().filter(note => note.target && ownerMatches(note.target));
+        const repairs = Object.values(state.localRepairs).filter(ownerMatches);
+        const repairForRemote = (remoteId: string) => repairs.some(repair =>
+            !repair.targetKey && repair.remoteEventId === remoteId);
+        const repairForTargets = (targets: readonly CalendarNoteTarget[]) => {
+            const keys = new Set(targets.map(targetKey));
+            return repairs.some(repair => repair.targetKey && keys.has(repair.targetKey));
+        };
+        const pathsForTarget = (target: CalendarNoteTarget): string[] => ownedNotes
+            .filter(note => note.target && targetKey(note.target) === targetKey(target))
+            .map(note => note.path);
+        const seriesTarget = (remoteId: string): CalendarNoteTarget => ({
+            version: 1, providerId, accountId, calendarId, scope: 'series', seriesId: remoteId,
         });
+        const occurrenceTarget = (occurrence: CalendarNoteOccurrenceIdentity): CalendarNoteTarget => ({
+            version: 1, providerId, accountId, calendarId, scope: 'occurrence', occurrence,
+        });
+        const relatedPaths = (occurrence: CalendarNoteOccurrenceIdentity, masterId?: string, instanceId?: string) => {
+            const target = occurrenceTarget(occurrence);
+            const scopedNotes = ownedNotes.filter(note => note.target &&
+                (targetKey(note.target) === targetKey(target) ||
+                    note.target.scope === 'occurrence-day' &&
+                    targetKey({ ...note.target, scope: 'occurrence' }) === targetKey(target)));
+            const base = [
+                ...(masterId ? pathsForTarget(seriesTarget(masterId)) : []),
+                ...pathsForTarget(target),
+            ];
+            const byDate: Record<string, string[]> = {};
+            for (const note of scopedNotes) {
+                const target = note.target;
+                if (target?.scope !== 'occurrence-day' || !target.confirmedDate) continue;
+                byDate[target.confirmedDate] = [...base, ...(byDate[target.confirmedDate]?.slice(base.length) ?? []), note.path];
+            }
+            return {
+                notePaths: base, notePath: base.length === 1 ? base[0] : undefined, notePathsByDate: byDate,
+                localRepairPending: repairForTargets([target, ...scopedNotes.map(note => note.target).filter((value): value is CalendarNoteTarget => !!value)]) ||
+                    (instanceId ? repairForRemote(instanceId) : occurrence.kind === 'event' && repairForRemote(occurrence.eventId)),
+            };
+        };
+        const coverages = Object.values(state.occurrenceCoverage).filter(ownerMatches);
+        const coverageForMaster = (remoteId: string) => coverages.find(value => value.masterRemoteId === remoteId);
+        const rows: CalendarDisplayEvent[] = [];
+        for (const [key, record] of Object.entries(state.remoteEvents)) {
+            if (!ownerMatches(record) || record.recurrenceMasterId) continue;
+            const isSeries = record.event.recurrence !== undefined || Boolean(record.recurrenceRaw?.length);
+            // Keep tombstones and linked notes in state for reconciliation,
+            // but a deleted provider event has no live calendar projection.
+            if (record.status === 'remote_deleted') continue;
+            const recurrenceStatus = record.recurrenceStatus ?? (record.recurrence === 'unsupported' ? 'unsupported' : isSeries ? 'supported' : 'none');
+            if (!isSeries) {
+                const identity = noteOccurrenceIdentity(record);
+                if (!identity) continue;
+                rows.push({ key, event: record.event, status: record.status, recurrenceStatus, scope: 'occurrence',
+                    providerWriteKey: key, providerResolved: true, ...relatedPaths(identity) });
+                continue;
+            }
+            const coverage = coverageForMaster(record.remoteEventId);
+            if (!coverage?.completedAt) {
+                const paths = pathsForTarget(seriesTarget(record.remoteEventId));
+                rows.push({ key, event: record.event, status: record.status, recurrenceStatus, scope: 'series',
+                    providerWriteKey: key, providerResolved: false, stale: true,
+                    localRepairPending: repairForRemote(record.remoteEventId) || repairForTargets([seriesTarget(record.remoteEventId)]),
+                    notePaths: paths, notePath: paths.length === 1 ? paths[0] : undefined });
+                continue;
+            }
+            for (const occurrenceKey of coverage.occurrenceKeys) {
+                const occurrence = state.remoteOccurrences[occurrenceKey];
+                if (!occurrence || !ownerMatches(occurrence) || occurrence.masterRemoteId !== record.remoteEventId) continue;
+                const displayEvent = occurrence.event ?? (occurrence.cancelled
+                    ? cancelledOccurrencePlaceholder(occurrence, record.event) : undefined);
+                if (!displayEvent) continue;
+                const identity = noteOccurrenceIdentity(occurrence, record.event.timezone);
+                if (!identity) continue;
+                rows.push({ key: occurrenceKey, event: displayEvent, status: occurrence.cancelled ? 'remote_deleted' : record.status, recurrenceStatus,
+                    scope: 'occurrence', providerWriteKey: occurrenceKey, providerResolved: true,
+                    originalStartTime: occurrence.originalStartTime, masterRemoteId: record.remoteEventId,
+                    instanceRemoteId: occurrence.instanceRemoteId,
+                    stale: coverage.dirty === true || occurrence.unresolved === true,
+                    unresolved: occurrence.unresolved === true,
+                    cancelled: occurrence.cancelled,
+                    ...relatedPaths(identity, record.remoteEventId, occurrence.instanceRemoteId) });
+            }
+        }
+        this.calendarEventProjection = rows;
         return this.calendarEventProjection;
     }
 
     getCalendarEvent(key: string): CalendarDisplayEvent | undefined {
         return this.getCalendarEvents().find(record => record.key === key);
+    }
+
+    getCalendarSeriesForEvent(key: string): { key: string; event: CalendarEvent } | undefined {
+        const row = this.getCalendarEvent(key);
+        if (!row?.masterRemoteId) return undefined;
+        const sync = this.settings.sync;
+        const state = this.calendarEventState ?? this.syncStateStore.getState();
+        const master = Object.entries(state.remoteEvents).find(([, record]) =>
+            record.providerId === sync.providerId && record.accountId === sync.accountId &&
+            record.calendarId === sync.calendarId && record.remoteEventId === row.masterRemoteId &&
+            record.status !== 'remote_deleted' && record.status !== 'unsupported' &&
+            (record.event.recurrence !== undefined || Boolean(record.recurrenceRaw?.length)));
+        return master ? { key: master[0], event: master[1].event } : undefined;
+    }
+
+    openCalendarEventEditor(key: string): void {
+        this.requireWritableCalendarService();
+        const row = this.getCalendarEvent(key);
+        if (!row?.providerWriteKey || !row.providerResolved || row.stale || row.cancelled ||
+            row.unresolved || row.status === 'remote_deleted' || row.status === 'unsupported') {
+            new Notice('Refresh this Google Calendar event before editing it.');
+            return;
+        }
+        const openOccurrence = () => openSyncEventModal(this.app, {
+            title: row.masterRemoteId ? 'Edit this occurrence' : 'Edit calendar event',
+            initialEvent: row.event,
+            timezone: row.event.timezone,
+            onSubmit: event => this.updateCalendarEvent(row.key, event),
+        });
+        const series = this.getCalendarSeriesForEvent(key);
+        if (!series) {
+            openOccurrence();
+            return;
+        }
+        openSyncEventEditScopeModal(this.app, {
+            eventTitle: row.event.title,
+            onSelect: scope => {
+                if (scope === 'occurrence') {
+                    openOccurrence();
+                    return;
+                }
+                openSyncEventModal(this.app, {
+                    title: 'Edit whole series',
+                    initialEvent: series.event,
+                    timezone: series.event.timezone,
+                    onSubmit: event => this.updateCalendarSeriesEvent(series.key, event),
+                });
+            },
+        });
     }
 
     private requireWritableCalendarService() {
@@ -276,58 +455,159 @@ export default class ContinuousCalendarPlugin extends Plugin {
     async createCalendarEvent(event: CalendarEvent): Promise<void> {
         const create = this.requireWritableCalendarService().createCalendarEvent;
         if (!create) throw new Error('Calendar event creation is unavailable.');
-        await create.call(this.syncLifecycle.service, event);
+        const result = await create.call(this.syncLifecycle.service, event);
+        if ('localRepairPending' in result && result.localRepairPending) {
+            new Notice('Google event saved. Local note repair is pending.');
+        }
         notifyCalendarEventIndexChanged(this.app);
     }
 
     async updateCalendarEvent(key: string, event: CalendarEvent): Promise<void> {
+        const row = this.getCalendarEvent(key) ?? this.getCalendarEvents().find(candidate => candidate.providerWriteKey === key);
+        if (!row || !row.providerWriteKey || row.stale || row.cancelled || !row.providerResolved) {
+            throw new Error('Refresh this Google event before editing it.');
+        }
+        const providerWriteKey = row.providerWriteKey;
+        const service = this.requireWritableCalendarService();
+        const result = row.masterRemoteId
+            ? await (async () => {
+                if (!service.updateCalendarOccurrence) throw new Error('Recurring occurrence editing is unavailable.');
+                return service.updateCalendarOccurrence(providerWriteKey, event);
+            })()
+            : await (async () => {
+                if (!service.updateCalendarEvent) throw new Error('Calendar event editing is unavailable.');
+                return service.updateCalendarEvent(providerWriteKey, event);
+            })();
+        if ('localRepairPending' in result && result.localRepairPending) {
+            new Notice('Google event saved. Local note repair is pending.');
+        }
+        notifyCalendarEventIndexChanged(this.app);
+    }
+
+    async updateCalendarSeriesEvent(key: string, event: CalendarEvent): Promise<void> {
+        const sync = this.settings.sync;
+        const master = this.syncStateStore.getState().remoteEvents[key];
+        if (!master || master.providerId !== sync.providerId || master.accountId !== sync.accountId ||
+            master.calendarId !== sync.calendarId || master.recurrenceMasterId ||
+            (!master.event.recurrence && !master.recurrenceRaw?.length) || master.status === 'remote_deleted') {
+            throw new Error('The Google Calendar series is no longer available.');
+        }
         const update = this.requireWritableCalendarService().updateCalendarEvent;
-        if (!update) throw new Error('Calendar event editing is unavailable.');
-        await update.call(this.syncLifecycle.service, key, event);
+        if (!update) throw new Error('Calendar series editing is unavailable.');
+        const result = await update.call(this.syncLifecycle.service, key, event);
+        if ('localRepairPending' in result && result.localRepairPending) {
+            new Notice('Google series saved. Local note repair is pending.');
+        }
         notifyCalendarEventIndexChanged(this.app);
     }
 
     async deleteCalendarEvent(key: string): Promise<boolean> {
+        const row = this.getCalendarEvent(key);
+        if (!row) throw new Error('The Google Calendar event is no longer available.');
+        if (!row.providerWriteKey || !row.providerResolved || row.stale || row.cancelled || row.unresolved || row.status === 'remote_deleted') {
+            throw new Error('Refresh this Google Calendar event before deleting it.');
+        }
+        let providerKey = row.providerWriteKey;
+        if (row.masterRemoteId) {
+            const master = Object.entries(this.syncStateStore.getState().remoteEvents).find(([, event]) =>
+                event.providerId === this.settings.sync.providerId &&
+                event.accountId === this.settings.sync.accountId &&
+                event.calendarId === this.settings.sync.calendarId &&
+                event.remoteEventId === row.masterRemoteId);
+            if (!master || master[1].status === 'remote_deleted') throw new Error('The Google Calendar series is no longer available.');
+            providerKey = master[0];
+        }
         const remove = this.requireWritableCalendarService().deleteCalendarEvent;
         if (!remove) throw new Error('Calendar event deletion is unavailable.');
-        const deleted = await remove.call(this.syncLifecycle.service, key);
+        const deleted = await remove.call(this.syncLifecycle.service, providerKey);
         notifyCalendarEventIndexChanged(this.app);
         return deleted;
     }
 
     openNoteForCalendarEvent(key: string): void {
-        const path = this.getCalendarEvent(key)?.notePath;
-        if (!path) {
-            new Notice('This calendar event has no linked note.');
+        const paths = this.getCalendarEvent(key)?.notePaths ?? [];
+        if (paths.length !== 1) {
+            new Notice(paths.length > 1 ? 'This calendar event has several linked notes. Choose a specific note.' : 'This calendar event has no linked note.');
             return;
         }
-        void this.app.workspace.openLinkText(path, '', false);
+        void this.app.workspace.openLinkText(paths[0], '', false);
     }
 
-    async createNoteForCalendarEvent(key: string): Promise<void> {
-        const record = this.syncStateStore.getState().remoteEvents[key];
-        if (!record || record.status === 'remote_deleted' || !this.getCalendarEvent(key)) {
+    async createNoteForCalendarEvent(
+        key: string,
+        requestedScope?: 'series' | 'occurrence' | 'occurrence-day',
+        selectedDate?: string,
+    ): Promise<void> {
+        const sync = this.settings.sync;
+        if (sync.syncMode === 'disabled' || sync.syncMode === 'dry-run') {
+            new Notice('Connect or import Google Calendar events before creating linked notes.');
+            return;
+        }
+        const row = this.getCalendarEvent(key);
+        if (!row || row.cancelled) {
             new Notice('This calendar event is no longer available.');
             return;
         }
-        const reference = {
-            providerId: record.providerId,
-            accountId: record.accountId,
-            calendarId: record.calendarId,
-            remoteEventId: record.remoteEventId,
-            version: record.version,
-        };
         try {
-            const note = await this.calendarEventRepository.createLinkedNote(
-                { ...record.event, uid: undefined }, reference,
-                { status: record.status === 'unsupported' ? 'unsupported' : 'synced' },
+            const state = this.syncStateStore.getState();
+            const scope = requestedScope ?? (row.scope === 'series' ? 'series' : 'occurrence');
+            const providerKey = row.providerWriteKey ?? key;
+            const occurrence = state.remoteOccurrences[providerKey];
+            const cached = state.remoteEvents[providerKey];
+            const master = occurrence
+                ? Object.values(state.remoteEvents).find(value => value.providerId === occurrence.providerId &&
+                    value.accountId === occurrence.accountId && value.calendarId === occurrence.calendarId &&
+                    value.remoteEventId === occurrence.masterRemoteId)
+                : cached;
+            if (!master || master.status === 'remote_deleted') throw new Error('The provider event is no longer cached');
+            if (scope !== 'series' && (!row.providerResolved || row.stale)) {
+                throw new Error('Refresh this occurrence before creating its note');
+            }
+            if (scope === 'series' && !occurrence && !master.event.recurrence && !master.recurrenceRaw?.length) {
+                throw new Error('This event has no recurring series');
+            }
+            const identity = scope === 'series' ? undefined : occurrence
+                ? noteOccurrenceIdentity(occurrence, master.event.timezone)
+                : noteOccurrenceIdentity(master);
+            if (scope !== 'series' && !identity) throw new Error('This occurrence has no verified original slot');
+            const targetBase = {
+                version: 1 as const,
+                providerId: master.providerId,
+                accountId: master.accountId,
+                calendarId: master.calendarId,
+            };
+            let target: CalendarNoteTarget;
+            const noteEvent: CalendarEvent = scope === 'series' ? master.event : occurrence?.event ?? master.event;
+            if (scope === 'series') {
+                target = { ...targetBase, scope: 'series', seriesId: master.remoteEventId };
+            } else if (scope === 'occurrence') {
+                if (!identity) throw new Error('This occurrence has no verified original slot');
+                target = { ...targetBase, scope: 'occurrence', occurrence: identity };
+            } else {
+                if (!identity) throw new Error('This occurrence has no verified original slot');
+                if (!selectedDate) throw new Error('Select a day of the occurrence first');
+                const bounds = eventCivilDayBounds(noteEvent);
+                const offset = civilDayOffset(noteEvent, selectedDate);
+                if (!bounds || addCivilDays(bounds.startDate, 1) === bounds.endDateExclusive || offset === undefined) {
+                    throw new Error('Selected-day notes require a valid day of a multiday occurrence');
+                }
+                const nextDay = addCivilDays(selectedDate, 1);
+                if (!nextDay) throw new Error('Selected day is invalid');
+                target = { ...targetBase, scope: 'occurrence-day', occurrence: identity, dayOffset: offset,
+                    confirmedDate: selectedDate, dayStatus: 'confirmed' };
+            }
+            const reference = {
+                providerId: master.providerId,
+                accountId: master.accountId,
+                calendarId: master.calendarId,
+                remoteEventId: master.remoteEventId,
+                version: master.version,
+            };
+            const note = await this.calendarEventRepository.createForTarget(
+                { ...noteEvent, uid: undefined }, target, reference,
+                { status: master.status === 'unsupported' ? 'unsupported' : 'synced' },
             );
-            const link = this.syncLifecycle?.service?.linkNote;
-            if (link) await link.call(this.syncLifecycle.service, key, note.path, note.event.uid);
-            else await this.syncStateStore.update(state => {
-                const cached = state.remoteEvents[key];
-                if (cached) state.remoteEvents[key] = { ...cached, notePath: note.path, noteUid: note.event.uid };
-            });
+            this.calendarEventProjection = undefined;
             notifyCalendarEventIndexChanged(this.app);
             void this.app.workspace.openLinkText(note.path, '', false);
         } catch (error) {

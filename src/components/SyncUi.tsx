@@ -39,7 +39,7 @@ export interface SyncEventActions {
 	readonly create?: (dateKey: string) => void;
 	readonly edit?: (eventKey: string) => void;
 	readonly delete?: (eventKey: string) => Promise<boolean>;
-	readonly createNote?: (eventKey: string) => void;
+	readonly createNote?: (eventKey: string, scope?: 'series' | 'occurrence' | 'occurrence-day', selectedDate?: string) => void;
 	readonly openNote?: (eventKey: string) => void;
 	readonly resolveConflict?: (localUid: string) => void;
 }

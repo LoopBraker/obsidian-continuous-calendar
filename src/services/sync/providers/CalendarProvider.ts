@@ -33,6 +33,13 @@ export interface SyncWindow {
 	readonly to: string;
 }
 
+/** Provider date/date-time object preserved without canonical normalization. */
+export interface ProviderDateTimeValue {
+	readonly date?: string;
+	readonly dateTime?: string;
+	readonly timeZone?: string;
+}
+
 /**
  * Cursors are opaque to the engine. This alias remains structurally a string
  * so adapters can return a cursor received from their SDK without exposing
@@ -68,15 +75,89 @@ export interface RemoteCalendarEvent {
 	readonly recurrenceStatus: 'none' | 'supported' | 'unsupported';
 	/** Exact Google recurrence lines retained for unsupported rules. */
 	readonly recurrenceRaw?: readonly string[];
-	/** Present on a Google exception instance; its master is guarded as unsupported. */
+	/** Present on a Google exception instance. */
 	readonly recurrenceMasterId?: string;
+	/** Exact recurrence-slot identity returned for a provider occurrence. */
+	readonly originalStartTime?: ProviderDateTimeValue;
+	/** Exact provider actual range, kept separately from canonical event values. */
+	readonly actualStart?: ProviderDateTimeValue;
+	readonly actualEnd?: ProviderDateTimeValue;
 	readonly recurrenceHasExceptions?: boolean;
 	/** Compatibility field for consumers persisted before typed recurrence support. */
 	readonly recurrence: 'none' | 'unsupported';
 }
 
+interface RemoteOccurrenceIdentity {
+	readonly providerId: ProviderId;
+	readonly calendarId: string;
+	readonly masterRemoteId: string;
+	readonly instanceRemoteId: string;
+	readonly originalStartTime: ProviderDateTimeValue;
+}
+
+/** A recurrence occurrence, with cancellations represented without invented event fields. */
+export type RemoteOccurrence =
+	| (RemoteOccurrenceIdentity & {
+		readonly status: 'active';
+		readonly event: RemoteCalendarEvent;
+		readonly actualStart: ProviderDateTimeValue;
+		readonly actualEnd: ProviderDateTimeValue;
+		readonly version?: string;
+	})
+	| (RemoteOccurrenceIdentity & {
+		readonly status: 'cancelled';
+		readonly actualStart?: ProviderDateTimeValue;
+		readonly actualEnd?: ProviderDateTimeValue;
+		readonly version?: string;
+	});
+
+export type CancelledRemoteOccurrence = Extract<RemoteOccurrence, { readonly status: 'cancelled' }>;
+
+export interface RemoteEventTombstone {
+	readonly providerId: ProviderId;
+	readonly calendarId: string;
+	readonly remoteId: string;
+	readonly version?: string;
+	/** Present with originalStartTime only for a cancelled recurring exception. */
+	readonly recurrenceMasterId?: string;
+	readonly originalStartTime?: ProviderDateTimeValue;
+	readonly actualStart?: ProviderDateTimeValue;
+	readonly actualEnd?: ProviderDateTimeValue;
+}
+
+export type RemoteEventLookupResult =
+	| { readonly status: 'active'; readonly event: RemoteCalendarEvent }
+	| { readonly status: 'cancelled'; readonly tombstone: RemoteEventTombstone }
+	| { readonly status: 'not-found'; readonly providerId: ProviderId; readonly calendarId: string; readonly remoteId: string };
+
+export interface ListInstancesRequest {
+	readonly session: ProviderSession;
+	readonly calendarId: string;
+	readonly masterRemoteId: string;
+	/** Verified current recurring master timezone for sparse originalStartTime values. */
+	readonly masterTimeZone?: string;
+	readonly window: SyncWindow;
+	/** Original slots that must be returned even when outside the current horizon. */
+	readonly pinnedOriginalStarts?: readonly ProviderDateTimeValue[];
+	readonly signal?: AbortSignal;
+}
+
+export interface UpdateOccurrenceRequest {
+	readonly session: ProviderSession;
+	readonly calendarId: string;
+	readonly masterRemoteId: string;
+	/** Verified current recurring master timezone for sparse originalStartTime values. */
+	readonly masterTimeZone?: string;
+	readonly instanceRemoteId: string;
+	readonly originalStartTime: ProviderDateTimeValue;
+	readonly event: CalendarEvent;
+	readonly expectedVersion?: string;
+	readonly signal?: AbortSignal;
+}
+
 export type RemoteChange =
 	| { readonly type: 'upsert'; readonly value: RemoteCalendarEvent }
+	| { readonly type: 'occurrence-cancelled'; readonly occurrence: CancelledRemoteOccurrence }
 	| {
 		readonly type: 'delete';
 		readonly providerId: ProviderId;
@@ -129,11 +210,24 @@ export interface CalendarProvider {
 	readonly id: ProviderId;
 	listCalendars(session: ProviderSession, signal?: AbortSignal): Promise<RemoteCalendar[]>;
 	pullChanges(request: PullChangesRequest): Promise<ChangePage>;
+	/** Fetch a complete, paginated occurrence generation for one recurring master. */
+	listInstances?(request: ListInstancesRequest): Promise<RemoteOccurrence[]>;
+	/** Fetch the latest provider state for an event/occurrence ID. */
+	fetchEvent?(
+		session: ProviderSession,
+		calendarId: string,
+		remoteId: string,
+		signal?: AbortSignal,
+	): Promise<RemoteEventLookupResult>;
+	/** Update only occurrence-owned fields after verifying master and original slot identity. */
+	updateOccurrence?(request: UpdateOccurrenceRequest): Promise<Extract<RemoteOccurrence, { readonly status: 'active' }>>;
+	/** Optional requestId is a provider-supported stable identity for safe create retries. */
 	createEvent(
 		session: ProviderSession,
 		calendarId: string,
 		event: CalendarEvent,
 		signal?: AbortSignal,
+		requestId?: string,
 	): Promise<RemoteCalendarEvent>;
 	/**
 	 * A provider-originated write attaches the canonical event UID as private

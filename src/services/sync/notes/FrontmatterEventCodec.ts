@@ -12,6 +12,12 @@ import {
 } from '../model/CalendarEventValidation';
 import { exclusiveToInclusive, isNextDay } from '../util/date';
 import type { CalendarEventValidationError } from '../model/CalendarEventValidation';
+import {
+	decodeCalendarNoteTarget,
+	encodeCalendarNoteTarget,
+	type CalendarNoteTarget,
+} from './CalendarNoteTarget';
+import { zonedDateTime } from '../util/timezone';
 
 /** Values accepted by the vault's frontmatter object. */
 export type FrontmatterValue =
@@ -40,18 +46,23 @@ export interface CalendarEventNote {
 	readonly frontmatter: FrontmatterRecord;
 	readonly status?: SyncStatus;
 	readonly association?: CalendarEventAssociation;
+	readonly target?: CalendarNoteTarget;
+	readonly targetErrors?: readonly string[];
 }
 
 export interface CalendarEventDecodeResult {
 	readonly marked: boolean;
 	readonly note?: CalendarEventNote;
 	readonly errors: ReadonlyArray<CalendarEventValidationError>;
+	readonly targetErrors?: readonly string[];
 	readonly parsed: ParsedFrontmatter;
 }
 
 export interface CalendarEventFrontmatterOptions {
 	readonly status?: SyncStatus;
 	readonly association?: CalendarEventAssociation | ProviderReference;
+	/** Stable local ownership identity for series, occurrence, or occurrence-day notes. */
+	readonly target?: CalendarNoteTarget;
 	/** Additional frontmatter to retain when creating a new note. */
 	readonly unknownFrontmatter?: FrontmatterRecord;
 }
@@ -235,18 +246,24 @@ export function decodeCalendarEventNote(content: string): CalendarEventDecodeRes
 		return { marked: false, errors: [], parsed };
 	}
 
+	const hasTarget = Object.prototype.hasOwnProperty.call(parsed.frontmatter, 'calendar_note_target');
+	const decodedTarget = hasTarget ? decodeCalendarNoteTarget(parsed.frontmatter.calendar_note_target) : undefined;
+	const targetErrors = decodedTarget && !decodedTarget.ok ? decodedTarget.errors : undefined;
 	const validation = validateCalendarEvent(parsed.frontmatter);
-	if (!validation.ok) return { marked: true, errors: validation.errors, parsed };
+	if (!validation.ok) return { marked: true, errors: validation.errors, targetErrors, parsed };
 
 	const sync = decodeSync(parsed.frontmatter, validation.value);
 	return {
 		marked: true,
 		errors: [],
+		targetErrors,
 		parsed,
 		note: {
 			event: validation.value,
 			body: parsed.body,
 			frontmatter: parsed.frontmatter,
+			...(decodedTarget?.ok ? { target: decodedTarget.target } : {}),
+			...(targetErrors === undefined ? {} : { targetErrors }),
 			...sync,
 		},
 	};
@@ -292,10 +309,13 @@ export function applyCalendarEventFrontmatter(
 	let startDate = event.start;
 	let endDate = event.end;
 	
-	// If it's a timed event, extract the date part (YYYY-MM-DD)
+	// Timed events use their event-local civil dates, which can differ from the
+	// timestamp's written offset date around timezone boundaries.
 	if (!event.allDay) {
-		startDate = event.start.substring(0, 10);
-		endDate = event.end.substring(0, 10);
+		const localStart = zonedDateTime(event.start, event.timezone);
+		const localEnd = zonedDateTime(event.end, event.timezone);
+		if (localStart) startDate = `${String(localStart.year).padStart(4, '0')}-${String(localStart.month).padStart(2, '0')}-${String(localStart.day).padStart(2, '0')}`;
+		if (localEnd) endDate = `${String(localEnd.year).padStart(4, '0')}-${String(localEnd.month).padStart(2, '0')}-${String(localEnd.day).padStart(2, '0')}`;
 	}
 
 	if (singleDay || (!event.allDay && startDate === endDate)) {
@@ -324,6 +344,12 @@ export function applyCalendarEventFrontmatter(
 	frontmatter.calendar_description = event.description;
 	if (event.recurrence === undefined) delete frontmatter.calendar_recurrence;
 	else frontmatter.calendar_recurrence = event.recurrence;
+	if (options.target !== undefined) {
+		const targetValue = encodeCalendarNoteTarget(options.target);
+		const validation = decodeCalendarNoteTarget(targetValue);
+		if (!validation.ok) throw new Error(validation.errors.join('; '));
+		frontmatter.calendar_note_target = targetValue;
+	}
 	if (frontmatter.calendar_sync !== undefined) {
 		frontmatter.calendar_sync = sanitizeSyncFrontmatter(frontmatter.calendar_sync);
 	}

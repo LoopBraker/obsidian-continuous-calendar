@@ -5,8 +5,13 @@ import { format, parseISO, differenceInDays, addDays } from 'date-fns';
 import { RRule } from 'rrule';
 import { IndexService, type CalendarDisplayEvent, type RangeNote, type TaskNote } from './services/IndexService';
 import type { SyncStatus } from './services/sync/model';
+import { addCivilDays, eventCivilDayBounds } from './services/sync/notes/CalendarNoteTarget';
 import { formatCalendarEventTime, syncStatusLabel } from './components/SyncUi';
 import { openSyncEventModal } from './modals/SyncEventModal';
+import { openSyncNoteScopeModal } from './modals/SyncNoteScopeModal';
+import { type Holiday } from './services/holiday/HolidayTypes';
+
+export type CalendarEventNoteActionScope = 'series' | 'occurrence' | 'occurrence-day';
 
 interface DayDetailViewProps {
     dateKey: string;
@@ -22,10 +27,38 @@ interface DayDetailViewProps {
     canCreateSyncEvent?: boolean;
     onEditSyncEvent?: (eventKey: string) => void;
     onDeleteSyncEvent?: (eventKey: string) => Promise<boolean>;
-    onCreateEventNote?: (eventKey: string) => void;
+    onCreateEventNote?: (eventKey: string, scope?: CalendarEventNoteActionScope, selectedDate?: string) => void;
 }
 
-import { type Holiday } from './services/holiday/HolidayTypes';
+/** Return only note actions that have a verified target for this selected civil date. */
+export function getCalendarEventNoteActionScopes(
+    event: CalendarDisplayEvent,
+    selectedDate: string,
+): CalendarEventNoteActionScope[] {
+    if (event.status === 'remote_deleted') return [];
+    if (event.scope === 'series') {
+        return event.providerWriteKey || event.masterRemoteId ? ['series'] : [];
+    }
+    if (event.scope !== 'occurrence') return [];
+
+    // A verified master remains a safe note target even when its occurrence
+    // row is stale, cancelled, or locally approximated.
+    const scopes: CalendarEventNoteActionScope[] = event.providerWriteKey && event.masterRemoteId ? ['series'] : [];
+    if (event.cancelled || event.unresolved || event.providerResolved !== true || event.stale || !event.providerWriteKey) return scopes;
+    const bounds = eventCivilDayBounds(event.event);
+    if (!bounds || selectedDate < bounds.startDate || selectedDate >= bounds.endDateExclusive) return scopes;
+
+    scopes.push('occurrence');
+    const secondDate = addCivilDays(bounds.startDate, 1);
+    if (secondDate && secondDate < bounds.endDateExclusive) scopes.push('occurrence-day');
+    return scopes;
+}
+
+/** Exact provider key for a write; locally expanded rows have no safe edit target. */
+export function getCalendarEventEditKey(event: CalendarDisplayEvent): string | undefined {
+    if (event.providerResolved !== true || event.stale || event.cancelled || event.unresolved || event.status === 'remote_deleted') return undefined;
+    return event.providerWriteKey;
+}
 
 // Utility to convert tint colors to text colors for better readability
 const convertTintToTextColor = (color: string | undefined): string | undefined => {
@@ -76,6 +109,30 @@ const SyncStatusIcon = ({ status }: { status?: SyncStatus }) => {
             <ObsidianIcon icon={SYNC_STATUS_ICONS[status]} />
         </span>
     );
+};
+
+const SyncProjectionStatusIcons = ({ event }: { event: CalendarDisplayEvent }) => {
+    const states = [
+        ...(event.masterRemoteId && event.status !== 'remote_deleted' ? [{ label: 'Recurring series', icon: 'repeat', className: 'sync-status-recurring' }] : []),
+        ...(event.stale ? [{ label: 'Occurrence projection is stale', icon: 'clock', className: 'sync-status-pending' }] : []),
+        ...(event.cancelled ? [{ label: 'Occurrence is cancelled', icon: 'calendar-off', className: 'sync-status-remote_deleted' }] : []),
+        ...(event.unresolved ? [{ label: 'Occurrence ownership is unresolved', icon: 'alert-triangle', className: 'sync-status-unsupported' }] : []),
+        ...(event.localRepairPending ? [{ label: 'Google change saved; local note repair pending', icon: 'wrench', className: 'sync-status-error' }] : []),
+    ];
+
+    return <>
+        {states.map(state => (
+            <span
+                key={state.label}
+                className={`sync-event-status-icon ${state.className}`}
+                title={state.label}
+                role="img"
+                aria-label={state.label}
+            >
+                <ObsidianIcon icon={state.icon} />
+            </span>
+        ))}
+    </>;
 };
 
 export const DayDetailView = ({ dateKey, viewMode, index, app, settings, onClose, onPrev, onNext, onOpenNote, onCreateSyncEvent, canCreateSyncEvent, onEditSyncEvent, onDeleteSyncEvent, onCreateEventNote }: DayDetailViewProps) => {
@@ -283,28 +340,37 @@ export const DayDetailView = ({ dateKey, viewMode, index, app, settings, onClose
 
     const displayTaskPaths = new Set(displayTasks.map(t => t.path));
     const filteredRanges = ranges.filter(r => !displayTaskPaths.has(r.path));
-    const syncEventPaths = new Set(syncEvents.flatMap(event => event.notePath ? [event.notePath] : []));
+    const syncEventPaths = new Set(syncEvents.flatMap(event => [
+        ...(event.notePath ? [event.notePath] : []),
+        ...(event.notePaths ?? []),
+    ]));
     const filteredNotes = notes.filter(n => !displayTaskPaths.has(n.path) && !syncEventPaths.has(n.path));
 
     const handleEditSyncEvent = (syncEvent: CalendarDisplayEvent) => {
+        const providerWriteKey = getCalendarEventEditKey(syncEvent);
+        if (!providerWriteKey) return;
         if (onEditSyncEvent) {
             onEditSyncEvent(syncEvent.key);
             return;
         }
 
+        const plugin = (app as any).plugins?.getPlugin?.('obsidian-Continuous-calendar')
+            || (app as any).plugins?.plugins?.['obsidian-Continuous-calendar']
+            || (app as any).plugins?.getPlugin?.('obsidian-continuous-calendar')
+            || (app as any).plugins?.plugins?.['obsidian-continuous-calendar'];
+        if (plugin?.openCalendarEventEditor) {
+            plugin.openCalendarEventEditor(syncEvent.key);
+            return;
+        }
+
         const sync = syncSettings;
-        const masterEvent = index.getCalendarEvents().find(record => record.key === syncEvent.key)?.event ?? syncEvent.event;
-        const timezone = masterEvent.timezone || sync?.timezone || 'UTC';
+        const timezone = syncEvent.event.timezone || sync?.timezone || 'UTC';
         openSyncEventModal(app, {
-            initialEvent: masterEvent,
+            initialEvent: syncEvent.event,
             timezone,
             onSubmit: async (event) => {
-                const plugin = (app as any).plugins?.getPlugin?.('obsidian-Continuous-calendar')
-                    || (app as any).plugins?.plugins?.['obsidian-Continuous-calendar']
-                    || (app as any).plugins?.getPlugin?.('obsidian-continuous-calendar')
-                    || (app as any).plugins?.plugins?.['obsidian-continuous-calendar'];
                 if (plugin?.updateCalendarEvent) {
-                    await plugin.updateCalendarEvent(syncEvent.key, event);
+                    await plugin.updateCalendarEvent(providerWriteKey, event);
                 }
             },
         });
@@ -583,6 +649,14 @@ export const DayDetailView = ({ dateKey, viewMode, index, app, settings, onClose
                         <ul className="day-detail-list">
                             {syncEvents.map(syncEvent => {
                                 const notePath = syncEvent.notePath;
+                                const noteActionScopes = onCreateEventNote
+                                    ? getCalendarEventNoteActionScopes(syncEvent, dateKey)
+                                    : [];
+                                const editKey = getCalendarEventEditKey(syncEvent);
+                                const canDeleteEvent = Boolean(
+                                    canWriteSyncEvents && onDeleteSyncEvent && editKey &&
+                                    syncEvent.status !== 'unsupported',
+                                );
                                 return (
                                     <li key={`${syncEvent.key}:${syncEvent.event.start}`} className="sync-event-card">
                                         <div className="sync-event-card-content">
@@ -604,25 +678,36 @@ export const DayDetailView = ({ dateKey, viewMode, index, app, settings, onClose
                                                     </span>
                                                 )}
                                                 <SyncStatusIcon status={syncEvent.status} />
+                                                <SyncProjectionStatusIcons event={syncEvent} />
                                             </div>
                                             <div className="sync-event-card-meta">
                                                 <div className="sync-event-time" title="Canonical event time">
                                                     {formatCalendarEventTime(syncEvent.event)}
                                                 </div>
-                                                {((!notePath && onCreateEventNote) || (canWriteSyncEvents && syncEvent.status !== 'unsupported')) && (
+                                                {(noteActionScopes.length > 0 || (canWriteSyncEvents && editKey && syncEvent.status !== 'unsupported') || canDeleteEvent) && (
                                                     <div className="sync-event-actions">
-                                                        {!notePath && onCreateEventNote && (
+                                                        {noteActionScopes.length > 0 && (
                                                             <button
                                                                 type="button"
                                                                 className="sync-event-action clickable-icon"
-                                                                onClick={() => onCreateEventNote(syncEvent.key)}
-                                                                aria-label={`Create note for ${syncEvent.event.title || 'Untitled event'}`}
-                                                                title={`Create note for ${syncEvent.event.title || 'Untitled event'}`}
+                                                                onClick={() => openSyncNoteScopeModal(app, {
+                                                                    eventTitle: syncEvent.event.title,
+                                                                    scopes: noteActionScopes,
+                                                                    selectedDate: dateKey,
+                                                                    recurring: Boolean(syncEvent.masterRemoteId || syncEvent.scope === 'series'),
+                                                                    onSelect: scope => onCreateEventNote?.(
+                                                                        syncEvent.key,
+                                                                        scope,
+                                                                        scope === 'occurrence-day' ? dateKey : undefined,
+                                                                    ),
+                                                                })}
+                                                                aria-label={`Create or open linked note for ${syncEvent.event.title || 'Untitled event'}`}
+                                                                title="Create or open linked note"
                                                             >
                                                                 <ObsidianIcon icon="file-plus" />
                                                             </button>
                                                         )}
-                                                        {canWriteSyncEvents && syncEvent.status !== 'unsupported' && (
+                                                        {canWriteSyncEvents && editKey && syncEvent.status !== 'unsupported' && (
                                                             <button
                                                                 type="button"
                                                                 className="sync-event-action clickable-icon"
@@ -633,13 +718,15 @@ export const DayDetailView = ({ dateKey, viewMode, index, app, settings, onClose
                                                                 <ObsidianIcon icon="pencil" />
                                                             </button>
                                                         )}
-                                                        {canWriteSyncEvents && syncEvent.status !== 'unsupported' && onDeleteSyncEvent && (
+                                                        {canDeleteEvent && (
                                                             <button
                                                                 type="button"
                                                                 className="sync-event-action clickable-icon mod-warning"
-                                                                onClick={() => { void onDeleteSyncEvent(syncEvent.key); }}
-                                                                aria-label={`Delete Google Calendar event ${syncEvent.event.title || 'Untitled event'}`}
-                                                                title={`Delete Google Calendar event ${syncEvent.event.title || 'Untitled event'}`}
+                                                                onClick={() => {
+                                                                    if (editKey && onDeleteSyncEvent) void onDeleteSyncEvent(syncEvent.key);
+                                                                }}
+                                                                aria-label={`Delete Google Calendar ${syncEvent.masterRemoteId ? 'series' : 'event'} ${syncEvent.event.title || 'Untitled event'}`}
+                                                                title={`Delete Google Calendar ${syncEvent.masterRemoteId ? 'series' : 'event'}`}
                                                             >
                                                                 <ObsidianIcon icon="trash" />
                                                             </button>

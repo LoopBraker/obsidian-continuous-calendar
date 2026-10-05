@@ -6,8 +6,9 @@ import {
 } from '../../../src/services/sync/notes';
 import { decodeCalendarEventNote, parseFrontmatter, serializeFrontmatter } from '../../../src/services/sync/notes/FrontmatterEventCodec';
 import { FakeCalendarProvider, fakeProviderSession } from '../../../src/services/sync/providers/FakeCalendarProvider';
+import type { ListInstancesRequest, RemoteCalendarEvent, RemoteEventLookupResult, RemoteOccurrence, ProviderSession, UpdateOccurrenceRequest } from '../../../src/services/sync/providers/CalendarProvider';
 import { cursorExpiredError, transientError } from '../../../src/services/sync/providers/ProviderErrors';
-import { SyncService, type SyncStateStoreLike } from '../../../src/services/sync/engine';
+import { ProviderOutcomeUnknownError, ProviderWriteConflictError, SyncService, type SyncStateStoreLike } from '../../../src/services/sync/engine';
 import { createDefaultSyncState, makeSyncStateKey, normalizeSyncState, type SyncState } from '../../../src/services/sync/state';
 import type { CalendarEvent } from '../../../src/services/sync/model';
 
@@ -31,6 +32,7 @@ function event(uid: string, patch: Partial<CalendarEvent> = {}): CalendarEvent {
 class MemoryVault implements CalendarEventVault {
 	readonly files = new Map<string, string>();
 	readonly processCalls: string[] = [];
+	failNextProcess = false;
 
 	constructor(initial: Record<string, string> = {}) {
 		for (const [path, content] of Object.entries(initial)) this.files.set(path, content);
@@ -54,6 +56,10 @@ class MemoryVault implements CalendarEventVault {
 	}
 
 	processFrontMatter(file: CalendarVaultFileLike, processor: (frontmatter: Record<string, unknown>) => void): void {
+		if (this.failNextProcess) {
+			this.failNextProcess = false;
+			throw new Error('injected frontmatter failure');
+		}
 		const path = typeof file === 'string' ? file : file.path;
 		const parsed = parseFrontmatter(this.read(path));
 		const frontmatter = { ...parsed.frontmatter };
@@ -74,12 +80,17 @@ class MemoryVault implements CalendarEventVault {
 class MemoryStateStore implements SyncStateStoreLike {
 	state: SyncState = createDefaultSyncState();
 	saveCount = 0;
+	failNextSave = false;
 
 	async load(): Promise<SyncState> {
 		return normalizeSyncState(JSON.parse(JSON.stringify(this.state)) as unknown);
 	}
 
 	async save(state: SyncState): Promise<void> {
+		if (this.failNextSave) {
+			this.failNextSave = false;
+			throw new Error('injected state write failure');
+		}
 		this.state = normalizeSyncState(JSON.parse(JSON.stringify(state)) as unknown);
 		this.saveCount += 1;
 	}
@@ -96,7 +107,8 @@ class HidingFullResyncProvider extends FakeCalendarProvider {
 				changes: page.changes.filter(change => {
 					const remoteId = change.type === 'upsert'
 						? change.value.remoteId
-						: change.type === 'delete' ? change.remoteId : change.masterRemoteId;
+						: change.type === 'delete' ? change.remoteId
+							: change.type === 'occurrence-cancelled' ? change.occurrence.instanceRemoteId : change.masterRemoteId;
 					return remoteId !== this.hiddenRemoteId;
 				}),
 			};
@@ -128,6 +140,63 @@ class UnboundedPullProvider extends FakeCalendarProvider {
 			...request,
 			window: { from: '1900-01-01T00:00:00Z', to: '2100-01-01T00:00:00Z' },
 		});
+	}
+}
+
+class InstanceProvider extends UnboundedPullProvider {
+	instances: RemoteOccurrence[] = [];
+	failInstances = false;
+
+	async listInstances(_request: ListInstancesRequest): Promise<RemoteOccurrence[]> {
+		if (this.failInstances) throw transientError('instance expansion unavailable');
+		return this.instances;
+	}
+}
+
+class EditableInstanceProvider extends InstanceProvider {
+	updateCalls = 0;
+
+	async updateOccurrence(request: UpdateOccurrenceRequest): Promise<Extract<RemoteOccurrence, { readonly status: 'active' }>> {
+		this.updateCalls += 1;
+		const existing = this.instances.find((value): value is Extract<RemoteOccurrence, { readonly status: 'active' }> =>
+			value.status === 'active' && value.instanceRemoteId === request.instanceRemoteId);
+		if (!existing) throw new Error('Missing test occurrence');
+		const updated: Extract<RemoteOccurrence, { readonly status: 'active' }> = {
+			...existing,
+			event: { ...existing.event, event: request.event, version: 'v2' },
+			actualStart: { dateTime: request.event.start, timeZone: request.event.timezone },
+			actualEnd: { dateTime: request.event.end, timeZone: request.event.timezone },
+			version: 'v2',
+		};
+		this.instances = this.instances.map(value => value.instanceRemoteId === updated.instanceRemoteId ? updated : value);
+		return updated;
+	}
+}
+
+class LostCreateResponseProvider extends FakeCalendarProvider {
+	posts = 0;
+
+	override async createEvent(
+		_session: ProviderSession, calendarId: string, value: CalendarEvent,
+		_signal?: AbortSignal, requestId?: string,
+	): Promise<RemoteCalendarEvent> {
+		if (!requestId) throw new Error('Expected a stable request ID');
+		this.posts += 1;
+		this.seedEvent(calendarId, value, { remoteId: requestId });
+		throw transientError('response lost after Google accepted POST');
+	}
+
+	async fetchEvent(_session: ProviderSession, calendarId: string, remoteId: string): Promise<RemoteEventLookupResult> {
+		const found = this.getEvent(calendarId, remoteId);
+		return found
+			? { status: 'active', event: found }
+			: { status: 'not-found', providerId: this.id, calendarId, remoteId };
+	}
+}
+
+class UnavailableLookupProvider extends FakeCalendarProvider {
+	async fetchEvent(): Promise<RemoteEventLookupResult> {
+		throw transientError('targeted lookup unavailable');
 	}
 }
 
@@ -176,6 +245,182 @@ function makeService(
 }
 
 describe('SyncService remote event cache', () => {
+	it('checks an uncertain create by its persisted request ID before any second POST', async () => {
+		const provider = new LostCreateResponseProvider({ accountId: SESSION.accountId });
+		const { service, store } = makeService(provider, new MemoryVault());
+		const draft = event('create-once');
+		await expect(service.createCalendarEvent(draft)).rejects.toBeInstanceOf(ProviderOutcomeUnknownError);
+		expect(provider.posts).toBe(1);
+		expect(Object.values(store.state.providerCreateIntents)[0]?.status).toBe('unknown');
+
+		const recovered = await service.createCalendarEvent(draft);
+		expect(recovered.event.uid).toBe(draft.uid);
+		expect(provider.posts).toBe(1);
+		expect(Object.values(store.state.providerCreateIntents)[0]?.status).toBe('confirmed');
+	});
+
+	it('keeps an old recurring master and its last complete instance generation when refresh fails', async () => {
+		const provider = new InstanceProvider({ accountId: SESSION.accountId });
+		const master = provider.seedEvent('primary', event('series-uid', {
+			start: '2020-01-01T09:00:00-05:00', end: '2020-01-01T10:00:00-05:00',
+			recurrence: { frequency: 'weekly', interval: 1 },
+		}), { remoteId: 'old-series' });
+		const slot = { dateTime: '2026-09-23T09:00:00-05:00', timeZone: 'America/Bogota' };
+		provider.instances = [{
+			status: 'active', providerId: 'google', calendarId: 'primary',
+			masterRemoteId: 'old-series', instanceRemoteId: 'instance-1', originalStartTime: slot,
+			actualStart: slot, actualEnd: { dateTime: '2026-09-23T10:00:00-05:00', timeZone: 'America/Bogota' },
+			event: { ...master, remoteId: 'instance-1', recurrenceMasterId: 'old-series', originalStartTime: slot,
+				event: event('instance-uid', { start: slot.dateTime, end: '2026-09-23T10:00:00-05:00', recurrence: undefined }) },
+		}];
+		const store = new MemoryStateStore();
+		const { service } = makeService(provider, new MemoryVault(), store);
+		await service.syncNow();
+		const masterKey = makeSyncStateKey('google', SESSION.accountId, 'primary', 'old-series');
+		expect(store.state.remoteEvents[masterKey]).toBeDefined();
+		expect(Object.values(store.state.remoteOccurrences)).toHaveLength(1);
+		expect(Object.values(store.state.occurrenceCoverage)[0]?.dirty).toBe(false);
+
+		provider.failInstances = true;
+		await provider.updateEvent(SESSION, 'primary', 'old-series', { ...master.event, title: 'Changed rule title' }, master.version);
+		const refresh = await service.syncNow();
+		expect(refresh.status).toBe('offline');
+		expect(Object.values(store.state.remoteOccurrences)).toHaveLength(1);
+		expect(Object.values(store.state.occurrenceCoverage)[0]?.dirty).toBe(true);
+	});
+
+	it('keeps a created recurring master editable after sync and refreshes its instances after a series date change', async () => {
+		const provider = new InstanceProvider({ accountId: SESSION.accountId });
+		const { service, store } = makeService(provider, new MemoryVault());
+		const created = await service.createCalendarEvent(event('editable-series', {
+			recurrence: { frequency: 'daily', interval: 1, count: 3 },
+		}));
+		const remoteMaster = provider.getEvent('primary', created.remoteEventId);
+		if (!remoteMaster) throw new Error('Expected the newly created recurring master');
+		const slot = { dateTime: '2026-09-22T09:00:00-05:00', timeZone: 'America/Bogota' };
+		provider.instances = [{
+			status: 'active', providerId: 'google', calendarId: 'primary', masterRemoteId: created.remoteEventId,
+			instanceRemoteId: 'series-instance', originalStartTime: slot, actualStart: slot,
+			actualEnd: { dateTime: '2026-09-22T10:00:00-05:00', timeZone: 'America/Bogota' },
+			event: { ...remoteMaster, remoteId: 'series-instance',
+				recurrenceMasterId: created.remoteEventId, originalStartTime: slot,
+				event: event('instance', { recurrence: undefined }) },
+		}];
+		await service.syncNow();
+		expect(store.state.remoteEvents[created.key]?.event.recurrence).toMatchObject({ frequency: 'daily', count: 3 });
+		expect(Object.values(store.state.remoteOccurrences)).toHaveLength(1);
+		const changed = {
+			...store.state.remoteEvents[created.key].event,
+			start: '2026-09-23T09:00:00-05:00', end: '2026-09-23T10:00:00-05:00',
+		};
+		await service.updateCalendarEvent(created.key, changed);
+		expect(store.state.remoteEvents[created.key]?.event.recurrence).toMatchObject({ frequency: 'daily', count: 3 });
+		expect(Object.values(store.state.occurrenceCoverage)[0]?.dirty).toBe(true);
+		await service.syncNow();
+		expect(Object.values(store.state.occurrenceCoverage)[0]?.dirty).toBe(false);
+	});
+
+	it('does not delete another account’s occurrence rows while refreshing a shared master ID', async () => {
+		const provider = new InstanceProvider({ accountId: SESSION.accountId });
+		provider.seedEvent('primary', event('series', { recurrence: { frequency: 'daily', interval: 1 } }), { remoteId: 'shared-master' });
+		const store = new MemoryStateStore();
+		const otherKey = makeSyncStateKey('google', 'other-account', 'primary', 'occurrence', 'shared-master', 'old-slot');
+		store.state.remoteOccurrences[otherKey] = {
+			providerId: 'google', accountId: 'other-account', calendarId: 'primary',
+			masterRemoteId: 'shared-master', instanceRemoteId: 'other-instance',
+			originalStartTime: { dateTime: '2026-09-22T09:00:00-05:00', timeZone: 'America/Bogota' },
+			cancelled: false, unresolved: false,
+		};
+		const { service } = makeService(provider, new MemoryVault(), store);
+		await service.syncNow();
+		expect(store.state.remoteOccurrences[otherKey]?.instanceRemoteId).toBe('other-instance');
+	});
+
+	it('keeps a cancelled slot note and its body when the tombstone has no event fields', async () => {
+		const provider = new InstanceProvider({ accountId: SESSION.accountId });
+		const master = provider.seedEvent('primary', event('series', { recurrence: { frequency: 'daily', interval: 1 } }), { remoteId: 'series-cancel' });
+		const slot = { dateTime: '2026-09-22T09:00:00-05:00', timeZone: 'America/Bogota' };
+		provider.instances = [{
+			status: 'active', providerId: 'google', calendarId: 'primary', masterRemoteId: 'series-cancel',
+			instanceRemoteId: 'instance-cancel', originalStartTime: slot, actualStart: slot,
+			actualEnd: { dateTime: '2026-09-22T10:00:00-05:00', timeZone: 'America/Bogota' },
+			event: { ...master, remoteId: 'instance-cancel', recurrenceMasterId: 'series-cancel', originalStartTime: slot,
+				event: event('instance', { recurrence: undefined }) },
+		}];
+		const vault = new MemoryVault();
+		const { service, repository, store } = makeService(provider, vault);
+		await service.syncNow();
+		const note = await repository.createForTarget(event('local-note'), {
+			version: 1, providerId: 'google', accountId: SESSION.accountId, calendarId: 'primary',
+			scope: 'occurrence', occurrence: { kind: 'recurrence', masterEventId: 'series-cancel', originalStartTime: slot },
+		}, { providerId: 'google', accountId: SESSION.accountId, calendarId: 'primary', remoteEventId: 'series-cancel' },
+		{ body: '\n# Kept body\n' });
+		provider.instances = [{
+			status: 'cancelled', providerId: 'google', calendarId: 'primary', masterRemoteId: 'series-cancel',
+			instanceRemoteId: 'instance-cancel', originalStartTime: slot,
+		}];
+		await provider.updateEvent(SESSION, 'primary', 'series-cancel', { ...master.event, title: 'Revised series' }, master.version);
+		await service.syncNow();
+		expect(Object.values(store.state.remoteOccurrences)[0]?.cancelled).toBe(true);
+		expect(repository.getByUid(note.event.uid)?.status).toBe('remote_deleted');
+		expect(decodeCalendarEventNote(vault.files.get(note.path) ?? '').note?.body).toBe('\n# Kept body\n');
+	});
+
+	it('leaves child targets unresolved after their recurring parent is deleted', async () => {
+		const provider = new InstanceProvider({ accountId: SESSION.accountId });
+		const master = provider.seedEvent('primary', event('series', { recurrence: { frequency: 'daily', interval: 1 } }), { remoteId: 'series-delete' });
+		const slot = { dateTime: '2026-09-22T09:00:00-05:00', timeZone: 'America/Bogota' };
+		provider.instances = [{
+			status: 'active', providerId: 'google', calendarId: 'primary', masterRemoteId: 'series-delete',
+			instanceRemoteId: 'instance-delete', originalStartTime: slot, actualStart: slot,
+			actualEnd: { dateTime: '2026-09-22T10:00:00-05:00', timeZone: 'America/Bogota' },
+			event: { ...master, remoteId: 'instance-delete', recurrenceMasterId: 'series-delete', originalStartTime: slot,
+				event: event('instance', { recurrence: undefined }) },
+		}];
+		const vault = new MemoryVault();
+		const { service, repository, store } = makeService(provider, vault);
+		await service.syncNow();
+		const note = await repository.createForTarget(event('local-note'), {
+			version: 1, providerId: 'google', accountId: SESSION.accountId, calendarId: 'primary',
+			scope: 'occurrence', occurrence: { kind: 'recurrence', masterEventId: 'series-delete', originalStartTime: slot },
+		}, { providerId: 'google', accountId: SESSION.accountId, calendarId: 'primary', remoteEventId: 'series-delete' },
+		{ body: '\n# Do not lose\n' });
+		await service.syncNow();
+		await provider.deleteEvent(SESSION, 'primary', 'series-delete', master.version);
+		await service.syncNow();
+		expect(Object.values(store.state.remoteOccurrences)[0]?.unresolved).toBe(true);
+		expect(Object.values(store.state.localRepairs).some(repair => repair.reason === 'parent-series-deleted')).toBe(true);
+		expect(repository.getByUid(note.event.uid)?.status).toBe('synced');
+		expect(decodeCalendarEventNote(vault.files.get(note.path) ?? '').note?.body).toBe('\n# Do not lose\n');
+	});
+
+	it('marks child targets unresolved when deleting a series from this plugin', async () => {
+		const provider = new InstanceProvider({ accountId: SESSION.accountId });
+		const master = provider.seedEvent('primary', event('series', { recurrence: { frequency: 'daily', interval: 1 } }), { remoteId: 'direct-series-delete' });
+		const slot = { dateTime: '2026-09-22T09:00:00-05:00', timeZone: 'America/Bogota' };
+		provider.instances = [{
+			status: 'active', providerId: 'google', calendarId: 'primary', masterRemoteId: 'direct-series-delete',
+			instanceRemoteId: 'direct-instance', originalStartTime: slot, actualStart: slot,
+			actualEnd: { dateTime: '2026-09-22T10:00:00-05:00', timeZone: 'America/Bogota' },
+			event: { ...master, remoteId: 'direct-instance', recurrenceMasterId: 'direct-series-delete', originalStartTime: slot,
+				event: event('instance', { recurrence: undefined }) },
+		}];
+		const vault = new MemoryVault();
+		const { service, repository, store } = makeService(provider, vault);
+		await service.syncNow();
+		const note = await repository.createForTarget(event('local-note'), {
+			version: 1, providerId: 'google', accountId: SESSION.accountId, calendarId: 'primary',
+			scope: 'occurrence', occurrence: { kind: 'recurrence', masterEventId: 'direct-series-delete', originalStartTime: slot },
+		}, { providerId: 'google', accountId: SESSION.accountId, calendarId: 'primary', remoteEventId: 'direct-series-delete' },
+		{ body: '\n# Do not lose\n' });
+		const masterKey = makeSyncStateKey('google', SESSION.accountId, 'primary', 'direct-series-delete');
+		expect(await service.deleteCalendarEvent(masterKey)).toBe(true);
+		expect(store.state.remoteEvents[masterKey]?.status).toBe('remote_deleted');
+		expect(Object.values(store.state.remoteOccurrences)[0]?.unresolved).toBe(true);
+		expect(Object.values(store.state.localRepairs).some(repair => repair.reason === 'parent-series-deleted')).toBe(true);
+		expect(decodeCalendarEventNote(vault.files.get(note.path) ?? '').note?.body).toBe('\n# Do not lose\n');
+	});
+
 	it('pulls and persists Google events without creating notes, including across restart and offline pulls', async () => {
 		const provider = new FakeCalendarProvider({ accountId: SESSION.accountId });
 		provider.seedEvent('primary', event('remote-uid'), { remoteId: 'remote-1' });
@@ -219,6 +464,100 @@ describe('SyncService remote event cache', () => {
 		expect(provider.getEvent('primary', created.remoteEventId)).toBeUndefined();
 		expect(store.state.remoteEvents[created.key]?.status).toBe('remote_deleted');
 		expect(repository.list()).toHaveLength(0);
+	});
+
+	it('surfaces a stale delete as a provider conflict and keeps the event', async () => {
+		const provider = new LostCreateResponseProvider({ accountId: SESSION.accountId });
+		const original = provider.seedEvent('primary', event('conflicting'), { remoteId: 'stale-delete' });
+		const { service, store } = makeService(provider, new MemoryVault());
+		await service.syncNow();
+		await provider.updateEvent(SESSION, 'primary', 'stale-delete', { ...original.event, title: 'Updated elsewhere' }, original.version);
+		const key = makeSyncStateKey('google', SESSION.accountId, 'primary', 'stale-delete');
+		await expect(service.deleteCalendarEvent(key)).rejects.toBeInstanceOf(ProviderWriteConflictError);
+		expect(provider.getEvent('primary', 'stale-delete')?.event.title).toBe('Updated elsewhere');
+		expect(store.state.remoteEvents[key]?.status).toBe('synced');
+	});
+
+	it('reports a confirmed Google edit as saved when note mirroring fails, then repairs locally', async () => {
+		const provider = new FakeCalendarProvider({ accountId: SESSION.accountId });
+		provider.seedEvent('primary', event('remote-uid', { title: 'Before' }), { remoteId: 'remote-edit' });
+		const vault = new MemoryVault();
+		const { repository, service, store } = makeService(provider, vault);
+		await service.syncNow();
+		const key = makeSyncStateKey('google', SESSION.accountId, 'primary', 'remote-edit');
+		const cached = service.listCachedEvents().find(value => value.key === key);
+		if (!cached) throw new Error('Expected cached event');
+		const note = await repository.createForTarget({ ...cached.event, uid: undefined }, {
+			version: 1, providerId: 'google', accountId: SESSION.accountId, calendarId: 'primary',
+			scope: 'occurrence', occurrence: { kind: 'event', eventId: 'remote-edit' },
+		}, {
+			providerId: 'google', accountId: SESSION.accountId, calendarId: 'primary', remoteEventId: 'remote-edit',
+		});
+		vault.failNextProcess = true;
+
+		const result = await service.updateCalendarEvent(key, { ...cached.event, title: 'Saved on Google' });
+		expect(result.localRepairPending).toBe(true);
+		expect(provider.getEvent('primary', 'remote-edit')?.event.title).toBe('Saved on Google');
+		expect(repository.getByUid(note.event.uid)?.event.title).toBe('Before');
+		expect(Object.values(store.state.localRepairs)).toHaveLength(1);
+
+		const restarted = makeService(provider, vault, store);
+		await restarted.service.syncNow();
+		expect(restarted.repository.getByUid(note.event.uid)?.event.title).toBe('Saved on Google');
+		expect(store.state.localRepairs).toEqual({});
+	});
+
+	it('keeps provider success when its first local state write fails', async () => {
+		const provider = new FakeCalendarProvider({ accountId: SESSION.accountId });
+		provider.seedEvent('primary', event('remote', { title: 'Before' }), { remoteId: 'state-failure' });
+		const store = new MemoryStateStore();
+		const { service } = makeService(provider, new MemoryVault(), store);
+		await service.syncNow();
+		const key = makeSyncStateKey('google', SESSION.accountId, 'primary', 'state-failure');
+		const current = store.state.remoteEvents[key];
+		store.failNextSave = true;
+		const result = await service.updateCalendarEvent(key, { ...current.event, title: 'Saved remotely' });
+		expect(result.localRepairPending).toBe(true);
+		expect(provider.getEvent('primary', 'state-failure')?.event.title).toBe('Saved remotely');
+		expect(store.state.remoteEvents[key]?.event.title).toBe('Saved remotely');
+		expect(Object.values(store.state.localRepairs)).toHaveLength(1);
+		await service.syncNow();
+		expect(store.state.localRepairs).toEqual({});
+	});
+
+	it('keeps an occurrence edit successful when its linked note needs repair', async () => {
+		const provider = new EditableInstanceProvider({ accountId: SESSION.accountId });
+		const master = provider.seedEvent('primary', event('series', { recurrence: { frequency: 'daily', interval: 1 } }), { remoteId: 'edit-series' });
+		const slot = { dateTime: '2026-09-22T09:00:00-05:00', timeZone: 'America/Bogota' };
+		provider.instances = [{
+			status: 'active', providerId: 'google', calendarId: 'primary', masterRemoteId: 'edit-series',
+			instanceRemoteId: 'edit-instance', originalStartTime: slot, actualStart: slot,
+			actualEnd: { dateTime: '2026-09-22T10:00:00-05:00', timeZone: 'America/Bogota' },
+			event: { ...master, remoteId: 'edit-instance', recurrenceMasterId: 'edit-series', originalStartTime: slot,
+				event: event('instance', { recurrence: undefined }) },
+		}];
+		const vault = new MemoryVault();
+		const { service, repository, store } = makeService(provider, vault);
+		await service.syncNow();
+		const note = await repository.createForTarget(event('local-note'), {
+			version: 1, providerId: 'google', accountId: SESSION.accountId, calendarId: 'primary',
+			scope: 'occurrence', occurrence: { kind: 'recurrence', masterEventId: 'edit-series', originalStartTime: slot },
+		}, { providerId: 'google', accountId: SESSION.accountId, calendarId: 'primary', remoteEventId: 'edit-series' },
+		{ body: '\n# Kept while editing\n' });
+		await service.syncNow();
+		const occurrenceKey = Object.keys(store.state.remoteOccurrences)[0];
+		const previous = store.state.remoteOccurrences[occurrenceKey];
+		if (!previous.event) throw new Error('Expected occurrence event');
+		vault.failNextProcess = true;
+		const result = await service.updateCalendarOccurrence(occurrenceKey, { ...previous.event, title: 'Edited instance' });
+		expect(result.localRepairPending).toBe(true);
+		expect(provider.updateCalls).toBe(1);
+		expect(provider.getEvent('primary', 'edit-series')?.event.title).toBe('series');
+		expect(repository.getByUid(note.event.uid)?.event.title).toBe('instance');
+		const restarted = makeService(provider, vault, store);
+		await restarted.service.syncNow();
+		expect(restarted.repository.getByUid(note.event.uid)?.event.title).toBe('Edited instance');
+		expect(decodeCalendarEventNote(vault.files.get(note.path) ?? '').note?.body).toBe('\n# Kept while editing\n');
 	});
 
 	it('links a note only on request, mirrors remote canonical fields, and keeps note edits local', async () => {
@@ -271,8 +610,28 @@ describe('SyncService remote event cache', () => {
 
 		await service.syncNow();
 		const key = makeSyncStateKey('google', SESSION.accountId, 'primary', 'associated-remote');
-		expect(service.listCachedEvents().find(cached => cached.key === key)?.noteUid).toBe('associated-note');
+		expect(service.listCachedEvents().find(cached => cached.key === key)?.remoteEventId).toBe('associated-remote');
+		expect(repository.getByUid('associated-note')?.target).toMatchObject({
+			scope: 'occurrence', occurrence: { kind: 'event', eventId: 'associated-remote' },
+		});
 		expect(repository.getByUid('associated-note')?.event.title).toBe('Google title');
+	});
+
+	it('leaves an unverifiable legacy link intact when its targeted lookup is unavailable', async () => {
+		const provider = new UnavailableLookupProvider({ accountId: SESSION.accountId });
+		const vault = new MemoryVault();
+		const { repository, service } = makeService(provider, vault, new MemoryStateStore(), 'import-only');
+		const note = await repository.create(event('legacy-note'), {
+			body: '\n# Local content\n',
+			association: {
+				providerId: 'google', accountId: SESSION.accountId, calendarId: 'primary',
+				remoteEventId: 'unavailable-event',
+			},
+		});
+		const result = await service.syncNow();
+		expect(result.status).toBe('idle');
+		expect(repository.getByUid('legacy-note')?.target).toBeUndefined();
+		expect(decodeCalendarEventNote(vault.files.get(note.path) ?? '').note?.body).toBe('\n# Local content\n');
 	});
 
 	it('preserves a linked note on remote deletion and marks its status', async () => {

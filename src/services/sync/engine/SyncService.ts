@@ -16,6 +16,7 @@ import {
 	type SyncStateStore,
 	createDefaultSyncState,
 	type CachedCalendarEvent,
+	type CachedCalendarOccurrence,
 	withSyncStateError,
 } from '../state';
 import type {
@@ -26,6 +27,8 @@ import type {
 	ProviderSession,
 	RemoteCalendarEvent,
 	RemoteChange,
+	RemoteOccurrence,
+	RemoteEventLookupResult,
 	SyncWindow,
 } from '../providers';
 import { isProviderCancelledError, isProviderError } from '../providers/ProviderErrors';
@@ -38,7 +41,10 @@ import type {
 	CalendarEventReloadResult,
 	LocalCalendarEventDeletion,
 	CalendarEventUpdateOptions,
+	CalendarNoteOccurrenceTarget,
+	CalendarNoteTarget,
 } from '../notes';
+import { calendarNoteTargetMatchesProviderReference, targetKey } from '../notes';
 import type { ConflictChoice, SyncConflictCandidate } from './ConflictResolver';
 import { SyncQueue, type SyncQueueScheduler } from './SyncQueue';
 
@@ -64,6 +70,7 @@ export interface SyncServiceStatusSnapshot {
 	readonly completedAt?: string;
 	readonly conflictCount: number;
 	readonly pendingOutbound: number;
+	readonly localRepairCount: number;
 	readonly lastError?: string;
 }
 
@@ -118,6 +125,16 @@ export interface SyncRepositoryLike {
 	markRemoteDeleted(pathOrUid: string): Promise<CalendarEventNoteRecord>;
 	markUnsupported(pathOrUid: string): Promise<CalendarEventNoteRecord>;
 	markError(pathOrUid: string): Promise<CalendarEventNoteRecord>;
+	getByTarget?(target: CalendarNoteTarget): CalendarEventNoteRecord | undefined;
+	getTargetClaimants?(target: CalendarNoteTarget): readonly { readonly path: string }[];
+	migrateLegacyTargets?(
+		resolveVerifiedTarget: (record: CalendarEventNoteRecord) =>
+			| CalendarNoteTarget
+			| { readonly target: CalendarNoteTarget; readonly association?: CalendarEventAssociation }
+			| undefined
+			| Promise<CalendarNoteTarget | { readonly target: CalendarNoteTarget; readonly association?: CalendarEventAssociation } | undefined>,
+	): Promise<unknown>;
+	proposeDayTargetDate?(pathOrUid: string, nextEventInput: CalendarEventInputLike): Promise<CalendarEventNoteRecord>;
 	onLocalDeletion?(listener: (deletion: LocalCalendarEventDeletion) => void): () => void;
 	trash?(path: string): Promise<void>;
 }
@@ -130,6 +147,21 @@ export interface SyncStateStoreLike {
 
 export interface CachedCalendarEventView extends CachedCalendarEvent {
 	readonly key: string;
+}
+
+export interface CachedCalendarOccurrenceView extends CachedCalendarOccurrence {
+	readonly key: string;
+	readonly stale: boolean;
+}
+
+/** A confirmed occurrence write may still need local note repair. */
+export interface CalendarOccurrenceWriteResult extends CachedCalendarOccurrenceView {
+	readonly localRepairPending: boolean;
+}
+
+/** A confirmed provider write may still need local cache/note repair. */
+export interface CalendarEventWriteResult extends CachedCalendarEventView {
+	readonly localRepairPending: boolean;
 }
 
 export interface SyncServiceOptions {
@@ -187,6 +219,13 @@ function isSyncMode(value: SyncMode | undefined): value is SyncMode {
 
 function cloneEvent(event: CalendarEvent): CalendarEvent {
 	return { ...event };
+}
+
+function sameProviderOwnedFields(left: CalendarEvent, right: CalendarEvent): boolean {
+	return left.title === right.title && left.start === right.start && left.end === right.end &&
+		left.allDay === right.allDay && left.timezone === right.timezone &&
+		left.location === right.location && left.description === right.description &&
+		JSON.stringify(left.recurrence ?? null) === JSON.stringify(right.recurrence ?? null);
 }
 
 function nowIso(clock: SyncServiceClock): string {
@@ -260,6 +299,32 @@ function abortIfNeeded(signal: AbortSignal): void {
 	}
 }
 
+function newProviderCreateRequestId(): string {
+	const bytes = new Uint8Array(16);
+	const runtimeCrypto = (globalThis as unknown as { crypto?: { getRandomValues?: (values: Uint8Array) => Uint8Array } }).crypto;
+	if (!runtimeCrypto?.getRandomValues) throw new Error('Secure event ID generation is unavailable');
+	runtimeCrypto.getRandomValues(bytes);
+	return `cc${Array.from(bytes, value => value.toString(16).padStart(2, '0')).join('')}`;
+}
+
+export class ProviderOutcomeUnknownError extends Error {
+	constructor() {
+		super('Google may have saved this event. Check its status before retrying.');
+		this.name = 'ProviderOutcomeUnknownError';
+	}
+}
+
+/** A provider rejected the write because its version changed; the engine never resends stale fields. */
+export class ProviderWriteConflictError extends Error {
+	readonly latest?: RemoteEventLookupResult;
+
+	constructor(latest?: RemoteEventLookupResult) {
+		super('The Google event changed before it could be saved. Review the latest version before trying again.');
+		this.name = 'ProviderWriteConflictError';
+		this.latest = latest;
+	}
+}
+
 function defaultWindow(clock: SyncServiceClock, horizon: SyncHorizon): SyncWindow {
 	const now = new Date(clock.now());
 	const from = new Date(now.getTime() - horizon.pastDays * 86_400_000);
@@ -274,6 +339,48 @@ function eventIntersectsWindow(event: CalendarEvent, window: SyncWindow): boolea
 	const eventEnd = Date.parse(event.allDay ? `${event.end}T00:00:00Z` : event.end);
 	if (![windowStart, windowEnd, eventStart, eventEnd].every(Number.isFinite)) return true;
 	return eventStart < windowEnd && eventEnd > windowStart;
+}
+
+function occurrenceSlotValue(
+	slot: { readonly date?: string; readonly dateTime?: string; readonly timeZone?: string },
+	masterTimezone?: string,
+): string {
+	return slot.date !== undefined
+		? `date:${slot.date}`
+		: `dateTime:${slot.dateTime ?? ''}:${slot.timeZone ?? masterTimezone ?? ''}`;
+}
+
+function slotWithMasterTimezone(
+	slot: { readonly date?: string; readonly dateTime?: string; readonly timeZone?: string },
+	masterTimezone?: string,
+): { readonly date?: string; readonly dateTime?: string; readonly timeZone?: string } {
+	if (slot.date !== undefined) return { date: slot.date };
+	return {
+		...(slot.dateTime === undefined ? {} : { dateTime: slot.dateTime }),
+		...((slot.timeZone ?? masterTimezone) === undefined ? {} : { timeZone: slot.timeZone ?? masterTimezone }),
+	};
+}
+
+function providerConflict(error: unknown): boolean {
+	return isProviderError(error) && (error.category === 'conflict' || error.status === 412);
+}
+
+function sameSlotIdentity(
+	left: { readonly date?: string; readonly dateTime?: string; readonly timeZone?: string },
+	right: { readonly date?: string; readonly dateTime?: string; readonly timeZone?: string },
+	masterTimezone?: string,
+): boolean {
+	if (left.date !== undefined || right.date !== undefined) return left.date === right.date;
+	const normalizedLeft = slotWithMasterTimezone(left, masterTimezone);
+	const normalizedRight = slotWithMasterTimezone(right, masterTimezone);
+	return normalizedLeft.dateTime === normalizedRight.dateTime &&
+		normalizedLeft.timeZone !== undefined && normalizedLeft.timeZone === normalizedRight.timeZone;
+}
+
+function uniqueTarget(targets: readonly CalendarNoteTarget[]): CalendarNoteTarget | undefined {
+	const byKey = new Map<string, CalendarNoteTarget>();
+	for (const target of targets) byKey.set(targetKey(target), target);
+	return byKey.size === 1 ? byKey.values().next().value : undefined;
 }
 
 /**
@@ -359,45 +466,201 @@ export class SyncService {
 		return Object.entries(state.remoteEvents).map(([key, value]) => ({ key, ...value }));
 	}
 
+	/** Complete or last-known recurrence slots; stale rows remain visible offline. */
+	listCachedOccurrences(): readonly CachedCalendarOccurrenceView[] {
+		const state = this.stateStore.getState?.() ?? this.state;
+		return Object.entries(state.remoteOccurrences).map(([key, value]) => {
+			const coverage = state.occurrenceCoverage[this.coverageKey(value.masterRemoteId)];
+			return { key, ...value, stale: !coverage?.completedAt || coverage.dirty === true || value.unresolved === true };
+		});
+	}
+
+	private async fetchForWriteOutcome(remoteId: string): Promise<RemoteEventLookupResult | undefined> {
+		if (!this.provider.fetchEvent) return undefined;
+		try {
+			return await this.provider.fetchEvent(this.session, this.calendarId, remoteId);
+		} catch (_error) {
+			return undefined;
+		}
+	}
+
 	/** Create a provider event directly, without creating a Markdown note. */
-	async createCalendarEvent(input: CalendarEventInputLike): Promise<CachedCalendarEventView> {
+	async createCalendarEvent(input: CalendarEventInputLike): Promise<CalendarEventWriteResult> {
 		await this.ensureLoaded();
 		this.assertProviderWritesEnabled();
 		const event = normalizeCalendarEvent(input);
-		const remote = await this.runQueuedProviderWrite(
-			makeSyncStateKey(this.provider.id, this.session.accountId, this.calendarId, 'create', event.uid),
-			signal => this.provider.createEvent(this.session, this.calendarId, event, signal),
-		);
-		const cached = this.cacheRemoteEvent(remote);
+		const intentKey = makeSyncStateKey(this.provider.id, this.session.accountId, this.calendarId, 'create', event.uid);
+		let intent = this.state.providerCreateIntents[intentKey];
+		if (intent) {
+			if (intent.status === 'confirmed' && intent.remoteEventId) {
+				const cachedKey = makeSyncStateKey(this.provider.id, this.session.accountId, this.calendarId, intent.remoteEventId);
+				const cached = this.state.remoteEvents[cachedKey];
+				const repairKey = makeSyncStateKey(this.provider.id, this.session.accountId, this.calendarId, 'repair', intent.remoteEventId);
+				if (cached) return { key: cachedKey, ...cached, localRepairPending: this.state.localRepairs[repairKey] !== undefined };
+			}
+			const lookup = await this.fetchForWriteOutcome(intent.requestId);
+			if (!lookup) throw new ProviderOutcomeUnknownError();
+			if (lookup.status === 'active') {
+				if (lookup.event.remoteId !== intent.requestId || lookup.event.event.uid !== event.uid) throw new ProviderOutcomeUnknownError();
+				this.state.providerCreateIntents[intentKey] = { ...intent, status: 'confirmed', remoteEventId: lookup.event.remoteId };
+				const cached = this.cacheRemoteEvent(lookup.event);
+				return this.finishCommittedWrite(cached);
+			}
+			// A confirmed intent is never POSTed again, even if a later lookup
+			// cannot find it. Pending/unknown intents may retry with the same
+			// provider event ID only after an exact not-found response.
+			if (intent.status === 'confirmed' || lookup.status !== 'not-found' ||
+				lookup.providerId !== this.provider.id || lookup.calendarId !== this.calendarId || lookup.remoteId !== intent.requestId) {
+				throw new ProviderOutcomeUnknownError();
+			}
+			intent = { ...intent, status: 'pending' };
+			this.state.providerCreateIntents[intentKey] = intent;
+			this.stateDirty = true;
+			await this.saveState();
+		}
+		intent ??= {
+			providerId: this.provider.id,
+			accountId: this.session.accountId,
+			calendarId: this.calendarId,
+			eventUid: event.uid,
+			requestId: newProviderCreateRequestId(),
+			status: 'pending',
+			createdAt: nowIso(this.clock),
+		};
+		this.state.providerCreateIntents[intentKey] = intent;
 		this.stateDirty = true;
+		// Do not issue POST unless its stable identity is durably recoverable.
 		await this.saveState();
-		return cached;
+		let remote: RemoteCalendarEvent;
+		try {
+			remote = await this.runQueuedProviderWrite(
+				intentKey,
+				signal => this.provider.createEvent(this.session, this.calendarId, event, signal, intent.requestId),
+				undefined,
+				1,
+			);
+		} catch (error) {
+			this.state.providerCreateIntents[intentKey] = { ...intent, status: 'unknown' };
+			this.stateDirty = true;
+			try { await this.saveState(); } catch (_saveError) { /* The pending intent was saved before POST. */ }
+			if (!isRetryable(error) && !isCancellation(error)) throw error;
+			throw new ProviderOutcomeUnknownError();
+		}
+		this.state.providerCreateIntents[intentKey] = { ...intent, status: 'confirmed', remoteEventId: remote.remoteId };
+		const cached = this.cacheRemoteEvent(remote);
+		return this.finishCommittedWrite(cached);
 	}
 
 	/** Update a cached provider event directly; its canonical UID is immutable. */
-	async updateCalendarEvent(key: string, input: CalendarEventInputLike): Promise<CachedCalendarEventView> {
+	async updateCalendarEvent(key: string, input: CalendarEventInputLike): Promise<CalendarEventWriteResult> {
 		await this.ensureLoaded();
 		this.assertProviderWritesEnabled();
 		const current = this.state.remoteEvents[key];
 		if (!current || current.status === 'remote_deleted') throw new Error(`Cached calendar event "${key}" was not found`);
+		if (current.recurrenceMasterId) throw new Error('Recurring occurrences must be edited by their occurrence target');
 		if (current.status === 'unsupported' || cachedRecurrenceStatus(current) === 'unsupported') {
 			throw new Error('Recurring Google Calendar events cannot be edited from Continuous Calendar');
 		}
 		const candidate = normalizeCalendarEvent(input);
 		if (candidate.uid !== current.event.uid) throw new Error('Calendar event UID cannot be changed');
-		const remote = await this.runQueuedProviderWrite(key, signal => this.provider.updateEvent(
-			this.session,
-			this.calendarId,
-			current.remoteEventId,
-			candidate,
-			current.version,
-			signal,
-		));
+		let remote: RemoteCalendarEvent;
+		try {
+			remote = await this.runQueuedProviderWrite(key, signal => this.provider.updateEvent(
+				this.session,
+				this.calendarId,
+				current.remoteEventId,
+				candidate,
+				current.version,
+				signal,
+			), undefined, 1);
+		} catch (error) {
+			if (providerConflict(error)) {
+				const latest = await this.fetchForWriteOutcome(current.remoteEventId);
+				throw new ProviderWriteConflictError(latest);
+			}
+			if (!isRetryable(error)) throw error;
+			const lookup = await this.fetchForWriteOutcome(current.remoteEventId);
+			if (!lookup) throw new ProviderOutcomeUnknownError();
+			if (lookup.status !== 'active' || lookup.event.remoteId !== current.remoteEventId || !sameProviderOwnedFields(lookup.event.event, candidate)) {
+				throw new ProviderOutcomeUnknownError();
+			}
+			remote = lookup.event;
+		}
 		const cached = this.cacheRemoteEvent(remote, current.notePath, current.noteUid);
-		await this.mirrorRemoteEventToLinkedNote(cached);
-		this.stateDirty = true;
-		await this.saveState();
-		return cached;
+		if (cached.event.recurrence || cached.recurrenceRaw?.length) {
+			this.markOccurrenceCoverageDirty(cached.remoteEventId);
+		}
+		return this.finishCommittedWrite(cached, () => this.mirrorRemoteEventToLinkedNote(cached));
+	}
+
+	/** Update one immutable recurrence slot using its current provider instance ID and ETag. */
+	async updateCalendarOccurrence(key: string, input: CalendarEventInputLike): Promise<CalendarOccurrenceWriteResult> {
+		await this.ensureLoaded();
+		this.assertProviderWritesEnabled();
+		const current = this.state.remoteOccurrences[key];
+		if (!current || current.cancelled || !current.event) throw new Error(`Cached calendar occurrence "${key}" was not found`);
+		const coverage = this.state.occurrenceCoverage[this.coverageKey(current.masterRemoteId)];
+		if (!coverage?.completedAt || coverage.dirty || current.unresolved) {
+			throw new Error('This recurrence slot needs a complete refresh before it can be edited');
+		}
+		const updateOccurrence = this.provider.updateOccurrence;
+		if (!updateOccurrence) throw new Error('This provider cannot edit individual recurring occurrences');
+		const candidate = normalizeCalendarEvent(input);
+		if (candidate.uid !== current.event.uid) throw new Error('Calendar event UID cannot be changed');
+		const master = this.getCachedMaster(current.masterRemoteId);
+		const originalStartTime = slotWithMasterTimezone(current.originalStartTime, master?.event.timezone);
+		if (originalStartTime.dateTime !== undefined && !originalStartTime.timeZone) {
+			throw new Error('This recurrence slot has no verified timezone and cannot be edited safely');
+		}
+		let updated: Extract<RemoteOccurrence, { readonly status: 'active' }>;
+		try {
+			updated = await this.runQueuedProviderWrite(key, signal => updateOccurrence.call(this.provider, {
+				session: this.session,
+				calendarId: this.calendarId,
+				masterRemoteId: current.masterRemoteId,
+				instanceRemoteId: current.instanceRemoteId,
+				originalStartTime,
+				event: candidate,
+				expectedVersion: current.version,
+				masterTimeZone: master?.event.timezone,
+				signal,
+			}), undefined, 1);
+		} catch (error) {
+			if (providerConflict(error)) {
+				const latest = await this.fetchForWriteOutcome(current.instanceRemoteId);
+				throw new ProviderWriteConflictError(latest);
+			}
+			if (!isRetryable(error)) throw error;
+			const lookup = await this.fetchForWriteOutcome(current.instanceRemoteId);
+			if (!lookup) throw new ProviderOutcomeUnknownError();
+			if (
+				lookup.status !== 'active' ||
+				lookup.event.remoteId !== current.instanceRemoteId ||
+				lookup.event.recurrenceMasterId !== current.masterRemoteId ||
+				!lookup.event.originalStartTime ||
+				!sameSlotIdentity(lookup.event.originalStartTime, current.originalStartTime, master?.event.timezone) ||
+				!sameProviderOwnedFields(lookup.event.event, candidate)
+			) throw new ProviderOutcomeUnknownError();
+			updated = {
+				status: 'active',
+				providerId: lookup.event.providerId,
+				calendarId: lookup.event.calendarId,
+				masterRemoteId: current.masterRemoteId,
+				instanceRemoteId: current.instanceRemoteId,
+				originalStartTime: lookup.event.originalStartTime,
+				event: lookup.event,
+				actualStart: lookup.event.actualStart ?? {},
+				actualEnd: lookup.event.actualEnd ?? {},
+				version: lookup.event.version,
+			};
+		}
+		if (
+			updated.masterRemoteId !== current.masterRemoteId ||
+			updated.instanceRemoteId !== current.instanceRemoteId ||
+			!sameSlotIdentity(updated.originalStartTime, current.originalStartTime, master?.event.timezone)
+		) throw new Error('Provider returned a different recurrence slot after the occurrence write');
+		this.cacheOccurrence(updated);
+		return this.finishCommittedOccurrenceWrite(key, this.state.remoteOccurrences[key]);
 	}
 
 	/** Delete only the provider event. A linked note remains in the vault. */
@@ -416,17 +679,123 @@ export class SyncService {
 				current.remoteEventId,
 				current.version,
 				signal,
-			));
+			), undefined, 1);
 		} catch (error) {
-			await this.recordError(error);
-			return false;
+			if (providerConflict(error)) {
+				const latest = await this.fetchForWriteOutcome(current.remoteEventId);
+				throw new ProviderWriteConflictError(latest);
+			}
+			if (isRetryable(error)) {
+				const lookup = await this.fetchForWriteOutcome(current.remoteEventId);
+				if (!lookup) throw new ProviderOutcomeUnknownError();
+				if (lookup.status !== 'active') {
+					// The provider confirms that the event is now cancelled or absent.
+				} else {
+					throw new ProviderOutcomeUnknownError();
+				}
+			} else {
+				await this.recordError(error);
+				throw error;
+			}
 		}
 		const deleted: CachedCalendarEvent = { ...current, status: 'remote_deleted' };
 		this.state.remoteEvents[key] = deleted;
-		await this.mirrorRemoteEventToLinkedNote(deleted);
-		this.stateDirty = true;
-		await this.saveState();
+		if (current.event.recurrence || current.recurrenceRaw?.length) {
+			this.markChildTargetsUnresolved(current.remoteEventId);
+		}
+		await this.finishCommittedWrite({ key, ...deleted }, () => this.mirrorRemoteEventToLinkedNote(deleted));
 		return true;
+	}
+
+	/** Persist the provider result before touching a note; local failures cannot undo a 2xx. */
+	private async finishCommittedWrite(
+		cached: CachedCalendarEventView,
+		mirror?: () => Promise<void>,
+	): Promise<CalendarEventWriteResult> {
+		const repairKey = makeSyncStateKey(this.provider.id, this.session.accountId, this.calendarId, 'repair', cached.remoteEventId);
+		this.state.localRepairs[repairKey] = {
+			providerId: this.provider.id,
+			accountId: this.session.accountId,
+			calendarId: this.calendarId,
+			remoteEventId: cached.remoteEventId,
+			reason: 'post-provider-write',
+			recordedAt: nowIso(this.clock),
+		};
+		this.stateDirty = true;
+		let localRepairPending = false;
+		try {
+			await this.saveState();
+		} catch (_error) {
+			localRepairPending = true;
+		}
+		if (mirror) {
+			try {
+				await mirror();
+			} catch (_error) {
+				localRepairPending = true;
+				this.state.localRepairs[repairKey] = {
+					...this.state.localRepairs[repairKey],
+					reason: 'note-reconciliation-failed',
+				};
+			}
+		}
+		if (!localRepairPending) delete this.state.localRepairs[repairKey];
+		this.stateDirty = true;
+		try {
+			await this.saveState();
+		} catch (_error) {
+			localRepairPending = true;
+		}
+		return { ...cached, localRepairPending };
+	}
+
+	private async finishCommittedOccurrenceWrite(
+	key: string,
+	cached: CachedCalendarOccurrence,
+	): Promise<CalendarOccurrenceWriteResult> {
+		const target = this.targetForOccurrence(cached);
+		const repairKey = makeSyncStateKey(
+			this.provider.id,
+			this.session.accountId,
+			this.calendarId,
+			'repair',
+			target ? targetKey(target) : cached.masterRemoteId,
+		);
+		this.state.localRepairs[repairKey] = {
+			providerId: this.provider.id,
+			accountId: this.session.accountId,
+			calendarId: this.calendarId,
+			remoteEventId: cached.instanceRemoteId,
+			...(target ? { targetKey: targetKey(target) } : {}),
+			reason: 'post-provider-write',
+			recordedAt: nowIso(this.clock),
+		};
+		this.stateDirty = true;
+		let localRepairPending = false;
+		try {
+			await this.saveState();
+		} catch (_error) {
+			localRepairPending = true;
+		}
+		try {
+			if (!target || !cached.event) throw new Error('Occurrence target or event is not available for note reconciliation');
+			await this.mirrorTargetNote(target, cached.event, cached.cancelled ? 'remote_deleted' : 'synced');
+		} catch (_error) {
+			localRepairPending = true;
+			this.state.localRepairs[repairKey] = {
+				...this.state.localRepairs[repairKey],
+				reason: 'note-reconciliation-failed',
+			};
+		}
+		if (!localRepairPending) delete this.state.localRepairs[repairKey];
+		this.stateDirty = true;
+		try {
+			await this.saveState();
+		} catch (_error) {
+			localRepairPending = true;
+		}
+		const coverage = this.state.occurrenceCoverage[this.coverageKey(cached.masterRemoteId)];
+		return { key, ...cached, stale: !coverage?.completedAt || coverage.dirty === true || cached.unresolved === true, localRepairPending };
 	}
 
 	/** Attach an already-created note to a cached event, without provider writes. */
@@ -434,20 +803,29 @@ export class SyncService {
 		await this.ensureLoaded();
 		const cached = this.state.remoteEvents[key];
 		if (!cached || cached.status === 'remote_deleted') throw new Error(`Cached calendar event "${key}" was not found`);
-		const note = this.repository.getByPath(path) ?? this.repository.getByUid(uid);
+		const note = this.repository.getByPath(path);
 		if (!note || note.path !== path || note.event.uid !== uid) throw new Error(`Calendar event note "${path}" was not found`);
+		const target = this.targetForRemoteEvent(cached);
+		if (!target) throw new Error('This provider event has no verified note target');
+		if (note.target && targetKey(note.target) !== targetKey(target)) {
+			throw new Error(`Calendar note "${path}" already belongs to a different provider target`);
+		}
 		const linked = { ...cached, notePath: note.path, noteUid: uid };
 		const mapped = this.linkMapping(linked);
 		const localized = { ...linked.event, uid };
+		const status = linked.status === 'unsupported' ? 'unsupported' : 'synced';
+		const association = this.associationForTarget(target, uid, status);
 		await this.withInternalWrite(uid, () => this.repository.update(note.path, localized, {
-			status: linked.status === 'unsupported' ? 'unsupported' : 'synced',
-			association: makeAssociation(this.provider.id, this.session.accountId, this.calendarId, linked.remoteEventId, linked.status === 'unsupported' ? 'unsupported' : 'synced'),
+			status,
+			association,
+			target,
 		}));
 		this.state.remoteEvents[key] = linked;
 		this.state.mappings[mapped.key] = mapped.mapping;
 		const snapshot = createCalendarEventSnapshot(localized, nowIso(this.clock));
 		this.state.snapshots[mapped.key] = { local: snapshot, remote: snapshot };
 		this.stateDirty = true;
+		await this.mirrorTargetNote(target, cached.event, status);
 		await this.saveState();
 		return { key, ...linked };
 	}
@@ -593,9 +971,12 @@ export class SyncService {
 			const reload = await this.repository.reload();
 			this.reconcileReloadDeletions(reload);
 			await this.pullChanges(signal, counters, trigger);
+			await this.migrateLegacyTargets();
+			await this.refreshOccurrenceCoverage(signal);
 			await this.mirrorCachedEventsToLinkedNotes();
-			this.refreshLinkedNotePaths();
 			await this.queue.flush();
+			await this.saveState();
+			this.clearRecoveredProviderWriteRepairs();
 			await this.saveState();
 			const status: SyncServiceStatus = this.mode === 'dry-run'
 				? 'dry-run'
@@ -654,7 +1035,8 @@ export class SyncService {
 				counters.pulled += 1;
 				const remoteId = change.type === 'upsert'
 					? change.value.remoteId
-					: change.type === 'delete' ? change.remoteId : change.masterRemoteId;
+					: change.type === 'delete' ? change.remoteId
+						: change.type === 'occurrence-cancelled' ? change.occurrence.instanceRemoteId : change.masterRemoteId;
 				seenRemoteEvents.add(makeSyncStateKey(this.provider.id, this.session.accountId, this.calendarId, remoteId));
 				await this.applyRemoteChange(change, counters, signal, fullResync);
 				await this.saveState();
@@ -699,6 +1081,13 @@ export class SyncService {
 			await this.markSeriesUnsupported(change.masterRemoteId);
 			return;
 		}
+		if (change.type === 'occurrence-cancelled') {
+			// This change marks the current complete generation stale. Publish the
+			// tombstone only with the next fully paginated instances response.
+			this.markOccurrenceCoverageDirty(change.occurrence.masterRemoteId);
+			this.stateDirty = true;
+			return;
+		}
 		await this.applyRemoteUpsert(change.value, counters, signal, fullResync);
 	}
 
@@ -728,39 +1117,16 @@ export class SyncService {
 		if (change.providerId !== this.provider.id || change.calendarId !== this.calendarId) return;
 		if (this.mode === 'dry-run') return;
 		const key = makeSyncStateKey(this.provider.id, this.session.accountId, this.calendarId, change.remoteId);
-		let cached = this.state.remoteEvents[key];
-		if (!cached) {
-			// During the first cache migration, a cancelled Google event may be the
-			// first record we see. Recover its canonical value from its old sync
-			// snapshot so a linked legacy note still receives the deleted status.
-			const binding = this.findBindingByRemote(change.remoteId);
-			if (!binding) return;
-			const snapshotRecord = this.state.snapshots[binding.key] as {
-				readonly event?: CalendarEvent;
-				readonly remote?: CalendarEventSnapshot;
-			} | undefined;
-			const eventValue = snapshotRecord?.event ?? snapshotRecord?.remote?.event ?? this.repository.getByUid(binding.localUid)?.event;
-			if (!eventValue) return;
-			cached = {
-				providerId: this.provider.id,
-				accountId: this.session.accountId,
-				calendarId: this.calendarId,
-				remoteEventId: change.remoteId,
-				event: cloneEvent(eventValue),
-				version: binding.mapping.version,
-				recurrenceStatus: 'none',
-				recurrence: 'none',
-				status: 'synced',
-				...(binding.mapping.notePath === undefined ? {} : { notePath: binding.mapping.notePath }),
-				noteUid: binding.localUid,
-			};
-		}
+		const cached = this.state.remoteEvents[key];
+		// A delete without a cached provider object is not enough evidence to
+		// distinguish a series master, one-off event, or stale legacy link.
+		if (!cached) return;
 		if (cached.status === 'remote_deleted') return;
 		const deleted = { ...cached, status: 'remote_deleted' as const };
 		this.state.remoteEvents[key] = deleted;
-		await this.mirrorRemoteEventToLinkedNote(deleted);
-		const binding = this.findBindingByRemote(change.remoteId);
-		if (binding) this.state.mappings[binding.key] = { ...binding.mapping, status: 'remote_deleted' };
+		if (!deleted.recurrenceMasterId && (deleted.event.recurrence || deleted.recurrenceRaw?.length)) {
+			this.markChildTargetsUnresolved(deleted.remoteEventId);
+		}
 		this.stateDirty = true;
 		counters.deleted += 1;
 	}
@@ -775,7 +1141,7 @@ export class SyncService {
 		if (this.mode === 'dry-run') return;
 		const remoteKey = makeSyncStateKey(this.provider.id, this.session.accountId, this.calendarId, remote.remoteId);
 		const existing = this.state.remoteEvents[remoteKey];
-		if (existing?.recurrenceHasExceptions && !(fullResync && remote.recurrenceHasExceptions !== true)) {
+		if (!this.provider.listInstances && existing?.recurrenceHasExceptions && !(fullResync && remote.recurrenceHasExceptions !== true)) {
 			remote = {
 				...remote,
 				recurrenceStatus: 'unsupported',
@@ -783,73 +1149,16 @@ export class SyncService {
 				recurrenceHasExceptions: true,
 			};
 		}
-		const mapping = this.findBindingByRemote(remote.remoteId);
-		let noteUid = existing?.noteUid ?? mapping?.localUid;
-		let note = noteUid ? this.repository.getByUid(noteUid) : undefined;
-		if (!note) {
-			const associatedNotes = this.repository.list().filter(candidate => {
-				const reference = candidate.association?.reference;
-				return reference?.providerId === this.provider.id &&
-					reference.accountId === this.session.accountId &&
-					reference.calendarId === this.calendarId &&
-					reference.remoteEventId === remote.remoteId;
-			});
-			if (associatedNotes.length === 1) {
-				note = associatedNotes[0];
-				noteUid = note.event.uid;
-			}
-		}
-		// Legacy providers wrote the local note UID into private event metadata.
-		// Use that only to recover an existing link; never create a note from it.
-		if (!note && remote.calendarUid) {
-			const candidate = this.repository.getByUid(remote.calendarUid);
-			const reference = candidate?.association?.reference;
-			if (
-				candidate && reference?.providerId === this.provider.id &&
-				reference.accountId === this.session.accountId &&
-				reference.calendarId === this.calendarId &&
-				reference.remoteEventId === remote.remoteId
-			) {
-				note = candidate;
-				noteUid = candidate.event.uid;
-			}
-		}
-		if (!note) noteUid = undefined;
 		// Some providers cannot apply the date window while using incremental
 		// cursors. Keep the configured horizon at the cache boundary while still
 		// updating previously cached or explicitly linked events when they move
 		// outside it.
-		if (!existing && !mapping && !note && !eventIntersectsWindow(remote.event, this.resolveWindow())) return;
-		if (remote.recurrenceMasterId) await this.markSeriesUnsupported(remote.recurrenceMasterId);
+		const recurringMaster = !remote.recurrenceMasterId && (remote.event.recurrence !== undefined || !!remote.recurrenceRaw?.length);
+		if (!existing && !recurringMaster && !eventIntersectsWindow(remote.event, this.resolveWindow())) return;
+		if (remote.recurrenceMasterId) this.markOccurrenceCoverageDirty(remote.recurrenceMasterId);
+		else if (remote.event.recurrence || remote.recurrenceRaw?.length) this.markOccurrenceCoverageDirty(remote.remoteId);
 
-		const cached = this.cacheRemoteEvent(remote, note?.path, noteUid);
-		if (note && noteUid) {
-			const linkedNote = note;
-			const localKey = keyForBinding(this.provider.id, this.session.accountId, this.calendarId, noteUid);
-			const status = cached.status === 'unsupported' ? 'unsupported' : 'synced';
-			const localized = { ...cached.event, uid: noteUid };
-			if (hashCalendarEvent(linkedNote.event) !== hashCalendarEvent(localized) || linkedNote.status !== status) {
-				await this.withInternalWrite(noteUid, () => this.repository.update(linkedNote.path, localized, {
-					status,
-					association: makeAssociation(this.provider.id, this.session.accountId, this.calendarId, remote.remoteId, status),
-				}));
-				counters.localUpdated += 1;
-			}
-			const nextMapping = {
-				...(mapping?.mapping ?? {}),
-				localUid: noteUid,
-				notePath: linkedNote.path,
-				providerId: this.provider.id,
-				accountId: this.session.accountId,
-				calendarId: this.calendarId,
-				remoteEventId: remote.remoteId,
-				version: remote.version,
-				status,
-			};
-			this.state.mappings[localKey] = nextMapping;
-			const snapshot = createCalendarEventSnapshot(localized, nowIso(this.clock));
-			this.state.snapshots[localKey] = { local: snapshot, remote: snapshot };
-		}
+		this.cacheRemoteEvent(remote, existing?.notePath, existing?.noteUid);
 		this.stateDirty = true;
 	}
 
@@ -857,6 +1166,7 @@ export class SyncService {
 		key: string,
 		work: (signal: AbortSignal) => Promise<T>,
 		signal?: AbortSignal,
+		maxAttempts = this.retry.maxAttempts,
 	): Promise<T> {
 		if (signal) abortIfNeeded(signal);
 		return this.queue.enqueue(key, context => {
@@ -866,7 +1176,7 @@ export class SyncService {
 		}, {
 			debounceMs: this.debounceMs,
 			signal,
-			maxAttempts: this.retry.maxAttempts,
+			maxAttempts,
 			baseDelayMs: this.retry.baseDelayMs,
 			maxDelayMs: this.retry.maxDelayMs,
 			shouldRetry: error => isRetryable(error),
@@ -877,8 +1187,9 @@ export class SyncService {
 		key: string,
 		work: (signal: AbortSignal) => Promise<T>,
 		signal?: AbortSignal,
+		maxAttempts = this.retry.maxAttempts,
 	): Promise<T> {
-		const operation = this.enqueueProviderWrite(key, work, signal);
+		const operation = this.enqueueProviderWrite(key, work, signal, maxAttempts);
 		await this.queue.flush();
 		return operation;
 	}
@@ -1027,6 +1338,9 @@ export class SyncService {
 			recurrenceStatus,
 			recurrenceRaw: remote.recurrenceRaw,
 			recurrenceMasterId: remote.recurrenceMasterId,
+			originalStartTime: remote.originalStartTime,
+			actualStart: remote.actualStart,
+			actualEnd: remote.actualEnd,
 			recurrenceHasExceptions: remote.recurrenceHasExceptions,
 			recurrence: legacyRecurrence,
 			status,
@@ -1035,6 +1349,179 @@ export class SyncService {
 		};
 		this.state.remoteEvents[key] = cached;
 		return { key, ...cached };
+	}
+
+	private occurrenceKey(occurrence: RemoteOccurrence): string {
+		const master = this.getCachedMaster(occurrence.masterRemoteId);
+		return makeSyncStateKey(
+			this.provider.id,
+			this.session.accountId,
+			this.calendarId,
+			'occurrence',
+			occurrence.masterRemoteId,
+			occurrenceSlotValue(occurrence.originalStartTime, master?.event.timezone),
+		);
+	}
+
+	private coverageKey(masterRemoteId: string): string {
+		return makeSyncStateKey(this.provider.id, this.session.accountId, this.calendarId, 'coverage', masterRemoteId);
+	}
+
+	private cacheOccurrence(occurrence: RemoteOccurrence): string {
+		const key = this.occurrenceKey(occurrence);
+		const previous = this.state.remoteOccurrences[key];
+		this.state.remoteOccurrences[key] = {
+			providerId: this.provider.id,
+			accountId: this.session.accountId,
+			calendarId: this.calendarId,
+			masterRemoteId: occurrence.masterRemoteId,
+			instanceRemoteId: occurrence.instanceRemoteId,
+			originalStartTime: occurrence.originalStartTime,
+			...(occurrence.status === 'active'
+				? { event: cloneEvent(occurrence.event.event) }
+				: previous?.event ? { event: previous.event } : {}),
+			cancelled: occurrence.status === 'cancelled',
+			version: occurrence.version,
+			unresolved: false,
+		};
+		this.stateDirty = true;
+		return key;
+	}
+
+	private markChildTargetsUnresolved(masterRemoteId: string): void {
+		for (const [key, occurrence] of Object.entries(this.state.remoteOccurrences)) {
+			if (occurrence.providerId !== this.provider.id || occurrence.accountId !== this.session.accountId ||
+				occurrence.calendarId !== this.calendarId || occurrence.masterRemoteId !== masterRemoteId) continue;
+			this.state.remoteOccurrences[key] = { ...occurrence, unresolved: true };
+			this.stateDirty = true;
+		}
+		for (const note of this.repository.list()) {
+			const target = note.target;
+			if (!target || target.scope === 'series' || target.occurrence.kind !== 'recurrence' ||
+				target.providerId !== this.provider.id || target.accountId !== this.session.accountId ||
+				target.calendarId !== this.calendarId || target.occurrence.masterEventId !== masterRemoteId) continue;
+			const key = makeSyncStateKey(this.provider.id, this.session.accountId, this.calendarId, 'repair', targetKey(target));
+			this.state.localRepairs[key] = {
+				providerId: this.provider.id,
+				accountId: this.session.accountId,
+				calendarId: this.calendarId,
+				remoteEventId: masterRemoteId,
+				noteUid: note.event.uid,
+				targetKey: targetKey(target),
+				reason: 'parent-series-deleted',
+				recordedAt: nowIso(this.clock),
+			};
+			this.stateDirty = true;
+		}
+	}
+
+	private markOccurrenceCoverageDirty(masterRemoteId: string): void {
+		const key = this.coverageKey(masterRemoteId);
+		const prior = this.state.occurrenceCoverage[key];
+		const window = this.resolveWindow();
+		this.state.occurrenceCoverage[key] = {
+			providerId: this.provider.id,
+			accountId: this.session.accountId,
+			calendarId: this.calendarId,
+			masterRemoteId,
+			windowFrom: prior?.windowFrom ?? window.from,
+			windowTo: prior?.windowTo ?? window.to,
+			masterVersion: prior?.masterVersion,
+			occurrenceKeys: prior?.occurrenceKeys ?? [],
+			completedAt: prior?.completedAt,
+			dirty: true,
+		};
+		this.stateDirty = true;
+	}
+
+	/** Publish only a complete instance response; retain prior rows if any page fails. */
+	private async refreshOccurrenceCoverage(signal: AbortSignal): Promise<void> {
+		const listInstances = this.provider.listInstances;
+		if (this.mode === 'dry-run' || !listInstances) return;
+		const window = this.resolveWindow();
+		for (const master of Object.values(this.state.remoteEvents)) {
+			if (
+				master.providerId !== this.provider.id ||
+				master.accountId !== this.session.accountId ||
+				master.calendarId !== this.calendarId ||
+				master.status === 'remote_deleted' ||
+				master.recurrenceMasterId ||
+				(!master.event.recurrence && !master.recurrenceRaw?.length)
+			) continue;
+			const coverageKey = this.coverageKey(master.remoteEventId);
+			const prior = this.state.occurrenceCoverage[coverageKey];
+			if (
+				prior?.completedAt && !prior.dirty &&
+				prior.masterVersion === master.version &&
+				prior.windowFrom === window.from && prior.windowTo === window.to
+			) continue;
+			this.markOccurrenceCoverageDirty(master.remoteEventId);
+			await this.saveState();
+			const occurrences = await this.callWithRetry<RemoteOccurrence[]>('listInstances', callbackSignal => listInstances.call(this.provider, {
+				session: this.session,
+				calendarId: this.calendarId,
+				masterRemoteId: master.remoteEventId,
+				masterTimeZone: master.event.timezone,
+				window,
+				pinnedOriginalStarts: this.pinnedOriginalStarts(master.remoteEventId),
+				signal: callbackSignal,
+			}), signal);
+			const staged = new Map<string, RemoteOccurrence>();
+			for (const occurrence of occurrences) {
+				if (occurrence.masterRemoteId !== master.remoteEventId || occurrence.calendarId !== this.calendarId) {
+					throw new Error('Provider returned an occurrence for a different recurring master');
+				}
+				const key = this.occurrenceKey(occurrence);
+				if (staged.has(key)) throw new Error('Provider returned duplicate recurrence slots');
+				staged.set(key, occurrence);
+			}
+			const nextKeys = new Set(staged.keys());
+			const pinnedTargets = this.pinnedTargetsForMaster(master.remoteEventId);
+			const priorKeys = new Set([
+				...(prior?.occurrenceKeys ?? []),
+				...Object.entries(this.state.remoteOccurrences)
+					.filter(([, occurrence]) =>
+						occurrence.providerId === this.provider.id &&
+						occurrence.accountId === this.session.accountId &&
+						occurrence.calendarId === this.calendarId &&
+						occurrence.masterRemoteId === master.remoteEventId)
+					.map(([key]) => key),
+			]);
+			for (const oldKey of priorKeys) {
+				if (nextKeys.has(oldKey)) continue;
+				const old = this.state.remoteOccurrences[oldKey];
+				if (!old || old.providerId !== this.provider.id || old.accountId !== this.session.accountId ||
+					old.calendarId !== this.calendarId || old.masterRemoteId !== master.remoteEventId) continue;
+				const returnedKey = [...staged.entries()].find(([, occurrence]) =>
+					sameSlotIdentity(occurrence.originalStartTime, old.originalStartTime, master.event.timezone),
+				)?.[0];
+				if (returnedKey) {
+					if (returnedKey !== oldKey) delete this.state.remoteOccurrences[oldKey];
+					continue;
+				}
+				if (this.isPinnedOccurrence(old, pinnedTargets)) {
+					this.state.remoteOccurrences[oldKey] = { ...old, unresolved: true };
+					nextKeys.add(oldKey);
+				} else {
+					delete this.state.remoteOccurrences[oldKey];
+				}
+			}
+			for (const occurrence of staged.values()) this.cacheOccurrence(occurrence);
+			this.state.occurrenceCoverage[coverageKey] = {
+				providerId: this.provider.id,
+				accountId: this.session.accountId,
+				calendarId: this.calendarId,
+				masterRemoteId: master.remoteEventId,
+				windowFrom: window.from,
+				windowTo: window.to,
+				masterVersion: master.version,
+				occurrenceKeys: [...nextKeys],
+				completedAt: nowIso(this.clock),
+				dirty: false,
+			};
+			this.stateDirty = true;
+			await this.saveState();
+		}
 	}
 
 	private async reconcileFullResync(seenRemoteEvents: ReadonlySet<string>, window: SyncWindow): Promise<void> {
@@ -1052,9 +1539,12 @@ export class SyncService {
 			const startsAt = Date.parse(cached.event.start);
 			// A bounded full sync cannot infer deletion for events that have fallen
 			// outside the requested horizon.
-			if (!Number.isFinite(startsAt) || startsAt < from || startsAt >= to) continue;
+			const isRecurringMaster = !cached.recurrenceMasterId &&
+				(cached.event.recurrence !== undefined || !!cached.recurrenceRaw?.length);
+			if (!isRecurringMaster && (!Number.isFinite(startsAt) || startsAt < from || startsAt >= to)) continue;
 			const deleted: CachedCalendarEvent = { ...cached, status: 'remote_deleted' };
 			this.state.remoteEvents[key] = deleted;
+			if (isRecurringMaster) this.markChildTargetsUnresolved(deleted.remoteEventId);
 			await this.mirrorRemoteEventToLinkedNote(deleted);
 			const binding = this.findBindingByRemote(cached.remoteEventId);
 			if (binding) this.state.mappings[binding.key] = { ...binding.mapping, status: 'remote_deleted' };
@@ -1081,78 +1571,443 @@ export class SyncService {
 		};
 	}
 
-	private async mirrorRemoteEventToLinkedNote(cached: CachedCalendarEvent): Promise<void> {
-		if (!cached.noteUid) return;
-		const note = this.repository.getByUid(cached.noteUid) ?? (cached.notePath ? this.repository.getByPath(cached.notePath) : undefined);
+	private getCachedMaster(masterRemoteId: string): CachedCalendarEvent | undefined {
+		const key = makeSyncStateKey(this.provider.id, this.session.accountId, this.calendarId, masterRemoteId);
+		const master = this.state.remoteEvents[key];
+		return master && !master.recurrenceMasterId && master.remoteEventId === masterRemoteId
+			? master
+			: undefined;
+	}
+
+	private targetForOccurrence(occurrence: CachedCalendarOccurrence): CalendarNoteOccurrenceTarget | undefined {
+		const master = this.getCachedMaster(occurrence.masterRemoteId);
+		const slot = slotWithMasterTimezone(occurrence.originalStartTime, master?.event.timezone);
+		if (slot.dateTime !== undefined && !slot.timeZone) return undefined;
+		const originalStartTime = slot.date !== undefined
+			? { date: slot.date }
+			: slot.dateTime !== undefined && slot.timeZone
+				? { dateTime: slot.dateTime, timeZone: slot.timeZone }
+				: undefined;
+		if (!originalStartTime) return undefined;
+		return {
+			version: 1,
+			providerId: this.provider.id,
+			accountId: this.session.accountId,
+			calendarId: this.calendarId,
+			scope: 'occurrence',
+			occurrence: { kind: 'recurrence', masterEventId: occurrence.masterRemoteId, originalStartTime },
+		};
+	}
+
+	private targetForRemoteEvent(cached: CachedCalendarEvent): CalendarNoteTarget | undefined {
+		if (cached.recurrenceMasterId) {
+			if (!cached.originalStartTime) return undefined;
+			const master = this.getCachedMaster(cached.recurrenceMasterId);
+			const slot = slotWithMasterTimezone(cached.originalStartTime, master?.event.timezone);
+			if (slot.dateTime !== undefined && !slot.timeZone) return undefined;
+			const originalStartTime = slot.date !== undefined
+				? { date: slot.date }
+				: slot.dateTime !== undefined && slot.timeZone
+					? { dateTime: slot.dateTime, timeZone: slot.timeZone }
+					: undefined;
+			if (!originalStartTime) return undefined;
+			return {
+				version: 1,
+				providerId: this.provider.id,
+				accountId: this.session.accountId,
+				calendarId: this.calendarId,
+				scope: 'occurrence',
+				occurrence: { kind: 'recurrence', masterEventId: cached.recurrenceMasterId, originalStartTime },
+			};
+		}
+		if (cached.event.recurrence || cached.recurrenceRaw?.length) {
+			return {
+				version: 1,
+				providerId: this.provider.id,
+				accountId: this.session.accountId,
+				calendarId: this.calendarId,
+				scope: 'series',
+				seriesId: cached.remoteEventId,
+			};
+		}
+		return {
+			version: 1,
+			providerId: this.provider.id,
+			accountId: this.session.accountId,
+			calendarId: this.calendarId,
+			scope: 'occurrence',
+			occurrence: { kind: 'event', eventId: cached.remoteEventId },
+		};
+	}
+
+	private async verifiedRemoteTarget(remote: RemoteCalendarEvent): Promise<CalendarNoteTarget | undefined> {
+		if (remote.providerId !== this.provider.id || remote.calendarId !== this.calendarId) return undefined;
+		if (remote.recurrenceMasterId) {
+			if (!remote.originalStartTime) return undefined;
+			let master = this.getCachedMaster(remote.recurrenceMasterId);
+			if (!master && this.provider.fetchEvent) {
+				const lookup = await this.provider.fetchEvent(this.session, this.calendarId, remote.recurrenceMasterId);
+				if (lookup.status === 'active' && lookup.event.remoteId === remote.recurrenceMasterId) {
+					master = this.cacheRemoteEvent(lookup.event);
+				}
+			}
+			if (!master || (!master.event.recurrence && !master.recurrenceRaw?.length)) return undefined;
+			const slot = slotWithMasterTimezone(remote.originalStartTime, master.event.timezone);
+			if (slot.dateTime !== undefined && !slot.timeZone) return undefined;
+			const originalStartTime = slot.date !== undefined
+				? { date: slot.date }
+				: slot.dateTime !== undefined && slot.timeZone
+					? { dateTime: slot.dateTime, timeZone: slot.timeZone }
+					: undefined;
+			if (!originalStartTime) return undefined;
+			return {
+				version: 1,
+				providerId: this.provider.id,
+				accountId: this.session.accountId,
+				calendarId: this.calendarId,
+				scope: 'occurrence',
+				occurrence: { kind: 'recurrence', masterEventId: remote.recurrenceMasterId, originalStartTime },
+			};
+		}
+		return this.targetForRemoteEvent({
+			providerId: remote.providerId,
+			accountId: this.session.accountId,
+			calendarId: remote.calendarId,
+			remoteEventId: remote.remoteId,
+			event: remote.event,
+			version: remote.version,
+			recurrenceStatus: remote.recurrenceStatus,
+			recurrenceRaw: remote.recurrenceRaw,
+			recurrenceMasterId: remote.recurrenceMasterId,
+			recurrence: remote.recurrence,
+			status: 'synced',
+		});
+	}
+
+	private pinnedTargetsForMaster(masterRemoteId: string): CalendarNoteOccurrenceTarget[] {
+		const targets: CalendarNoteOccurrenceTarget[] = [];
+		for (const note of this.repository.list()) {
+			const target = note.target;
+			if (
+				!target || target.providerId !== this.provider.id || target.accountId !== this.session.accountId ||
+				target.calendarId !== this.calendarId || target.scope === 'series' ||
+				target.occurrence.kind !== 'recurrence' || target.occurrence.masterEventId !== masterRemoteId
+			) continue;
+			targets.push({
+				version: target.version,
+				providerId: target.providerId,
+				accountId: target.accountId,
+				calendarId: target.calendarId,
+				scope: 'occurrence',
+				occurrence: target.occurrence,
+			});
+		}
+		return targets;
+	}
+
+	private pinnedOriginalStarts(masterRemoteId: string): readonly { readonly date?: string; readonly dateTime?: string; readonly timeZone?: string }[] {
+		const unique = new Map<string, { readonly date?: string; readonly dateTime?: string; readonly timeZone?: string }>();
+		for (const target of this.pinnedTargetsForMaster(masterRemoteId)) {
+			if (target.occurrence.kind !== 'recurrence') continue;
+			const start = target.occurrence.originalStartTime;
+			const value = 'date' in start ? { date: start.date } : { dateTime: start.dateTime, timeZone: start.timeZone };
+			unique.set(occurrenceSlotValue(value), value);
+		}
+		return [...unique.values()];
+	}
+
+	private isPinnedOccurrence(
+		occurrence: CachedCalendarOccurrence,
+		targets: readonly CalendarNoteOccurrenceTarget[],
+	): boolean {
+		const target = this.targetForOccurrence(occurrence);
+		if (target && targets.some(candidate => targetKey(candidate) === targetKey(target))) return true;
+		// Retention only: a master timezone change may make an old sparse slot
+		// impossible to match exactly. Keep its historical row unresolved without
+		// using this loose match to relink or mirror a note.
+		return targets.some(candidate => {
+			if (candidate.occurrence.kind !== 'recurrence' ||
+				candidate.occurrence.masterEventId !== occurrence.masterRemoteId) return false;
+			const pinned = candidate.occurrence.originalStartTime;
+			return occurrence.originalStartTime.date !== undefined
+				? 'date' in pinned && pinned.date === occurrence.originalStartTime.date
+				: 'dateTime' in pinned && pinned.dateTime === occurrence.originalStartTime.dateTime;
+		});
+	}
+
+	private async targetForLegacyRecord(record: CalendarEventNoteRecord): Promise<
+		| CalendarNoteTarget
+		| { readonly target: CalendarNoteTarget; readonly association: CalendarEventAssociation }
+		| undefined
+	> {
+		const reference = record.association?.reference;
+		if (
+			!reference || reference.providerId !== this.provider.id || reference.accountId !== this.session.accountId ||
+			reference.calendarId !== this.calendarId
+		) return undefined;
+		const targets: CalendarNoteTarget[] = [];
+		const cached = this.state.remoteEvents[makeSyncStateKey(this.provider.id, this.session.accountId, this.calendarId, reference.remoteEventId)];
+		if (cached) {
+			const target = this.targetForRemoteEvent(cached);
+			if (target) targets.push(target);
+		}
+		for (const occurrence of Object.values(this.state.remoteOccurrences)) {
+			if (
+				occurrence.providerId === this.provider.id && occurrence.accountId === this.session.accountId &&
+				occurrence.calendarId === this.calendarId && occurrence.instanceRemoteId === reference.remoteEventId
+			) {
+				const target = this.targetForOccurrence(occurrence);
+				if (target) targets.push(target);
+			}
+		}
+		let target = uniqueTarget(targets);
+		if (!target && this.provider.fetchEvent) {
+			let lookup: RemoteEventLookupResult;
+			try {
+				lookup = await this.provider.fetchEvent(this.session, this.calendarId, reference.remoteEventId);
+			} catch (_error) {
+				// A legacy link without verified identity remains untouched if the
+				// targeted lookup is unavailable; it must not abort other sync work.
+				return undefined;
+			}
+			if (lookup.status === 'active' && lookup.event.remoteId === reference.remoteEventId) {
+				try {
+					target = await this.verifiedRemoteTarget(lookup.event);
+				} catch (_error) {
+					return undefined;
+				}
+			} else if (lookup.status === 'cancelled') {
+				const tombstone = lookup.tombstone;
+				if (tombstone.remoteId === reference.remoteEventId && tombstone.recurrenceMasterId && tombstone.originalStartTime) {
+					const master = this.getCachedMaster(tombstone.recurrenceMasterId);
+					if (master) {
+						const slot = slotWithMasterTimezone(tombstone.originalStartTime, master.event.timezone);
+						if (slot.date !== undefined) {
+							target = {
+								version: 1, providerId: this.provider.id, accountId: this.session.accountId,
+								calendarId: this.calendarId, scope: 'occurrence',
+								occurrence: { kind: 'recurrence', masterEventId: tombstone.recurrenceMasterId, originalStartTime: { date: slot.date } },
+							};
+						} else if (slot.dateTime && slot.timeZone) {
+							target = {
+								version: 1, providerId: this.provider.id, accountId: this.session.accountId,
+								calendarId: this.calendarId, scope: 'occurrence',
+								occurrence: { kind: 'recurrence', masterEventId: tombstone.recurrenceMasterId, originalStartTime: { dateTime: slot.dateTime, timeZone: slot.timeZone } },
+							};
+						}
+					}
+				}
+			}
+		}
+		if (!target || !record.association) return undefined;
+		if (!calendarNoteTargetMatchesProviderReference(target, reference)) {
+			const remoteEventId = target.scope === 'series'
+				? target.seriesId
+				: target.occurrence.kind === 'event' ? target.occurrence.eventId : target.occurrence.masterEventId;
+			const association: CalendarEventAssociation = {
+				...makeAssociation(this.provider.id, this.session.accountId, this.calendarId, remoteEventId, record.association.status ?? 'synced'),
+				calendarUid: record.event.uid,
+			};
+			return { target, association };
+		}
+		return target;
+	}
+
+	private async migrateLegacyTargets(): Promise<void> {
+		if (this.mode === 'dry-run' || !this.repository.migrateLegacyTargets) return;
+		await this.repository.migrateLegacyTargets(record => this.targetForLegacyRecord(record));
+	}
+
+	private associationForTarget(target: CalendarNoteTarget, uid: string, status: 'pending' | 'synced' | 'conflict' | 'remote_deleted' | 'unsupported' | 'error'): CalendarEventAssociation {
+		const remoteEventId = target.scope === 'series'
+			? target.seriesId
+			: target.occurrence.kind === 'event' ? target.occurrence.eventId : target.occurrence.masterEventId;
+		return {
+			...makeAssociation(this.provider.id, this.session.accountId, this.calendarId, remoteEventId, status),
+			calendarUid: uid,
+		};
+	}
+
+	private getTargetNote(target: CalendarNoteTarget): CalendarEventNoteRecord | undefined {
+		if (!this.repository.getByTarget || !this.repository.getTargetClaimants) return undefined;
+		const claimants = this.repository.getTargetClaimants(target);
+		if (claimants.length > 1) throw new Error(`Calendar target has duplicate claimants: ${claimants.map(value => value.path).join(', ')}`);
+		const note = this.repository.getByTarget(target);
+		if (!note) {
+			if (claimants.length > 0) throw new Error(`Calendar target claimant at "${claimants[0].path}" needs repair`);
+			return undefined;
+		}
+		if (!note.target || targetKey(note.target) !== targetKey(target)) throw new Error('Calendar target index returned a different note target');
+		if (!note.association || !calendarNoteTargetMatchesProviderReference(note.target, note.association.reference)) {
+			throw new Error(`Calendar target note "${note.path}" has a mismatched provider association`);
+		}
+		return note;
+	}
+
+	private async mirrorTargetNote(
+		target: CalendarNoteTarget,
+		remoteEvent: CalendarEvent,
+		status: 'synced' | 'unsupported' | 'remote_deleted',
+	): Promise<void> {
+		const note = this.getTargetNote(target);
 		if (!note) return;
-		if (cached.status === 'remote_deleted') {
+		if (status === 'remote_deleted') {
 			if (note.status !== 'remote_deleted') {
 				await this.withInternalWrite(note.event.uid, () => this.repository.markRemoteDeleted(note.path));
 				this.stateDirty = true;
 			}
-			const binding = this.findBindingByRemote(cached.remoteEventId);
-			if (binding && (binding.mapping.notePath !== note.path || binding.mapping.status !== 'remote_deleted')) {
-				this.state.mappings[binding.key] = { ...binding.mapping, notePath: note.path, status: 'remote_deleted' };
-				this.stateDirty = true;
-			}
 			return;
 		}
-		const localized = { ...cached.event, uid: note.event.uid };
-		const syncStatus = cached.status === 'unsupported' ? 'unsupported' : 'synced';
-		if (hashCalendarEvent(note.event) !== hashCalendarEvent(localized) || note.status !== syncStatus) {
-			await this.withInternalWrite(note.event.uid, () => this.repository.update(note.path, localized, {
-				status: syncStatus,
-				association: makeAssociation(this.provider.id, this.session.accountId, this.calendarId, cached.remoteEventId, syncStatus),
-			}));
+		if (target.scope === 'occurrence-day') {
+			await this.repository.proposeDayTargetDate?.(note.path, remoteEvent);
+		}
+		const localized: CalendarEvent = target.scope === 'occurrence-day'
+			? {
+				...remoteEvent,
+				uid: note.event.uid,
+				start: note.event.start,
+				end: note.event.end,
+				allDay: note.event.allDay,
+				timezone: note.event.timezone,
+			}
+			: { ...remoteEvent, uid: note.event.uid };
+		const association = this.associationForTarget(target, note.event.uid, status);
+		if (
+			hashCalendarEvent(note.event) !== hashCalendarEvent(localized) || note.status !== status ||
+			note.association?.status !== status
+		) {
+			await this.withInternalWrite(note.event.uid, () => this.repository.update(note.path, localized, { status, association }));
 			this.stateDirty = true;
 		}
-		const mapping = this.linkMapping({ ...cached, noteUid: note.event.uid, notePath: note.path });
-		const existingMapping = this.state.mappings[mapping.key];
-		if (!existingMapping || existingMapping.notePath !== mapping.mapping.notePath || existingMapping.status !== mapping.mapping.status || existingMapping.version !== mapping.mapping.version) {
-			this.state.mappings[mapping.key] = mapping.mapping;
-			this.stateDirty = true;
-		}
-		const snapshot = createCalendarEventSnapshot(localized, nowIso(this.clock));
-		const existingSnapshot = this.state.snapshots[mapping.key] as { local?: CalendarEventSnapshot; remote?: CalendarEventSnapshot } | undefined;
-		if (existingSnapshot?.local?.hash !== snapshot.hash || existingSnapshot?.remote?.hash !== snapshot.hash) {
-			this.state.snapshots[mapping.key] = { local: snapshot, remote: snapshot };
-			this.stateDirty = true;
-		}
+	}
+
+	private findOccurrenceForTarget(target: CalendarNoteOccurrenceTarget): CachedCalendarOccurrence | undefined {
+		const identity = target.occurrence;
+		if (identity.kind !== 'recurrence') return undefined;
+		const master = this.getCachedMaster(identity.masterEventId);
+		const matches = Object.values(this.state.remoteOccurrences).filter(occurrence =>
+			occurrence.providerId === target.providerId && occurrence.accountId === target.accountId &&
+			occurrence.calendarId === target.calendarId && occurrence.masterRemoteId === identity.masterEventId &&
+			sameSlotIdentity(occurrence.originalStartTime, identity.originalStartTime, master?.event.timezone),
+		);
+		return matches.length === 1 ? matches[0] : undefined;
+	}
+
+	private async mirrorRemoteEventToLinkedNote(cached: CachedCalendarEvent): Promise<void> {
+		const target = this.targetForRemoteEvent(cached);
+		if (!target) return;
+		await this.mirrorTargetNote(target, cached.event, cached.status === 'remote_deleted' ? 'remote_deleted' : cached.status === 'unsupported' ? 'unsupported' : 'synced');
 	}
 
 	private async mirrorCachedEventsToLinkedNotes(): Promise<void> {
 		if (this.mode === 'dry-run') return;
-		for (const cached of Object.values(this.state.remoteEvents)) {
+		for (const note of this.repository.list()) {
+			const target = note.target;
 			if (
-				cached.providerId === this.provider.id &&
-				cached.accountId === this.session.accountId &&
-				cached.calendarId === this.calendarId &&
-				cached.noteUid
-			) await this.mirrorRemoteEventToLinkedNote(cached);
+				!target || note.targetErrors || target.providerId !== this.provider.id ||
+				target.accountId !== this.session.accountId || target.calendarId !== this.calendarId
+			) continue;
+			const repairKey = makeSyncStateKey(this.provider.id, this.session.accountId, this.calendarId, 'repair', targetKey(target));
+			try {
+				let event: CalendarEvent | undefined;
+				let status: 'synced' | 'unsupported' | 'remote_deleted' = 'synced';
+				let remoteEventId: string | undefined;
+				if (target.scope === 'series') {
+					const cached = this.getCachedMaster(target.seriesId);
+					if (!cached) continue;
+					event = cached.event;
+					remoteEventId = cached.remoteEventId;
+					status = cached.status === 'remote_deleted' ? 'remote_deleted' : cached.status === 'unsupported' ? 'unsupported' : 'synced';
+				} else if (target.occurrence.kind === 'event') {
+					const cached = this.state.remoteEvents[makeSyncStateKey(this.provider.id, this.session.accountId, this.calendarId, target.occurrence.eventId)];
+					if (!cached || cached.recurrenceMasterId || cached.event.recurrence || cached.recurrenceRaw?.length) continue;
+					event = cached.event;
+					remoteEventId = cached.remoteEventId;
+					status = cached.status === 'remote_deleted' ? 'remote_deleted' : cached.status === 'unsupported' ? 'unsupported' : 'synced';
+				} else {
+					const master = this.getCachedMaster(target.occurrence.masterEventId);
+					if (master?.status === 'remote_deleted') {
+						this.state.localRepairs[repairKey] = {
+							providerId: this.provider.id, accountId: this.session.accountId, calendarId: this.calendarId,
+							remoteEventId: master.remoteEventId, noteUid: note.event.uid,
+							targetKey: targetKey(target), reason: 'parent-series-deleted', recordedAt: nowIso(this.clock),
+						};
+						this.stateDirty = true;
+						continue;
+					}
+					const occurrenceTarget = target.scope === 'occurrence'
+						? target
+						: { ...target, scope: 'occurrence' as const };
+					const occurrence = this.findOccurrenceForTarget(occurrenceTarget);
+					const coverage = this.state.occurrenceCoverage[this.coverageKey(target.occurrence.masterEventId)];
+					if (!occurrence) {
+						if (coverage?.completedAt && !coverage.dirty) {
+						this.state.localRepairs[repairKey] = {
+							providerId: this.provider.id, accountId: this.session.accountId, calendarId: this.calendarId,
+							targetKey: targetKey(target), reason: 'pinned-occurrence-missing', recordedAt: nowIso(this.clock),
+						};
+						this.stateDirty = true;
+					}
+					continue;
+					}
+					if (occurrence.unresolved) {
+						this.state.localRepairs[repairKey] = {
+							providerId: this.provider.id, accountId: this.session.accountId, calendarId: this.calendarId,
+							remoteEventId: occurrence.instanceRemoteId, targetKey: targetKey(target),
+							reason: 'pinned-occurrence-missing', recordedAt: nowIso(this.clock),
+						};
+						this.stateDirty = true;
+						continue;
+					}
+					remoteEventId = occurrence.instanceRemoteId;
+					if (occurrence.cancelled) status = 'remote_deleted';
+					else if (occurrence.event) event = occurrence.event;
+					else continue;
+				}
+				if (event) await this.mirrorTargetNote(target, event, status);
+				else if (status === 'remote_deleted') await this.mirrorTargetNote(target, note.event, status);
+				else continue;
+				if (this.state.localRepairs[repairKey]) {
+					delete this.state.localRepairs[repairKey];
+					this.stateDirty = true;
+				}
+				if (remoteEventId) {
+					const eventRepairKey = makeSyncStateKey(this.provider.id, this.session.accountId, this.calendarId, 'repair', remoteEventId);
+					if (this.state.localRepairs[eventRepairKey]) {
+						delete this.state.localRepairs[eventRepairKey];
+						this.stateDirty = true;
+					}
+				}
+			} catch (_error) {
+				this.state.localRepairs[repairKey] = {
+					providerId: this.provider.id,
+					accountId: this.session.accountId,
+					calendarId: this.calendarId,
+					...(note.target.scope === 'series'
+						? { remoteEventId: note.target.seriesId }
+						: { remoteEventId: note.target.occurrence.kind === 'event' ? note.target.occurrence.eventId : note.target.occurrence.masterEventId }),
+					noteUid: note.event.uid,
+					targetKey: targetKey(note.target),
+					reason: 'note-reconciliation-failed',
+					recordedAt: nowIso(this.clock),
+				};
+				this.stateDirty = true;
+			}
 		}
 	}
 
-	private refreshLinkedNotePaths(): void {
-		for (const [key, cached] of Object.entries(this.state.remoteEvents)) {
-			if (!cached.noteUid) continue;
-			const note = this.repository.getByUid(cached.noteUid);
-			if (note) {
-				if (cached.notePath !== note.path) {
-					this.state.remoteEvents[key] = { ...cached, notePath: note.path };
-					const binding = this.findBindingByRemote(cached.remoteEventId);
-					if (binding) this.state.mappings[binding.key] = { ...binding.mapping, notePath: note.path };
-					this.stateDirty = true;
-				}
-				continue;
-			}
-			this.state.remoteEvents[key] = { ...cached, notePath: undefined, noteUid: undefined };
-			const binding = this.findBindingByRemote(cached.remoteEventId);
-			if (binding) {
-				delete this.state.mappings[binding.key];
-				delete this.state.snapshots[binding.key];
-				delete this.state.conflicts[binding.key];
-				delete this.state.tombstones[binding.key];
-			}
+	private clearRecoveredProviderWriteRepairs(): void {
+		for (const [key, repair] of Object.entries(this.state.localRepairs)) {
+			if (repair.reason !== 'post-provider-write' ||
+				repair.providerId !== this.provider.id || repair.accountId !== this.session.accountId ||
+				repair.calendarId !== this.calendarId || !repair.remoteEventId) continue;
+			const cachedEvent = this.state.remoteEvents[makeSyncStateKey(
+				this.provider.id, this.session.accountId, this.calendarId, repair.remoteEventId)];
+			const cachedOccurrence = Object.values(this.state.remoteOccurrences).some(occurrence =>
+				occurrence.providerId === this.provider.id && occurrence.accountId === this.session.accountId &&
+				occurrence.calendarId === this.calendarId && occurrence.instanceRemoteId === repair.remoteEventId);
+			if (!cachedEvent && !cachedOccurrence) continue;
+			delete this.state.localRepairs[key];
 			this.stateDirty = true;
 		}
 	}
@@ -1260,6 +2115,7 @@ export class SyncService {
 				: undefined,
 			conflictCount: Object.keys(this.state.conflicts).length,
 			pendingOutbound: this.queue.pendingKeys.length,
+			localRepairCount: Object.keys(this.state.localRepairs).length,
 			lastError: _error === undefined ? undefined : sanitizedErrorMessage(_error),
 		};
 	}

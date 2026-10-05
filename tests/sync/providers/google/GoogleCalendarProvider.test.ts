@@ -2,10 +2,12 @@ import { describe, expect, it } from 'vitest';
 
 import type { CalendarEvent } from '../../../../src/services/sync/model/CalendarEvent';
 import type {
+	ListInstancesRequest,
 	ProviderHttpRequest,
 	ProviderHttpResponse,
 	ProviderHttpTransport,
 	ProviderSession,
+	UpdateOccurrenceRequest,
 } from '../../../../src/services/sync/providers/CalendarProvider';
 import { ProviderError } from '../../../../src/services/sync/providers/ProviderErrors';
 import {
@@ -46,6 +48,15 @@ function remoteResource(overrides: Record<string, unknown> = {}): Record<string,
 	};
 }
 
+function occurrenceResource(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+	return remoteResource({
+		id: 'instance-1',
+		recurringEventId: 'series-master',
+		originalStartTime: { dateTime: event.start, timeZone: event.timezone },
+		...overrides,
+	});
+}
+
 class QueueTransport implements ProviderHttpTransport {
 	readonly requests: ProviderHttpRequest[] = [];
 	readonly responses: Array<ProviderHttpResponse | Error>;
@@ -75,6 +86,16 @@ async function providerError(promise: Promise<unknown>): Promise<ProviderError> 
 		expect(error).toBeInstanceOf(ProviderError);
 		return error as ProviderError;
 	}
+}
+
+function listInstances(provider: GoogleCalendarProvider, request: ListInstancesRequest) {
+	if (!provider.listInstances) throw new Error('Google provider does not support instances');
+	return provider.listInstances(request);
+}
+
+function updateOccurrence(provider: GoogleCalendarProvider, request: UpdateOccurrenceRequest) {
+	if (!provider.updateOccurrence) throw new Error('Google provider does not support occurrence updates');
+	return provider.updateOccurrence(request);
 }
 
 describe('GoogleCalendarProvider', () => {
@@ -154,6 +175,312 @@ describe('GoogleCalendarProvider', () => {
 		expect(incrementalQuery.get('syncToken')).toBe('initial-sync-token');
 	});
 
+	it('retains moved and cancelled exception identity in the incremental change page', async () => {
+		const master = remoteResource({
+			id: 'series-master',
+			recurrence: ['RRULE:FREQ=DAILY;COUNT=5'],
+		});
+		const moved = occurrenceResource({
+			id: 'instance-moved',
+			etag: '"v3"',
+			originalStartTime: { dateTime: '2026-03-08T02:30:00-05:00', timeZone: 'America/New_York' },
+			start: { dateTime: '2026-03-08T03:30:00-04:00', timeZone: 'America/New_York' },
+			end: { dateTime: '2026-03-08T04:30:00-04:00', timeZone: 'America/New_York' },
+		});
+		const cancelled = occurrenceResource({
+			id: 'instance-cancelled',
+			status: 'cancelled',
+			etag: '"v4"',
+			originalStartTime: { date: '2026-10-25', timeZone: 'Europe/Paris' },
+			start: undefined,
+			end: undefined,
+		});
+		const transport = new QueueTransport(response(200, { items: [master, moved, cancelled], nextSyncToken: 'next' }));
+		const provider = new GoogleCalendarProvider({ transport });
+		const page = await provider.pullChanges({ session, calendarId: 'primary', window });
+		const masterChange = page.changes.find(change => change.type === 'upsert' && change.value.remoteId === 'series-master');
+		const movedChange = page.changes.find(change => change.type === 'upsert' && change.value.remoteId === 'instance-moved');
+		const cancelledChange = page.changes.find(change => change.type === 'occurrence-cancelled');
+		expect(masterChange).toMatchObject({ type: 'upsert', value: {
+			remoteId: 'series-master',
+			recurrenceStatus: 'supported',
+			event: { recurrence: { frequency: 'daily', count: 5 } },
+		} });
+		expect(page.changes.some(change => change.type === 'series-unsupported')).toBe(false);
+		expect(movedChange).toMatchObject({ type: 'upsert', value: {
+			remoteId: 'instance-moved',
+			recurrenceMasterId: 'series-master',
+			originalStartTime: { dateTime: '2026-03-08T02:30:00-05:00', timeZone: 'America/New_York' },
+			actualStart: { dateTime: '2026-03-08T03:30:00-04:00', timeZone: 'America/New_York' },
+			version: '"v3"',
+		} });
+		expect(cancelledChange).toMatchObject({ type: 'occurrence-cancelled', occurrence: {
+			masterRemoteId: 'series-master',
+			instanceRemoteId: 'instance-cancelled',
+			originalStartTime: { date: '2026-10-25', timeZone: 'Europe/Paris' },
+			version: '"v4"',
+		} });
+	});
+
+	it('fetches all instance pages and pinned original slots, then deduplicates by master and slot', async () => {
+		const slotA = { dateTime: '2026-09-22T09:00:00-05:00', timeZone: 'America/Bogota' };
+		const slotB = { dateTime: '2026-09-23T09:00:00-05:00', timeZone: 'America/Bogota' };
+		const slotC = { date: '2028-09-24', timeZone: 'America/Bogota' };
+		const transport = new QueueTransport(
+			response(200, { items: [occurrenceResource({ id: 'slot-a', originalStartTime: slotA })], nextPageToken: 'page 2' }),
+			response(200, { items: [occurrenceResource({ id: 'slot-b', status: 'cancelled', start: undefined, end: undefined, originalStartTime: slotB })] }),
+			response(200, { items: [occurrenceResource({ id: 'slot-a', originalStartTime: slotA })] }),
+			response(200, { items: [occurrenceResource({ id: 'slot-c', originalStartTime: slotC, start: { date: '2028-09-24' }, end: { date: '2028-09-25' } })] }),
+		);
+		const provider = new GoogleCalendarProvider({ transport });
+		const occurrences = await listInstances(provider, {
+			session,
+			calendarId: 'primary',
+			masterRemoteId: 'series-master',
+			window,
+			pinnedOriginalStarts: [slotA, slotC],
+		});
+
+		expect(occurrences.map(occurrence => occurrence.instanceRemoteId)).toEqual(['slot-a', 'slot-b', 'slot-c']);
+		expect(occurrences.find(occurrence => occurrence.instanceRemoteId === 'slot-b')).toMatchObject({ status: 'cancelled' });
+		const horizonQuery = new URL(transport.requests[0].url).searchParams;
+		expect(horizonQuery.get('timeMin')).toBe(window.from);
+		expect(horizonQuery.get('timeMax')).toBe(window.to);
+		expect(horizonQuery.get('showDeleted')).toBe('true');
+		expect(new URL(transport.requests[1].url).searchParams.get('pageToken')).toBe('page 2');
+		const pinnedQuery = new URL(transport.requests[2].url).searchParams;
+		expect(pinnedQuery.get('originalStart')).toBe(slotA.dateTime);
+		expect(pinnedQuery.has('timeMin')).toBe(false);
+		expect(pinnedQuery.has('timeMax')).toBe(false);
+		expect(new URL(transport.requests[3].url).searchParams.get('originalStart')).toBe(slotC.date);
+	});
+
+	it('does not return a partial occurrence generation when a later page fails', async () => {
+		const transport = new QueueTransport(
+			response(200, { items: [occurrenceResource()], nextPageToken: 'page 2' }),
+			response(500, { error: { message: 'temporary failure' } }),
+		);
+		const provider = new GoogleCalendarProvider({ transport });
+		const error = await providerError(listInstances(provider, {
+			session,
+			calendarId: 'primary',
+			masterRemoteId: 'series-master',
+			window,
+		}));
+		expect(error).toMatchObject({ category: 'transient', operation: 'list-instances' });
+		expect(transport.requests).toHaveLength(2);
+	});
+
+	it('matches a sparse timed original slot only against the verified master timezone', async () => {
+		const dateTime = '2026-09-22T09:00:00-05:00';
+		const sparse = occurrenceResource({ id: 'slot-a', originalStartTime: { dateTime } });
+		const transport = new QueueTransport(
+			response(200, { items: [sparse] }),
+			response(200, { items: [sparse] }),
+		);
+		const provider = new GoogleCalendarProvider({ transport });
+		const occurrences = await listInstances(provider, {
+			session, calendarId: 'primary', masterRemoteId: 'series-master', window,
+			masterTimeZone: 'America/Bogota',
+			pinnedOriginalStarts: [{ dateTime, timeZone: 'America/Bogota' }],
+		});
+		expect(occurrences).toHaveLength(1);
+		expect(occurrences[0].originalStartTime).toEqual({ dateTime });
+
+		const staleZoneTransport = new QueueTransport(
+			response(200, { items: [] }),
+			response(200, { items: [sparse] }),
+		);
+		const staleZoneProvider = new GoogleCalendarProvider({ transport: staleZoneTransport });
+		expect(await listInstances(staleZoneProvider, {
+			session, calendarId: 'primary', masterRemoteId: 'series-master', window,
+			masterTimeZone: 'America/New_York',
+			pinnedOriginalStarts: [{ dateTime, timeZone: 'America/Bogota' }],
+		})).toEqual([]);
+	});
+
+	it('uses only the civil date for all-day recurrence identity', async () => {
+		const occurrence = occurrenceResource({
+			id: 'all-day-slot',
+			originalStartTime: { date: '2026-10-25', timeZone: 'Europe/Paris' },
+			start: { date: '2026-10-25' },
+			end: { date: '2026-10-26' },
+		});
+		const transport = new QueueTransport(
+			response(200, { items: [occurrence] }),
+			response(200, { items: [occurrence] }),
+		);
+		const provider = new GoogleCalendarProvider({ transport });
+		const occurrences = await listInstances(provider, {
+			session,
+			calendarId: 'primary',
+			masterRemoteId: 'series-master',
+			window,
+			pinnedOriginalStarts: [{ date: '2026-10-25' }],
+		});
+
+		expect(occurrences).toHaveLength(1);
+		expect(new URL(transport.requests[1].url).searchParams.get('originalStart')).toBe('2026-10-25');
+	});
+
+	it('rejects duplicate slot results with different instance IDs or cancellation status', async () => {
+		const originalStartTime = { date: '2026-10-25', timeZone: 'Europe/Paris' };
+		const activeSlot = occurrenceResource({
+			id: 'all-day-slot',
+			originalStartTime,
+			start: { date: '2026-10-25' },
+			end: { date: '2026-10-26' },
+		});
+		const conflicts = [
+			occurrenceResource({
+				id: 'replacement-instance-id',
+				originalStartTime,
+				start: { date: '2026-10-25' },
+				end: { date: '2026-10-26' },
+			}),
+			occurrenceResource({
+				id: 'all-day-slot',
+				status: 'cancelled',
+				originalStartTime,
+				start: undefined,
+				end: undefined,
+			}),
+		];
+		for (const conflictingPinned of conflicts) {
+			const provider = new GoogleCalendarProvider({
+				transport: new QueueTransport(
+					response(200, { items: [activeSlot] }),
+					response(200, { items: [conflictingPinned] }),
+				),
+			});
+			const error = await providerError(listInstances(provider, {
+				session,
+				calendarId: 'primary',
+				masterRemoteId: 'series-master',
+				window,
+				pinnedOriginalStarts: [{ date: '2026-10-25' }],
+			}));
+			expect(error).toMatchObject({ category: 'permanent', code: 'occurrence-slot-conflict' });
+		}
+	});
+
+	it('fetches latest active state and distinguishes cancelled exceptions and missing IDs', async () => {
+		const transport = new QueueTransport(
+			response(200, occurrenceResource({ id: 'active-instance' })),
+			response(200, {
+				id: 'cancelled-instance', status: 'cancelled', etag: '"cancel-v2"',
+				recurringEventId: 'series-master',
+				originalStartTime: { dateTime: event.start, timeZone: event.timezone },
+			}),
+			response(404),
+		);
+		const provider = new GoogleCalendarProvider({ transport });
+		const active = await provider.fetchEvent(session, 'primary', 'active-instance');
+		const cancelled = await provider.fetchEvent(session, 'primary', 'cancelled-instance');
+		const missing = await provider.fetchEvent(session, 'primary', 'missing-instance');
+		expect(active).toMatchObject({ status: 'active', event: {
+			remoteId: 'active-instance', recurrenceMasterId: 'series-master', originalStartTime: { dateTime: event.start },
+		} });
+		expect(cancelled).toMatchObject({ status: 'cancelled', tombstone: {
+			remoteId: 'cancelled-instance', recurrenceMasterId: 'series-master',
+			originalStartTime: { dateTime: event.start, timeZone: event.timezone },
+			version: '"cancel-v2"',
+		} });
+		expect(missing).toEqual({ status: 'not-found', providerId: 'google', calendarId: 'primary', remoteId: 'missing-instance' });
+		expect(transport.requests.every(request => request.method === 'GET')).toBe(true);
+	});
+
+	it('validates occurrence identity and PATCHes only occurrence fields with If-Match', async () => {
+		const originalStartTime = { dateTime: event.start, timeZone: event.timezone };
+		const movedEvent: CalendarEvent = {
+			...event,
+			start: '2026-09-23T11:00:00-05:00',
+			end: '2026-09-23T12:00:00-05:00',
+		};
+		const transport = new QueueTransport(
+			response(200, occurrenceResource({ id: 'instance/1', etag: '"v1"' })),
+			response(200, occurrenceResource({
+				id: 'instance/1', etag: '"v2"',
+				start: { dateTime: movedEvent.start, timeZone: movedEvent.timezone },
+				end: { dateTime: movedEvent.end, timeZone: movedEvent.timezone },
+			})),
+		);
+		const provider = new GoogleCalendarProvider({ transport });
+		const updated = await updateOccurrence(provider, {
+			session,
+			calendarId: 'primary',
+			masterRemoteId: 'series-master',
+			instanceRemoteId: 'instance/1',
+			originalStartTime,
+			event: movedEvent,
+			expectedVersion: '"v1"',
+		});
+		expect(transport.requests[0]).toMatchObject({ method: 'GET' });
+		expect(transport.requests[1]).toMatchObject({
+			method: 'PATCH',
+			url: expect.stringContaining('/events/instance%2F1'),
+			headers: { 'If-Match': '"v1"' },
+		});
+		const body = JSON.parse(transport.requests[1].body as string) as Record<string, unknown>;
+		expect(body).toMatchObject({ summary: movedEvent.title, start: { dateTime: movedEvent.start } });
+		expect(body).not.toHaveProperty('recurrence');
+		expect(body).not.toHaveProperty('extendedProperties');
+		expect(body).not.toHaveProperty('uid');
+		expect(updated).toMatchObject({ status: 'active', version: '"v2"', originalStartTime });
+	});
+
+	it('returns a conflict when the targeted GET reports a different version or HTTP 412', async () => {
+		const request = {
+			session,
+			calendarId: 'primary',
+			masterRemoteId: 'series-master',
+			instanceRemoteId: 'instance-1',
+			originalStartTime: { dateTime: event.start, timeZone: event.timezone },
+			event,
+			expectedVersion: '"v1"',
+		};
+		const changedBeforePatch = new GoogleCalendarProvider({
+			transport: new QueueTransport(response(200, occurrenceResource({ etag: '"v2"' }))),
+		});
+		const stale = await providerError(updateOccurrence(changedBeforePatch, request));
+		expect(stale).toMatchObject({ category: 'conflict', status: 412, code: 'version-mismatch' });
+
+		const racedPatch = new GoogleCalendarProvider({
+			transport: new QueueTransport(response(200, occurrenceResource({ etag: '"v1"' })), response(412)),
+		});
+		const conflict = await providerError(updateOccurrence(racedPatch, request));
+		expect(conflict).toMatchObject({ category: 'conflict', status: 412, code: 'http-412' });
+	});
+
+	it('checks the current master timezone before editing a sparse timed slot', async () => {
+		const sparse = occurrenceResource({ originalStartTime: { dateTime: event.start } });
+		const request = {
+			session, calendarId: 'primary', masterRemoteId: 'series-master',
+			masterTimeZone: 'America/Bogota', instanceRemoteId: 'instance-1',
+			originalStartTime: { dateTime: event.start, timeZone: 'America/Bogota' },
+			event, expectedVersion: '"v1"',
+		};
+		const transport = new QueueTransport(
+			response(200, sparse),
+			response(200, remoteResource({ id: 'series-master', recurrence: ['RRULE:FREQ=DAILY'] })),
+			response(200, sparse),
+		);
+		const provider = new GoogleCalendarProvider({ transport });
+		const updated = await updateOccurrence(provider, request);
+		expect(updated.originalStartTime).toEqual({ dateTime: event.start });
+		expect(transport.requests.map(value => value.method)).toEqual(['GET', 'GET', 'PATCH']);
+
+		const changedMaster = new GoogleCalendarProvider({ transport: new QueueTransport(
+			response(200, sparse),
+			response(200, remoteResource({ id: 'series-master', recurrence: ['RRULE:FREQ=DAILY'],
+				start: { dateTime: event.start, timeZone: 'America/New_York' },
+				end: { dateTime: event.end, timeZone: 'America/New_York' } })),
+		) });
+		expect(await providerError(updateOccurrence(changedMaster, request))).toMatchObject({
+			category: 'conflict', code: 'master-timezone-mismatch', status: 412,
+		});
+	});
+
 	it('retains the sync token on every incremental page and omits time bounds', async () => {
 		const cursor = encodeGoogleCursor('old token');
 		const transport = new QueueTransport(
@@ -209,6 +536,28 @@ describe('GoogleCalendarProvider', () => {
 		expect(updated).toMatchObject({ remoteId: 'remote-1', version: '"v2"', calendarUid: 'local-1' });
 	});
 
+	it('PATCHes a changed series date with its recurrence rule intact', async () => {
+		const series: CalendarEvent = {
+			...event,
+			start: '2026-09-23T09:00:00-05:00',
+			end: '2026-09-23T10:00:00-05:00',
+			recurrence: { frequency: 'daily', interval: 1, count: 3 },
+		};
+		const transport = new QueueTransport(response(200, remoteResource({
+			start: { dateTime: series.start, timeZone: series.timezone },
+			end: { dateTime: series.end, timeZone: series.timezone },
+			recurrence: ['RRULE:FREQ=DAILY;COUNT=3'],
+			etag: '"v2"',
+		})));
+		const provider = new GoogleCalendarProvider({ transport });
+		const updated = await provider.updateEvent(session, 'primary', 'remote-1', series, '"v1"');
+		const body = JSON.parse(transport.requests[0].body as string) as Record<string, unknown>;
+		expect(body.start).toEqual({ dateTime: series.start, timeZone: series.timezone });
+		expect(body.end).toEqual({ dateTime: series.end, timeZone: series.timezone });
+		expect(body.recurrence).toEqual(['RRULE:FREQ=DAILY;COUNT=3']);
+		expect(updated.event.recurrence).toMatchObject({ frequency: 'daily', count: 3 });
+	});
+
 	it('includes the recurrence timezone on an all-day recurring POST', async () => {
 		const series: CalendarEvent = {
 			...event,
@@ -233,6 +582,30 @@ describe('GoogleCalendarProvider', () => {
 		expect(body.start).toEqual({ date: series.start, timeZone: series.timezone });
 		expect(body.end).toEqual({ date: series.end, timeZone: series.timezone });
 		expect(body.recurrence).toEqual(['RRULE:FREQ=DAILY;COUNT=2']);
+	});
+
+	it('accepts a stable base32hex create ID so an uncertain POST can be verified with events.get', async () => {
+		const stableId = '0123456789abcdefghijkl';
+		const transport = new QueueTransport(
+			response(200, remoteResource({ id: stableId })),
+			response(200, remoteResource({ id: stableId })),
+		);
+		const provider = new GoogleCalendarProvider({ transport });
+		const created = await provider.createEvent(session, 'primary', event, undefined, stableId);
+		const body = JSON.parse(transport.requests[0].body as string) as Record<string, unknown>;
+		expect(body.id).toBe(stableId);
+		expect(created.remoteId).toBe(stableId);
+
+		const verified = await provider.fetchEvent(session, 'primary', stableId);
+		expect(verified.status).toBe('active');
+	});
+
+	it('rejects a caller create ID outside Google base32hex rules before sending a POST', async () => {
+		const transport = new QueueTransport(response(200, remoteResource()));
+		const provider = new GoogleCalendarProvider({ transport });
+		const error = await providerError(provider.createEvent(session, 'primary', event, undefined, 'Bad-ID'));
+		expect(error).toMatchObject({ category: 'permanent', operation: 'create-event', code: 'invalid-event-id' });
+		expect(transport.requests).toHaveLength(0);
 	});
 
 	it('refuses to confirm a write if Google omits the echoed private UID', async () => {

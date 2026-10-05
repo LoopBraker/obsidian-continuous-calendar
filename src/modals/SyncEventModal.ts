@@ -783,7 +783,8 @@ export class SyncEventModal extends Modal {
 		} catch (error) {
 			const message = sanitizeSyncUiError(error);
 			this.showError(message);
-			new Notice(`Calendar event was not saved: ${message}`);
+			const outcomeUnknown = error instanceof Error && error.name === 'ProviderOutcomeUnknownError';
+			new Notice(outcomeUnknown ? `Calendar save outcome is unknown: ${message}` : `Calendar event was not saved: ${message}`);
 		} finally {
 			this.isSubmitting = false;
 			if (this.submitButton) {

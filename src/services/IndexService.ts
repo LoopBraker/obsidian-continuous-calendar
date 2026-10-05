@@ -10,14 +10,35 @@ import { TaskManager } from './index/TaskManager';
 import { TaskNote } from './index/IndexTypes';
 import type { CalendarEventIndex } from './sync/notes/CalendarEventIndex';
 import type { CalendarEvent, SyncStatus } from './sync/model/CalendarEvent';
+import type { CachedOccurrenceSlot } from './sync/state/SyncStateStore';
 import { expandCalendarEventForDate } from './sync/model/EventRecurrenceOccurrences';
 import { calendarEventIntersectsDate } from '../components/SyncUi';
+
+export type CalendarDisplayEventScope = 'series' | 'occurrence';
 
 export interface CalendarDisplayEvent {
     readonly key: string;
     readonly event: CalendarEvent;
     readonly status?: SyncStatus;
+    /** The note target represented by this row; omitted for legacy local RRULE rows. */
+    readonly scope?: CalendarDisplayEventScope;
+    /** Exact cache/provider row key for writes. Never infer it from the display key. */
+    readonly providerWriteKey?: string;
+    /** True when the provider supplied this exact projection rather than local RRULE expansion. */
+    readonly providerResolved?: boolean;
+    readonly originalStartTime?: CachedOccurrenceSlot;
+    readonly masterRemoteId?: string;
+    readonly instanceRemoteId?: string;
+    readonly stale?: boolean;
+    readonly cancelled?: boolean;
+    readonly unresolved?: boolean;
+    /** A confirmed provider edit or target reconciliation still needs local repair. */
+    readonly localRepairPending?: boolean;
     readonly notePath?: string;
+    /** All event-owned note paths related to this row, regardless of target scope. */
+    readonly notePaths?: readonly string[];
+    /** Event-owned note paths grouped by event-local civil date. */
+    readonly notePathsByDate?: Readonly<Record<string, readonly string[]>>;
     readonly recurrenceStatus?: 'none' | 'supported' | 'unsupported';
 }
 
@@ -29,14 +50,30 @@ export interface CalendarDisplayEvent {
  */
 const calendarEventIndexes = new WeakMap<App, CalendarEventIndex>();
 const calendarEventSources = new WeakMap<App, () => readonly CalendarDisplayEvent[]>();
+const calendarEventOwnedPathSources = new WeakMap<App, () => readonly string[]>();
 const calendarIndexServices = new WeakMap<App, Set<IndexService>>();
 
-export function registerCalendarEventSource(app: App, source: () => readonly CalendarDisplayEvent[]): void {
+export function registerCalendarEventSource(
+    app: App,
+    source: () => readonly CalendarDisplayEvent[],
+    ownedPaths?: () => readonly string[],
+): void {
     calendarEventSources.set(app, source);
+    if (ownedPaths) calendarEventOwnedPathSources.set(app, ownedPaths);
+    else calendarEventOwnedPathSources.delete(app);
 }
 
 export function unregisterCalendarEventSource(app: App): void {
     calendarEventSources.delete(app);
+    calendarEventOwnedPathSources.delete(app);
+}
+
+function normalizeVaultPath(path: string): string {
+    return path.replace(/\\/g, '/').replace(/^\.\//, '');
+}
+
+function getCalendarEventOwnedPathSet(app: App): Set<string> {
+    return new Set((calendarEventOwnedPathSources.get(app)?.() ?? []).map(normalizeVaultPath));
 }
 
 export function registerCalendarEventIndex(app: App, index: CalendarEventIndex): void {
@@ -129,14 +166,43 @@ export class IndexService {
 
     getCalendarEventsForDate(dateStr: string): readonly CalendarDisplayEvent[] {
         return this.getCalendarEvents().flatMap(record => {
+            // A deleted event or whole series no longer belongs on the live
+            // calendar. A cancelled recurrence slot remains a visible tombstone.
+            if (record.status === 'remote_deleted' && !record.cancelled) return [];
+            const hasDatePathProjection = record.notePathsByDate !== undefined;
+            const datePaths = record.notePathsByDate && Object.prototype.hasOwnProperty.call(record.notePathsByDate, dateStr)
+                ? record.notePathsByDate[dateStr]
+                : undefined;
+            const pathsForDate = hasDatePathProjection
+                ? [...new Set([...(record.notePaths ?? []), ...(datePaths ?? [])])]
+                : record.notePaths;
+            const notePath = hasDatePathProjection || pathsForDate !== undefined
+                ? (pathsForDate?.length === 1 ? pathsForDate[0] : undefined)
+                : record.notePath;
+            const projected = hasDatePathProjection || pathsForDate !== undefined
+                ? { ...record, notePaths: pathsForDate, notePath }
+                : record;
+
+            // Provider rows already describe either a concrete occurrence or a
+            // series master. Expanding their RRULE here can create a display row
+            // that has no exact provider write key or occurrence identity.
+            if (record.providerResolved) {
+                return calendarEventIntersectsDate(record.event, dateStr) ? [projected] : [];
+            }
+
             const canExpand = record.recurrenceStatus !== 'unsupported' &&
                 record.status !== 'unsupported' && record.event.recurrence !== undefined;
             if (canExpand) {
                 const occurrences = expandCalendarEventForDate(record.event, dateStr);
-                return occurrences.map(event => ({ ...record, event }));
+                return occurrences.map(event => ({ ...projected, event }));
             }
-            return calendarEventIntersectsDate(record.event, dateStr) ? [record] : [];
+            return calendarEventIntersectsDate(record.event, dateStr) ? [projected] : [];
         });
+    }
+
+    /** Every path marked as calendar-owned, including malformed or quarantined notes. */
+    getCalendarEventOwnedPaths(): readonly string[] {
+        return [...getCalendarEventOwnedPathSet(this.app)];
     }
 
     /** Attach the plugin-wide event projection to a view-created index. */
@@ -171,15 +237,28 @@ export class IndexService {
     // =================================================================================
 
     getDateStatus(dateStr: string): DateMetadata {
-        const meta = this.noteManager.getDateStatus(dateStr);
+        const ownedPaths = getCalendarEventOwnedPathSet(this.app);
+        const indexedNotes = this.noteManager.getNotesForDate(dateStr);
+        const indexedRecurrences = this.recurrenceManager.getNotesForDate(dateStr);
+        const visibleNotes = indexedNotes.filter(note => !ownedPaths.has(normalizeVaultPath(note.path)));
+        const visibleRecurrences = indexedRecurrences.filter(note => !ownedPaths.has(normalizeVaultPath(note.path)));
+        const storedMeta = this.noteManager.getDateStatus(dateStr);
+        const suppressedOwnedNote = visibleNotes.length !== indexedNotes.length ||
+            visibleRecurrences.length !== indexedRecurrences.length;
+        const meta = suppressedOwnedNote
+            ? {
+                ...storedMeta,
+                hasProperty: visibleNotes.length > 0 || storedMeta.isDailyNote,
+                tags: Array.from(new Set([...visibleNotes, ...visibleRecurrences].flatMap(note => note.tags))),
+            }
+            : storedMeta;
 
         if (this.getCalendarEventsForDate(dateStr).length > 0) {
             return { ...meta, hasProperty: true };
         }
 
         // Check recurring in RecurrenceManager
-        const recurringNotes = this.recurrenceManager.getNotesForDate(dateStr);
-        if (recurringNotes.length > 0) {
+        if (visibleRecurrences.length > 0) {
             return { ...meta, hasProperty: true };
         }
 
@@ -187,10 +266,8 @@ export class IndexService {
     }
 
     getRangesForDate(dateStr: string): RangeNote[] {
-        const linkedPaths = new Set(this.getCalendarEventsForDate(dateStr)
-            .map(record => record.notePath)
-            .filter((path): path is string => !!path));
-        return (this.rangesByDate.get(dateStr) || []).filter(range => !linkedPaths.has(range.path));
+        const ownedPaths = getCalendarEventOwnedPathSet(this.app);
+        return (this.rangesByDate.get(dateStr) || []).filter(range => !ownedPaths.has(normalizeVaultPath(range.path)));
     }
 
     getRangeSlots(dateStr: string): Map<string, number> {
@@ -202,8 +279,11 @@ export class IndexService {
     }
 
     getNotesForDate(dateStr: string): Array<NoteData> {
-        const specificNotes = this.noteManager.getNotesForDate(dateStr);
-        const recurringNotes = this.recurrenceManager.getNotesForDate(dateStr);
+        const ownedPaths = getCalendarEventOwnedPathSet(this.app);
+        const specificNotes = this.noteManager.getNotesForDate(dateStr)
+            .filter(note => !ownedPaths.has(normalizeVaultPath(note.path)));
+        const recurringNotes = this.recurrenceManager.getNotesForDate(dateStr)
+            .filter(note => !ownedPaths.has(normalizeVaultPath(note.path)));
 
         // Filter rrule events if they overlap with specific notes (same path)
         const uniqueRecurring = recurringNotes.filter(r => !specificNotes.some(s => s.path === r.path));
@@ -266,11 +346,13 @@ export class IndexService {
             console.warn('DEBUG: taskSettings is missing in settings!', this.settings);
         }
 
-        return results;
+        return results.filter(note => !ownedPaths.has(normalizeVaultPath(note.path)));
     }
 
     getTasksForDate(dateStr: string): TaskNote[] {
-        return this.taskManager.getTasksForDate(dateStr);
+        const ownedPaths = getCalendarEventOwnedPathSet(this.app);
+        return this.taskManager.getTasksForDate(dateStr)
+            .filter(task => !ownedPaths.has(normalizeVaultPath(task.path)));
     }
 
     getHolidaysForDate(dateStr: string): Holiday[] {
@@ -297,8 +379,9 @@ export class IndexService {
         if (cached?.signature === signature) return cached.symbols.map(symbol => ({ ...symbol }));
         // Presentation logic remains here as it acts as a View Model
         const events = this.getCalendarEventsForDate(dateStr);
-        const linkedPaths = new Set(events.map(record => record.notePath).filter((path): path is string => !!path));
-        const notes = this.getNotesForDate(dateStr).filter(note => !linkedPaths.has(note.path));
+        const ownedPaths = getCalendarEventOwnedPathSet(this.app);
+        const notes = this.getNotesForDate(dateStr)
+            .filter(note => !ownedPaths.has(normalizeVaultPath(note.path)));
 
         interface NoteDisplay {
             symbol?: string;
