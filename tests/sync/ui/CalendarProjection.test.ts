@@ -10,6 +10,7 @@ import type { CalendarEvent } from '../../../src/services/sync/model/CalendarEve
 import {
 	getCalendarEventEditKey,
 	getCalendarEventNoteActionScopes,
+	getCalendarEventNoteRowActions,
 } from '../../../src/DayDetailView';
 
 const app = new App();
@@ -84,6 +85,7 @@ describe('calendar event projection', () => {
 			scope: 'occurrence',
 			providerWriteKey: 'occurrence-key',
 			providerResolved: true,
+			masterRemoteId: 'remote-series',
 			event: makeEvent({ end: '2026-10-07' }),
 			notePaths: ['Events/series.md'],
 			notePathsByDate: {
@@ -94,10 +96,47 @@ describe('calendar event projection', () => {
 		const index = new IndexService(app);
 
 		expect(index.getCalendarEventsForDate('2026-10-04')[0].notePath).toBe('Events/series.md');
+		expect(getCalendarEventNoteRowActions(index.getCalendarEventsForDate('2026-10-04')[0], '2026-10-04', true))
+			.toEqual({
+				notePaths: ['Events/series.md'],
+				titleAction: 'open',
+				showCreateNote: false,
+				createNoteScopes: ['series', 'occurrence', 'occurrence-day'],
+			});
 		expect(index.getCalendarEventsForDate('2026-10-05')[0].notePath).toBeUndefined();
 		expect(index.getCalendarEventsForDate('2026-10-05')[0].notePaths).toEqual(['Events/series.md', 'Events/day-2.md']);
+		expect(getCalendarEventNoteRowActions(index.getCalendarEventsForDate('2026-10-05')[0], '2026-10-05', true))
+			.toEqual({
+				notePaths: ['Events/series.md', 'Events/day-2.md'],
+				titleAction: 'choose',
+				showCreateNote: false,
+				createNoteScopes: ['series', 'occurrence', 'occurrence-day'],
+			});
 		expect(index.getCalendarEventsForDate('2026-10-06')[0].notePaths).toEqual(['Events/series.md']);
+		expect(getCalendarEventNoteRowActions(index.getCalendarEventsForDate('2026-10-06')[0], '2026-10-06', true).titleAction)
+			.toBe('open');
 		index.dispose();
+	});
+
+	it('keeps note creation available for an unlinked one-off and hides it after linking', () => {
+		const oneOff = makeDisplayEvent({
+			scope: 'occurrence',
+			providerWriteKey: 'one-off-key',
+			providerResolved: true,
+		});
+
+		expect(getCalendarEventNoteRowActions(oneOff, date, true)).toEqual({
+			notePaths: [],
+			titleAction: 'none',
+			showCreateNote: true,
+			createNoteScopes: ['occurrence'],
+		});
+		expect(getCalendarEventNoteRowActions({ ...oneOff, notePaths: ['Events/planning.md'] }, date, true)).toEqual({
+			notePaths: ['Events/planning.md'],
+			titleAction: 'open',
+			showCreateNote: false,
+			createNoteScopes: ['occurrence'],
+		});
 	});
 
 	it('suppresses every source-registered owned path from notes, ranges, recurrence, and symbols', () => {

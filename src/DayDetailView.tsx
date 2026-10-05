@@ -9,6 +9,7 @@ import { addCivilDays, eventCivilDayBounds } from './services/sync/notes/Calenda
 import { formatCalendarEventTime, syncStatusLabel } from './components/SyncUi';
 import { openSyncEventModal } from './modals/SyncEventModal';
 import { openSyncNoteScopeModal } from './modals/SyncNoteScopeModal';
+import { openSyncLinkedNoteModal } from './modals/SyncLinkedNoteModal';
 import { type Holiday } from './services/holiday/HolidayTypes';
 
 export type CalendarEventNoteActionScope = 'series' | 'occurrence' | 'occurrence-day';
@@ -52,6 +53,37 @@ export function getCalendarEventNoteActionScopes(
     const secondDate = addCivilDays(bounds.startDate, 1);
     if (secondDate && secondDate < bounds.endDateExclusive) scopes.push('occurrence-day');
     return scopes;
+}
+
+export interface CalendarEventNoteRowActions {
+    readonly notePaths: readonly string[];
+    readonly titleAction: 'none' | 'open' | 'choose';
+    readonly showCreateNote: boolean;
+    readonly createNoteScopes: readonly CalendarEventNoteActionScope[];
+}
+
+/** Resolve the note links and actions for a row already projected to the selected date. */
+export function getCalendarEventNoteRowActions(
+    event: CalendarDisplayEvent,
+    selectedDate: string,
+    canCreateNote: boolean,
+): CalendarEventNoteRowActions {
+    // notePath is retained as a fallback for legacy sources. When notePaths is
+    // present, it is the date-projected set and must be treated as authoritative.
+    const paths = event.notePaths !== undefined
+        ? event.notePaths
+        : event.notePath ? [event.notePath] : [];
+    const notePaths = [...new Set(paths.filter(path => path.length > 0))];
+    const createNoteScopes = canCreateNote
+        ? getCalendarEventNoteActionScopes(event, selectedDate)
+        : [];
+
+    return {
+        notePaths,
+        titleAction: notePaths.length === 1 ? 'open' : notePaths.length > 1 ? 'choose' : 'none',
+        showCreateNote: notePaths.length === 0 && createNoteScopes.length > 0,
+        createNoteScopes,
+    };
 }
 
 /** Exact provider key for a write; locally expanded rows have no safe edit target. */
@@ -648,29 +680,74 @@ export const DayDetailView = ({ dateKey, viewMode, index, app, settings, onClose
                     {syncEvents.length > 0 && (
                         <ul className="day-detail-list">
                             {syncEvents.map(syncEvent => {
-                                const notePath = syncEvent.notePath;
-                                const noteActionScopes = onCreateEventNote
-                                    ? getCalendarEventNoteActionScopes(syncEvent, dateKey)
-                                    : [];
+                                const noteActions = getCalendarEventNoteRowActions(
+                                    syncEvent,
+                                    dateKey,
+                                    Boolean(onCreateEventNote),
+                                );
                                 const editKey = getCalendarEventEditKey(syncEvent);
                                 const canDeleteEvent = Boolean(
                                     canWriteSyncEvents && onDeleteSyncEvent && editKey &&
                                     syncEvent.status !== 'unsupported',
                                 );
+                                const eventTitle = syncEvent.event.title || 'Untitled event';
+                                const openCreateNoteScopeModal = () => openSyncNoteScopeModal(app, {
+                                    eventTitle: syncEvent.event.title,
+                                    scopes: noteActions.createNoteScopes,
+                                    selectedDate: dateKey,
+                                    recurring: Boolean(syncEvent.masterRemoteId || syncEvent.scope === 'series'),
+                                    onSelect: scope => onCreateEventNote?.(
+                                        syncEvent.key,
+                                        scope,
+                                        scope === 'occurrence-day' ? dateKey : undefined,
+                                    ),
+                                });
+                                const titleActionHint = noteActions.titleAction === 'open'
+                                    ? 'Click to open linked note.'
+                                    : 'Click to choose a linked note.';
+                                const scopeActionHint = noteActions.createNoteScopes.length > 0
+                                    ? ' Right-click or press Shift+F10 to create another linked note.'
+                                    : '';
                                 return (
                                     <li key={`${syncEvent.key}:${syncEvent.event.start}`} className="sync-event-card">
                                         <div className="sync-event-card-content">
                                             <div className="sync-event-title-group">
-                                                {notePath ? (
+                                                {noteActions.titleAction !== 'none' ? (
                                                     <a
                                                         href="#"
                                                         className="internal-link sync-event-title sync-event-linked-title"
+                                                        title={`${titleActionHint}${scopeActionHint}`}
+                                                        aria-label={`${eventTitle}. ${titleActionHint}${scopeActionHint}`}
                                                         onClick={(e) => {
                                                             e.preventDefault();
-                                                            app.workspace.openLinkText(notePath, '', false);
+                                                            const openNote = (path: string) => {
+                                                                app.workspace.openLinkText(path, '', false);
+                                                            };
+                                                            if (noteActions.titleAction === 'open') {
+                                                                openNote(noteActions.notePaths[0]);
+                                                            } else {
+                                                                openSyncLinkedNoteModal(app, {
+                                                                    eventTitle: syncEvent.event.title,
+                                                                    notePaths: noteActions.notePaths,
+                                                                    onSelect: openNote,
+                                                                });
+                                                            }
+                                                        }}
+                                                        onContextMenu={e => {
+                                                            if (noteActions.createNoteScopes.length === 0) return;
+                                                            e.preventDefault();
+                                                            openCreateNoteScopeModal();
+                                                        }}
+                                                        onKeyDown={e => {
+                                                            if ((e.key === 'ContextMenu' || (e.key === 'F10' && e.shiftKey))
+                                                                && noteActions.createNoteScopes.length > 0) {
+                                                                e.preventDefault();
+                                                                e.stopPropagation();
+                                                                openCreateNoteScopeModal();
+                                                            }
                                                         }}
                                                     >
-                                                        {syncEvent.event.title || 'Untitled event'}
+                                                        {eventTitle}
                                                     </a>
                                                 ) : (
                                                     <span className="sync-event-title">
@@ -684,25 +761,15 @@ export const DayDetailView = ({ dateKey, viewMode, index, app, settings, onClose
                                                 <div className="sync-event-time" title="Canonical event time">
                                                     {formatCalendarEventTime(syncEvent.event)}
                                                 </div>
-                                                {(noteActionScopes.length > 0 || (canWriteSyncEvents && editKey && syncEvent.status !== 'unsupported') || canDeleteEvent) && (
+                                                {(noteActions.showCreateNote || (canWriteSyncEvents && editKey && syncEvent.status !== 'unsupported') || canDeleteEvent) && (
                                                     <div className="sync-event-actions">
-                                                        {noteActionScopes.length > 0 && (
+                                                        {noteActions.showCreateNote && (
                                                             <button
                                                                 type="button"
                                                                 className="sync-event-action clickable-icon"
-                                                                onClick={() => openSyncNoteScopeModal(app, {
-                                                                    eventTitle: syncEvent.event.title,
-                                                                    scopes: noteActionScopes,
-                                                                    selectedDate: dateKey,
-                                                                    recurring: Boolean(syncEvent.masterRemoteId || syncEvent.scope === 'series'),
-                                                                    onSelect: scope => onCreateEventNote?.(
-                                                                        syncEvent.key,
-                                                                        scope,
-                                                                        scope === 'occurrence-day' ? dateKey : undefined,
-                                                                    ),
-                                                                })}
-                                                                aria-label={`Create or open linked note for ${syncEvent.event.title || 'Untitled event'}`}
-                                                                title="Create or open linked note"
+                                                                onClick={openCreateNoteScopeModal}
+                                                                aria-label={`Create linked note for ${syncEvent.event.title || 'Untitled event'}`}
+                                                                title="Create linked note"
                                                             >
                                                                 <ObsidianIcon icon="file-plus" />
                                                             </button>

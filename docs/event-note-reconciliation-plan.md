@@ -242,6 +242,10 @@ checks separate from mocked results.
   it to the UI. Google splits the master into an old and new series, so the
   design must cover partial success, exceptions, and explicit note ownership
   across the new master ID. Keep this out of the automatic-refresh change.
+- [x] Hide the detail-row create-note icon when a linked note applies to the
+  selected date. Make the event name open its one note or offer a path choice
+  when several notes apply. Keep additional explicit scopes available from
+  the linked name's context menu without reusing the create icon.
 
 Baseline at `397f1aa`: pre-existing untracked `.codex/` and
 `docs/event-note-reconciliation-risks.md` were preserved. P1 and P2 were
@@ -266,6 +270,12 @@ second save, and lifecycle restart. `npm test` passed 238/238 tests,
 `npm run build`, `git diff --check`, and changed-file ESLint passed (one
 pre-existing warning in `src/main.ts`). Live Obsidian and Google verification
 remain open in P6.
+
+The detail-row note action was corrected after the post-write refresh commit.
+`npm test` passed 239/239 tests, `npm run build` and `git diff --check`
+passed, and changed-file ESLint had no errors (five pre-existing `any`
+warnings in `DayDetailView.tsx`). Native Obsidian interaction remains
+unverified; check the linked title and context menu in P6.
 
 The next work is P5a's previewed local transaction API, then P5b's repair UI,
 then P5c's integration audit. The current UI has no explicit accept/rebind,
