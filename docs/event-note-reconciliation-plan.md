@@ -208,6 +208,10 @@ checks separate from mocked results.
 
 ### Follow-up calendar actions (2026-10-04)
 
+- [x] Commit the current specification and implementation snapshot as
+  `d4cccdf` (`wip: add explicit Google event note ownership`). This is a
+  checkpoint, not feature completion; P5 repair actions and P6 live checks
+  remain open.
 - [x] Default new occurrence and selected-day note filenames to
   `YYYY-MM-DD Event title.md`; keep a series note at `Event title.md`.
   Existing filenames and immutable note targets are left intact.
@@ -229,6 +233,15 @@ checks separate from mocked results.
 - [x] When deleting a series directly from this plugin, leave child note
   targets unresolved and preserve their bodies. Regression tests cover the
   direct delete, series date PATCH, post-sync recurrence, and projection.
+- [x] After a confirmed calendar create, occurrence edit, series edit, or
+  delete, request a provider refresh automatically. If an older pull is in
+  flight, run a new pull after it; coalesce requests and keep refresh errors
+  separate from the confirmed Google write. Verify this with an in-flight
+  pull, failed pull, and stop/restart tests before checking this item.
+- [ ] Design a separate “this occurrence and future” edit scope before adding
+  it to the UI. Google splits the master into an old and new series, so the
+  design must cover partial success, exceptions, and explicit note ownership
+  across the new master ID. Keep this out of the automatic-refresh change.
 
 Baseline at `397f1aa`: pre-existing untracked `.codex/` and
 `docs/event-note-reconciliation-risks.md` were preserved. P1 and P2 were
@@ -244,6 +257,16 @@ reported errors. The integrated diff contains no generated bundle or new
 secret-shaped literal; a fixture in an unchanged test already contains such a
 pattern. No native Obsidian or live Google check has run.
 
+After the WIP checkpoint, automatic post-write refresh was root-accepted.
+The engine queues a new pull behind an older in-flight pull, coalesces saves,
+and runs one trailing pull if another save arrives during a refresh. Pull
+errors are reported separately from the confirmed Google write. Focused tests
+cover older and rejected pulls, coalescing, a failed refresh followed by a
+second save, and lifecycle restart. `npm test` passed 238/238 tests,
+`npm run build`, `git diff --check`, and changed-file ESLint passed (one
+pre-existing warning in `src/main.ts`). Live Obsidian and Google verification
+remain open in P6.
+
 The next work is P5a's previewed local transaction API, then P5b's repair UI,
 then P5c's integration audit. The current UI has no explicit accept/rebind,
 representation conversion, manual relink, or duplicate-resolution flow. A
@@ -251,5 +274,6 @@ historical day note whose confirmed date is no longer inside the moved event
 range is retained in the vault but needs P5b's repair view for in-calendar
 discovery. The sparse cancelled-instance display uses a noneditable placeholder
 when Google has no event fields; its exact visual behavior needs P6 review.
-Do not call the feature complete or commit until P5 is accepted and P6 is
-reported honestly.
+Do not call the feature complete until P5 is accepted and P6 is reported
+honestly. The current snapshot was committed as a clearly marked WIP at the
+user's request.

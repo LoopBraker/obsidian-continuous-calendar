@@ -410,6 +410,10 @@ export class SyncService {
 	private intervalHandle?: unknown;
 	private runController?: AbortController;
 	private runPromise?: Promise<SyncRunResult>;
+	private providerWriteRefreshPromise?: Promise<SyncRunResult>;
+	private providerWriteRefreshGeneration?: number;
+	private providerWriteRefreshRequested = false;
+	private stopGeneration = 0;
 	private unsubscribeDeletion?: () => void;
 	private internalWriteDepth = 0;
 	private readonly internalWriteHashes = new Map<string, string>();
@@ -861,6 +865,8 @@ export class SyncService {
 
 	async stop(): Promise<void> {
 		this.started = false;
+		this.stopGeneration += 1;
+		this.providerWriteRefreshRequested = false;
 		if (this.intervalHandle !== undefined) {
 			this.clock.clearInterval(this.intervalHandle);
 			this.intervalHandle = undefined;
@@ -896,6 +902,79 @@ export class SyncService {
 			if (this.runController === controller) this.runController = undefined;
 		});
 		return this.runPromise;
+	}
+
+	/**
+	 * Ensure a provider pull starts after a confirmed direct write. Ordinary
+	 * syncNow calls join an in-flight run, which may have pulled before the
+	 * write. This queue waits for that run and then starts a fresh one. Requests
+	 * made during the follow-up pull are drained as one trailing pull.
+	 */
+	refreshAfterProviderWrite(signal?: AbortSignal): Promise<SyncRunResult> {
+		const generation = this.stopGeneration;
+		const pending = this.providerWriteRefreshPromise;
+		if (pending) {
+			if (this.providerWriteRefreshGeneration !== generation) {
+				return pending.catch(() => undefined).then(() => this.refreshAfterProviderWrite(signal));
+			}
+			this.providerWriteRefreshRequested = true;
+			return pending;
+		}
+
+		this.providerWriteRefreshGeneration = generation;
+		this.providerWriteRefreshRequested = true;
+		const refresh = this.drainProviderWriteRefresh(generation, signal);
+		const tracked = refresh.finally(() => {
+			if (this.providerWriteRefreshPromise === tracked) {
+				this.providerWriteRefreshPromise = undefined;
+				this.providerWriteRefreshGeneration = undefined;
+			}
+		});
+		this.providerWriteRefreshPromise = tracked;
+		return tracked;
+	}
+
+	private async drainProviderWriteRefresh(
+		generation: number,
+		signal?: AbortSignal,
+	): Promise<SyncRunResult> {
+		let result: SyncRunResult | undefined;
+		while (this.providerWriteRefreshRequested) {
+			const activeRun = this.runPromise;
+			if (activeRun) {
+				try {
+					await activeRun;
+				} catch (_error) {
+					// A failed earlier run must not prevent the fresh post-write pull.
+				}
+			}
+
+			if (generation !== this.stopGeneration || signal?.aborted) {
+				return result ?? {
+					trigger: 'manual', status: 'cancelled', pulled: 0, imported: 0, localUpdated: 0,
+					remoteCreated: 0, remoteUpdated: 0, conflicts: [], deleted: 0, fullResync: false,
+					error: 'Provider refresh stopped before it could run',
+				};
+			}
+
+			// Requests received while an older run was finishing are covered by
+			// the fresh run we're about to start. Requests during that fresh run
+			// set this flag again and cause one more pass through the loop.
+			this.providerWriteRefreshRequested = false;
+			try {
+				result = await this.syncNow('manual', signal);
+			} catch (error) {
+				// A newer confirmed write owns the pending request and deserves its
+				// trailing attempt. Without one, preserve this pull failure for the
+				// lifecycle layer to report separately from the provider write.
+				if (!this.providerWriteRefreshRequested) throw error;
+			}
+		}
+		return result ?? {
+			trigger: 'manual', status: 'cancelled', pulled: 0, imported: 0, localUpdated: 0,
+			remoteCreated: 0, remoteUpdated: 0, conflicts: [], deleted: 0, fullResync: false,
+			error: 'Provider refresh was not scheduled',
+		};
 	}
 
 	async pullNow(signal?: AbortSignal): Promise<SyncRunResult> {

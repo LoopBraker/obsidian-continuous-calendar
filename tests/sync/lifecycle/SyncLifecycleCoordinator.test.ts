@@ -119,6 +119,90 @@ describe('SyncLifecycleCoordinator', () => {
 		expect(calls).toEqual(['sync', 'stop', 'dispose']);
 	});
 
+	it('waits for an older sync and coalesces provider-write refresh requests', async () => {
+		let finishOlderSync!: (value: unknown) => void;
+		const olderSync = new Promise<unknown>(resolve => { finishOlderSync = resolve; });
+		let syncCalls = 0;
+		const coordinator = new SyncLifecycleCoordinator({
+			repository: { async reload() {} },
+			syncService: {
+				async start() {},
+				async syncNow() {
+					syncCalls += 1;
+					return syncCalls === 1 ? olderSync : { status: 'idle', pulled: 1 };
+				},
+				async stop() {},
+			},
+		});
+		await coordinator.start();
+
+		const olderRequest = coordinator.syncNow('interval');
+		const refresh = coordinator.refreshAfterProviderWrite();
+		const coalescedRefresh = coordinator.refreshAfterProviderWrite();
+		expect(coalescedRefresh).toBe(refresh);
+		await settle();
+		expect(syncCalls).toBe(1);
+
+		finishOlderSync({ status: 'idle', pulled: 0 });
+		await olderRequest;
+		await expect(refresh).resolves.toMatchObject({ status: 'idle', pulled: 1 });
+		expect(syncCalls).toBe(2);
+	});
+
+	it('reports post-write refresh errors separately and never rejects its caller', async () => {
+		const reported: Array<{ operation: string; message: string }> = [];
+		const coordinator = new SyncLifecycleCoordinator({
+			repository: { async reload() {} },
+			syncService: {
+				async start() {},
+				async syncNow() {},
+				async refreshAfterProviderWrite() { throw new Error('provider pull failed'); },
+				async stop() {},
+			},
+			onError: (error, operation) => {
+				reported.push({ operation, message: error instanceof Error ? error.message : String(error) });
+			},
+		});
+		await coordinator.start();
+
+		await expect(coordinator.refreshAfterProviderWrite()).resolves.toBeUndefined();
+		expect(reported).toEqual([{
+			operation: 'refresh-after-provider-write',
+			message: 'provider pull failed',
+		}]);
+	});
+
+	it('schedules a new-generation refresh after a prior refresh settles during restart', async () => {
+		let finishOldRefresh!: (value: unknown) => void;
+		const oldRefresh = new Promise<unknown>(resolve => { finishOldRefresh = resolve; });
+		let refreshCalls = 0;
+		const coordinator = new SyncLifecycleCoordinator({
+			repository: { async reload() {} },
+			syncService: {
+				async start() {},
+				async syncNow() {},
+				refreshAfterProviderWrite() {
+					refreshCalls += 1;
+					return refreshCalls === 1 ? oldRefresh : Promise.resolve('fresh refresh');
+				},
+				async stop() {},
+			},
+		});
+		await coordinator.start();
+		const firstRefresh = coordinator.refreshAfterProviderWrite();
+		await settle();
+		expect(refreshCalls).toBe(1);
+
+		await coordinator.stop();
+		await coordinator.start();
+		const restartedRefresh = coordinator.refreshAfterProviderWrite();
+		finishOldRefresh('stopped refresh');
+
+		await expect(restartedRefresh).resolves.toBe('fresh refresh');
+		await firstRefresh;
+		expect(refreshCalls).toBe(2);
+	});
+
 	it('registers the engine polling interval with the host cleanup boundary', () => {
 		const registered: number[] = [];
 		const clock = createRegisteredSyncClock(id => registered.push(id));

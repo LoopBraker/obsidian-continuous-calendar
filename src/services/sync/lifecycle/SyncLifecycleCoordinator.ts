@@ -45,6 +45,7 @@ export interface SyncLifecycleService {
 	readonly status?: SyncServiceStatusSnapshot;
 	start(): Promise<unknown>;
 	syncNow(trigger?: SyncRunTrigger, signal?: AbortSignal): Promise<unknown>;
+	refreshAfterProviderWrite?(signal?: AbortSignal): Promise<unknown>;
 	deleteSyncedEvent?(localUid: string, signal?: AbortSignal): Promise<boolean>;
 	createCalendarEvent?(event: CalendarEvent): Promise<CachedCalendarEvent & { key: string }>;
 	updateCalendarEvent?(key: string, event: CalendarEvent): Promise<CachedCalendarEvent & { key: string }>;
@@ -77,6 +78,16 @@ function reportError(
 	}
 }
 
+function refreshResultError(result: unknown): Error | undefined {
+	if (!result || typeof result !== 'object') return undefined;
+	const snapshot = result as { readonly status?: unknown; readonly error?: unknown };
+	if (snapshot.status !== 'error' && snapshot.status !== 'offline' && snapshot.status !== 'cancelled') return undefined;
+	const message = typeof snapshot.error === 'string'
+		? snapshot.error
+		: `Provider refresh finished with status "${String(snapshot.status)}"`;
+	return new Error(message);
+}
+
 /**
  * Coordinates local vault lifecycle with the provider-neutral sync engine.
  *
@@ -90,11 +101,25 @@ export class SyncLifecycleCoordinator {
 	private generation = 0;
 	private abortController?: AbortController;
 	private pendingChange: Promise<void> = Promise.resolve();
+	private readonly activeSyncs = new Set<Promise<unknown>>();
+	private providerWriteRefreshPromise?: Promise<unknown>;
+	private providerWriteRefreshGeneration?: number;
+	private providerWriteRefreshRequested = false;
 
 	private readonly repository: SyncLifecycleRepository | CalendarEventRepository;
 	private readonly syncService?: SyncLifecycleService;
 	private readonly onError?: SyncLifecycleCoordinatorOptions['onError'];
 	private readonly onIndexChanged?: SyncLifecycleCoordinatorOptions['onIndexChanged'];
+
+	private trackSync<T>(operation: Promise<T>): Promise<T> {
+		const tracked = operation;
+		this.activeSyncs.add(tracked);
+		void tracked.then(
+			() => this.activeSyncs.delete(tracked),
+			() => this.activeSyncs.delete(tracked),
+		);
+		return tracked;
+	}
 
 	constructor(options: SyncLifecycleCoordinatorOptions) {
 		this.repository = options.repository;
@@ -137,7 +162,7 @@ export class SyncLifecycleCoordinator {
 		if (!this.syncService) return;
 
 		try {
-			await this.syncService.start();
+			await this.trackSync(Promise.resolve(this.syncService.start()));
 		} catch (error) {
 			// Startup must remain local-first.  A missing credential, malformed
 			// state, or provider outage is observable but not fatal to Obsidian.
@@ -150,6 +175,7 @@ export class SyncLifecycleCoordinator {
 		if (!this.started && !this.abortController) return;
 		this.started = false;
 		this.generation += 1;
+		this.providerWriteRefreshRequested = false;
 		this.abortController?.abort(new Error('Sync lifecycle stopped'));
 		this.abortController = undefined;
 
@@ -170,14 +196,94 @@ export class SyncLifecycleCoordinator {
 	/** Request one run. Provider access remains entirely inside the service. */
 	async syncNow(trigger: SyncRunTrigger = 'manual'): Promise<unknown> {
 		if (!this.started || !this.syncService || !this.abortController) return undefined;
+		const service = this.syncService;
+		const signal = this.abortController.signal;
 		try {
-			const result = await this.syncService.syncNow(trigger, this.abortController.signal);
+			const result = await this.trackSync(Promise.resolve(service.syncNow(trigger, signal)));
 			this.onIndexChanged?.(this.repository.index);
 			return result;
 		} catch (error) {
 			if (this.started) reportError(this.onError, error, `sync-${trigger}`);
 			return undefined;
 		}
+	}
+
+	/**
+	 * Schedule a pull after a confirmed provider write. If an older pull is
+	 * already running, wait for it before asking the service for a new run. Any
+	 * additional writes during that refresh are coalesced into one trailing
+	 * refresh. Errors are reported here and swallowed so a successful provider
+	 * write stays successful for its caller.
+	 */
+	refreshAfterProviderWrite(): Promise<unknown> {
+		if (!this.started || !this.syncService || !this.abortController) return Promise.resolve(undefined);
+		if (this.providerWriteRefreshPromise) {
+			if (this.providerWriteRefreshGeneration !== this.generation) {
+				return this.providerWriteRefreshPromise.catch(() => undefined).then(() => this.refreshAfterProviderWrite());
+			}
+			this.providerWriteRefreshRequested = true;
+			return this.providerWriteRefreshPromise;
+		}
+
+		const generation = this.generation;
+		this.providerWriteRefreshRequested = true;
+		this.providerWriteRefreshGeneration = generation;
+		const refresh = this.drainProviderWriteRefresh(generation).catch(error => {
+			if (this.isCurrentGeneration(generation)) {
+				reportError(this.onError, error, 'refresh-after-provider-write');
+			}
+			return undefined;
+		});
+		const tracked = refresh.finally(() => {
+			if (this.providerWriteRefreshPromise === tracked) {
+				this.providerWriteRefreshPromise = undefined;
+				this.providerWriteRefreshGeneration = undefined;
+			}
+		});
+		this.providerWriteRefreshPromise = tracked;
+		return tracked;
+	}
+
+	private async drainProviderWriteRefresh(generation: number): Promise<unknown> {
+		let result: unknown;
+		while (this.providerWriteRefreshRequested && this.isCurrentGeneration(generation)) {
+			while (this.activeSyncs.size > 0 && this.isCurrentGeneration(generation)) {
+				await Promise.all(Array.from(this.activeSyncs, operation => operation.catch(() => undefined)));
+			}
+			if (!this.isCurrentGeneration(generation) || !this.syncService || !this.abortController) return result;
+
+			// Requests arriving while an earlier run was finishing are covered by
+			// the fresh provider pull below. Requests during that pull set the flag
+			// again and cause one trailing pass through the loop.
+			this.providerWriteRefreshRequested = false;
+			const service = this.syncService;
+			const signal = this.abortController.signal;
+			try {
+				const refresh = service.refreshAfterProviderWrite
+					? service.refreshAfterProviderWrite(signal)
+					: service.syncNow('manual', signal);
+				const operation = this.trackSync(Promise.resolve(refresh));
+				result = await operation;
+			} catch (error) {
+				if (this.isCurrentGeneration(generation)) {
+					reportError(this.onError, error, 'refresh-after-provider-write');
+				}
+				continue;
+			}
+			if (!this.isCurrentGeneration(generation)) return result;
+			try {
+				this.onIndexChanged?.(this.repository.index);
+			} catch (error) {
+				reportError(this.onError, error, 'refresh-after-provider-write');
+			}
+			const failure = refreshResultError(result);
+			if (failure) reportError(this.onError, failure, 'refresh-after-provider-write');
+		}
+		return result;
+	}
+
+	private isCurrentGeneration(generation: number): boolean {
+		return this.started && generation === this.generation;
 	}
 
 	/** Forward one vault event without performing provider work in the callback. */

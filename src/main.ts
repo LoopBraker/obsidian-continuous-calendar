@@ -449,7 +449,15 @@ export default class ContinuousCalendarPlugin extends Plugin {
         if (this.settings.sync.syncMode !== 'bidirectional') throw new Error('Enable bidirectional sync to change Google events.');
         const service = this.syncLifecycle?.service;
         if (!service) throw new Error('Connect to Google Calendar before changing events.');
+        if (!this.syncLifecycle.isStarted) throw new Error('Wait for calendar sync to start before changing events.');
         return service;
+    }
+
+    private refreshCalendarAfterProviderWrite(): void {
+        // The Google write has already succeeded. Let the editor close while the
+        // fresh provider projection arrives; refresh errors are reported by the
+        // sync lifecycle rather than presented as a failed save.
+        void this.syncLifecycle.refreshAfterProviderWrite();
     }
 
     async createCalendarEvent(event: CalendarEvent): Promise<void> {
@@ -460,6 +468,7 @@ export default class ContinuousCalendarPlugin extends Plugin {
             new Notice('Google event saved. Local note repair is pending.');
         }
         notifyCalendarEventIndexChanged(this.app);
+        this.refreshCalendarAfterProviderWrite();
     }
 
     async updateCalendarEvent(key: string, event: CalendarEvent): Promise<void> {
@@ -482,6 +491,7 @@ export default class ContinuousCalendarPlugin extends Plugin {
             new Notice('Google event saved. Local note repair is pending.');
         }
         notifyCalendarEventIndexChanged(this.app);
+        this.refreshCalendarAfterProviderWrite();
     }
 
     async updateCalendarSeriesEvent(key: string, event: CalendarEvent): Promise<void> {
@@ -499,6 +509,7 @@ export default class ContinuousCalendarPlugin extends Plugin {
             new Notice('Google series saved. Local note repair is pending.');
         }
         notifyCalendarEventIndexChanged(this.app);
+        this.refreshCalendarAfterProviderWrite();
     }
 
     async deleteCalendarEvent(key: string): Promise<boolean> {
@@ -521,6 +532,7 @@ export default class ContinuousCalendarPlugin extends Plugin {
         if (!remove) throw new Error('Calendar event deletion is unavailable.');
         const deleted = await remove.call(this.syncLifecycle.service, providerKey);
         notifyCalendarEventIndexChanged(this.app);
+        if (deleted) this.refreshCalendarAfterProviderWrite();
         return deleted;
     }
 

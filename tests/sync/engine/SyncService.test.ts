@@ -8,7 +8,14 @@ import { decodeCalendarEventNote, parseFrontmatter, serializeFrontmatter } from 
 import { FakeCalendarProvider, fakeProviderSession } from '../../../src/services/sync/providers/FakeCalendarProvider';
 import type { ListInstancesRequest, RemoteCalendarEvent, RemoteEventLookupResult, RemoteOccurrence, ProviderSession, UpdateOccurrenceRequest } from '../../../src/services/sync/providers/CalendarProvider';
 import { cursorExpiredError, transientError } from '../../../src/services/sync/providers/ProviderErrors';
-import { ProviderOutcomeUnknownError, ProviderWriteConflictError, SyncService, type SyncStateStoreLike } from '../../../src/services/sync/engine';
+import {
+	ProviderOutcomeUnknownError,
+	ProviderWriteConflictError,
+	SyncService,
+	type SyncRunResult,
+	type SyncRunTrigger,
+	type SyncStateStoreLike,
+} from '../../../src/services/sync/engine';
 import { createDefaultSyncState, makeSyncStateKey, normalizeSyncState, type SyncState } from '../../../src/services/sync/state';
 import type { CalendarEvent } from '../../../src/services/sync/model';
 
@@ -140,6 +147,49 @@ class UnboundedPullProvider extends FakeCalendarProvider {
 			...request,
 			window: { from: '1900-01-01T00:00:00Z', to: '2100-01-01T00:00:00Z' },
 		});
+	}
+}
+
+class SnapshotBlockingPullProvider extends FakeCalendarProvider {
+	pullCalls = 0;
+	readonly firstPullStarted: Promise<void>;
+	readonly secondPullStarted: Promise<void>;
+	private markFirstPullStarted!: () => void;
+	private releaseFirstPull!: () => void;
+	private markSecondPullStarted!: () => void;
+	private releaseSecondPull!: () => void;
+	private readonly firstPullRelease: Promise<void>;
+	private readonly secondPullRelease: Promise<void>;
+
+	constructor(options: { readonly accountId: string }) {
+		super(options);
+		this.firstPullStarted = new Promise(resolve => { this.markFirstPullStarted = resolve; });
+		this.secondPullStarted = new Promise(resolve => { this.markSecondPullStarted = resolve; });
+		this.firstPullRelease = new Promise(resolve => { this.releaseFirstPull = resolve; });
+		this.secondPullRelease = new Promise(resolve => { this.releaseSecondPull = resolve; });
+	}
+
+	resumeFirstPull(): void {
+		this.releaseFirstPull();
+	}
+
+	resumeSecondPull(): void {
+		this.releaseSecondPull();
+	}
+
+	override async pullChanges(request: Parameters<FakeCalendarProvider['pullChanges']>[0]) {
+		this.pullCalls += 1;
+		// Capture the first page before waiting so it represents a pull that
+		// began before the direct provider write.
+		const page = await super.pullChanges(request);
+		if (this.pullCalls === 1) {
+			this.markFirstPullStarted();
+			await this.firstPullRelease;
+		} else if (this.pullCalls === 2) {
+			this.markSecondPullStarted();
+			await this.secondPullRelease;
+		}
+		return page;
 	}
 }
 
@@ -464,6 +514,119 @@ describe('SyncService remote event cache', () => {
 		expect(provider.getEvent('primary', created.remoteEventId)).toBeUndefined();
 		expect(store.state.remoteEvents[created.key]?.status).toBe('remote_deleted');
 		expect(repository.list()).toHaveLength(0);
+	});
+
+	it('pulls again after a provider write when an older pull was already in flight', async () => {
+		const provider = new SnapshotBlockingPullProvider({ accountId: SESSION.accountId });
+		const { service } = makeService(provider, new MemoryVault());
+		const olderPull = service.syncNow();
+		await provider.firstPullStarted;
+
+		const created = await service.createCalendarEvent(event('written-during-pull'));
+		const remote = provider.getEvent('primary', created.remoteEventId);
+		if (!remote) throw new Error('Expected the confirmed provider event');
+		await provider.updateEvent(SESSION, 'primary', created.remoteEventId, {
+			...remote.event,
+			title: 'Changed remotely after the write',
+		}, remote.version);
+
+		const refresh = service.refreshAfterProviderWrite();
+		const coalescedRefresh = service.refreshAfterProviderWrite();
+		expect(coalescedRefresh).toBe(refresh);
+		provider.resumeFirstPull();
+		await olderPull;
+		await provider.secondPullStarted;
+
+		const duringRefresh = provider.getEvent('primary', created.remoteEventId);
+		if (!duringRefresh) throw new Error('Expected the written provider event during refresh');
+		await provider.updateEvent(SESSION, 'primary', created.remoteEventId, {
+			...duringRefresh.event,
+			title: 'Changed during the refresh',
+		}, duringRefresh.version);
+		const trailingRefresh = service.refreshAfterProviderWrite();
+		expect(trailingRefresh).toBe(refresh);
+		provider.resumeSecondPull();
+		const result = await refresh;
+
+		expect(result.status).toBe('idle');
+		expect(provider.pullCalls).toBe(3);
+		expect(service.listCachedEvents().find(cached => cached.key === created.key)?.event.title)
+			.toBe('Changed during the refresh');
+	});
+
+	it('still runs a fresh post-write pull when the older sync promise rejects', async () => {
+		const provider = new FakeCalendarProvider({ accountId: SESSION.accountId });
+		const { service } = makeService(provider, new MemoryVault());
+		const internals = service as unknown as {
+			run: (trigger: SyncRunTrigger, signal: AbortSignal) => Promise<SyncRunResult>;
+		};
+		const normalRun = internals.run.bind(service);
+		let rejectFirstRun!: (error: Error) => void;
+		const failedRun = new Promise<SyncRunResult>((_resolve, reject) => { rejectFirstRun = reject; });
+		let firstRun = true;
+		internals.run = (trigger, signal) => {
+			if (firstRun) {
+				firstRun = false;
+				return failedRun;
+			}
+			return normalRun(trigger, signal);
+		};
+
+		const olderSync = service.syncNow();
+		const refresh = service.refreshAfterProviderWrite();
+		rejectFirstRun(new Error('injected older run rejection'));
+		await expect(olderSync).rejects.toThrow('injected older run rejection');
+		const result = await refresh;
+
+		expect(result.status).toBe('idle');
+		expect(provider.getCallCount('pullChanges')).toBe(1);
+	});
+
+	it('runs one trailing pull when a new write requests refresh during a rejected pull', async () => {
+		const provider = new FakeCalendarProvider({ accountId: SESSION.accountId });
+		const { service } = makeService(provider, new MemoryVault());
+		const internals = service as unknown as {
+			run: (trigger: SyncRunTrigger, signal: AbortSignal) => Promise<SyncRunResult>;
+		};
+		const normalRun = internals.run.bind(service);
+		let markFirstRunStarted!: () => void;
+		const firstRunStarted = new Promise<void>(resolve => { markFirstRunStarted = resolve; });
+		let rejectFirstRun!: (error: Error) => void;
+		const failedRun = new Promise<SyncRunResult>((_resolve, reject) => { rejectFirstRun = reject; });
+		let firstRun = true;
+		internals.run = (trigger, signal) => {
+			if (firstRun) {
+				firstRun = false;
+				markFirstRunStarted();
+				return failedRun;
+			}
+			return normalRun(trigger, signal);
+		};
+
+		const refresh = service.refreshAfterProviderWrite();
+		await firstRunStarted;
+		const secondWriteRefresh = service.refreshAfterProviderWrite();
+		expect(secondWriteRefresh).toBe(refresh);
+		rejectFirstRun(new Error('injected fresh-pull rejection'));
+
+		const result = await refresh;
+		expect(result.status).toBe('idle');
+		expect(provider.getCallCount('pullChanges')).toBe(1);
+	});
+
+	it('does not retry a rejected refresh without another confirmed write', async () => {
+		const { service } = makeService(new FakeCalendarProvider({ accountId: SESSION.accountId }), new MemoryVault());
+		const internals = service as unknown as {
+			run: (trigger: SyncRunTrigger, signal: AbortSignal) => Promise<SyncRunResult>;
+		};
+		let runCalls = 0;
+		internals.run = async () => {
+			runCalls += 1;
+			throw new Error('injected pull rejection');
+		};
+
+		await expect(service.refreshAfterProviderWrite()).rejects.toThrow('injected pull rejection');
+		expect(runCalls).toBe(1);
 	});
 
 	it('surfaces a stale delete as a provider conflict and keeps the event', async () => {
