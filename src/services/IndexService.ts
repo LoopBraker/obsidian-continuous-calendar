@@ -13,6 +13,7 @@ import type { CalendarEvent, SyncStatus } from './sync/model/CalendarEvent';
 import type { CachedOccurrenceSlot } from './sync/state/SyncStateStore';
 import { expandCalendarEventForDate } from './sync/model/EventRecurrenceOccurrences';
 import { calendarEventIntersectsDate } from '../components/SyncUi';
+import { addCivilDays, eventCivilDayBounds } from './sync/notes/CalendarNoteTarget';
 
 export type CalendarDisplayEventScope = 'series' | 'occurrence';
 
@@ -89,7 +90,10 @@ export function getCalendarEventIndex(app: App): CalendarEventIndex | undefined 
 }
 
 export function notifyCalendarEventIndexChanged(app: App): void {
-    for (const service of calendarIndexServices.get(app) ?? []) service.notifyListeners(null);
+    for (const service of calendarIndexServices.get(app) ?? []) {
+        service.refreshCalendarEventRanges();
+        service.notifyListeners(null);
+    }
 }
 
 // Re-export types so external consumers don't break if they imported from here
@@ -105,6 +109,10 @@ export class IndexService {
     private recurrenceManager: RecurrenceManager;
     private taskManager: TaskManager;
     private syncEventIndex?: CalendarEventIndex;
+    private calendarEventRanges: RangeNote[] = [];
+    private calendarEventRangePaths = new Set<string>();
+    private calendarRangeEventKeysByDate = new Map<string, Set<string>>();
+    private calendarEventRangesInitialized = false;
 
     // Holiday tracking (Year -> Date -> Holiday[])
     holidays: Map<number, Map<string, Holiday[]>> = new Map();
@@ -165,6 +173,7 @@ export class IndexService {
     }
 
     getCalendarEventsForDate(dateStr: string): readonly CalendarDisplayEvent[] {
+        this.ensureCalendarEventRanges();
         return this.getCalendarEvents().flatMap(record => {
             // A deleted event or whole series no longer belongs on the live
             // calendar. A cancelled recurrence slot remains a visible tombstone.
@@ -267,7 +276,16 @@ export class IndexService {
 
     getRangesForDate(dateStr: string): RangeNote[] {
         const ownedPaths = getCalendarEventOwnedPathSet(this.app);
-        return (this.rangesByDate.get(dateStr) || []).filter(range => !ownedPaths.has(normalizeVaultPath(range.path)));
+        return (this.rangesByDate.get(dateStr) || []).filter(range =>
+            !this.calendarEventRangePaths.has(range.path) && !ownedPaths.has(normalizeVaultPath(range.path)));
+    }
+
+    /** Ranges shown in the calendar grid, including live multi-day provider events. */
+    getCalendarBarRangesForDate(dateStr: string): RangeNote[] {
+        this.ensureCalendarEventRanges();
+        const ownedPaths = getCalendarEventOwnedPathSet(this.app);
+        return (this.rangesByDate.get(dateStr) || [])
+            .filter(range => !ownedPaths.has(normalizeVaultPath(range.path)));
     }
 
     getRangeSlots(dateStr: string): Map<string, number> {
@@ -379,6 +397,7 @@ export class IndexService {
         if (cached?.signature === signature) return cached.symbols.map(symbol => ({ ...symbol }));
         // Presentation logic remains here as it acts as a View Model
         const events = this.getCalendarEventsForDate(dateStr);
+        const barEventKeys = this.calendarRangeEventKeysByDate.get(dateStr) ?? new Set<string>();
         const ownedPaths = getCalendarEventOwnedPathSet(this.app);
         const notes = this.getNotesForDate(dateStr)
             .filter(note => !ownedPaths.has(normalizeVaultPath(note.path)));
@@ -431,7 +450,9 @@ export class IndexService {
             };
         });
 
-        noteDisplays.push(...events.map(() => ({ symbol: undefined, color: defaultDotColor, hasSymbol: false })));
+        noteDisplays.push(...events
+            .filter(event => !barEventKeys.has(event.key))
+            .map(() => ({ symbol: undefined, color: defaultDotColor, hasSymbol: false })));
 
         if (collapseDuplicates) {
             const seenSymbols = new Set<string>();
@@ -650,7 +671,54 @@ export class IndexService {
     // =================================================================================
 
     public assignRangeSlots() {
-        this.rangeManager.assignRangeSlots();
+        this.rangeManager.assignRangeSlots([...this.allRanges, ...this.calendarEventRanges]);
+    }
+
+    /** Refresh calendar bars from the latest provider projection after a sync notification. */
+    public refreshCalendarEventRanges(): void {
+        const ranges: RangeNote[] = [];
+        const eventKeysByDate = new Map<string, Set<string>>();
+
+        for (const record of this.getCalendarEvents()) {
+            if (record.scope !== 'occurrence' || !record.providerResolved || !record.providerWriteKey ||
+                record.stale || record.cancelled || record.unresolved || record.status === 'remote_deleted' ||
+                record.event.recurrence !== undefined) continue;
+
+            const bounds = eventCivilDayBounds(record.event);
+            const firstDayAfterStart = bounds && addCivilDays(bounds.startDate, 1);
+            const inclusiveEnd = bounds && addCivilDays(bounds.endDateExclusive, -1);
+            // One-day events remain ordinary event dots. Only multi-day events
+            // use a range bar in the grid.
+            if (!bounds || !firstDayAfterStart || !inclusiveEnd || bounds.endDateExclusive <= firstDayAfterStart) continue;
+
+            const path = `calendar-event://google/${encodeURIComponent(record.providerWriteKey)}`;
+            ranges.push({
+                path,
+                name: record.event.title,
+                dateStart: bounds.startDate,
+                dateEnd: inclusiveEnd,
+                tags: [],
+            });
+
+            for (let date = bounds.startDate; date <= inclusiveEnd;) {
+                const keys = eventKeysByDate.get(date) ?? new Set<string>();
+                keys.add(record.key);
+                eventKeysByDate.set(date, keys);
+                const nextDate = addCivilDays(date, 1);
+                if (!nextDate || nextDate <= date) break;
+                date = nextDate;
+            }
+        }
+
+        this.calendarEventRanges = ranges;
+        this.calendarEventRangePaths = new Set(ranges.map(range => range.path));
+        this.calendarRangeEventKeysByDate = eventKeysByDate;
+        this.calendarEventRangesInitialized = true;
+        this.assignRangeSlots();
+    }
+
+    private ensureCalendarEventRanges(): void {
+        if (!this.calendarEventRangesInitialized) this.refreshCalendarEventRanges();
     }
 
     // =================================================================================

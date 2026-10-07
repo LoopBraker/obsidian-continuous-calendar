@@ -67,13 +67,13 @@ export class RangeManager {
         return this.allRanges.length < initialLength;
     }
 
-    public assignRangeSlots() {
+    public assignRangeSlots(ranges: readonly RangeNote[] = this.allRanges) {
         this.rangesByDate.clear();
         this.rangeSlotsByDate.clear();
         this.rangeEmergenceByPath.clear();
 
         // 1. Map ranges to specific dates
-        for (const range of this.allRanges) {
+        for (const range of ranges) {
             try {
                 const start = parseISO(range.dateStart);
                 const end = parseISO(range.dateEnd);
@@ -107,7 +107,7 @@ export class RangeManager {
         let prevDateKey: string | null = null;
 
         const rangesStartingByDate = new Map<string, RangeNote[]>();
-        for (const range of this.allRanges) {
+        for (const range of ranges) {
             if (!rangesStartingByDate.has(range.dateStart)) {
                 rangesStartingByDate.set(range.dateStart, []);
             }
@@ -119,14 +119,14 @@ export class RangeManager {
 
             // Cleanup ended ranges
             for (const [path, slot] of Array.from(activeByPath.entries())) {
-                const range = this.allRanges.find(r => r.path === path);
+                const range = ranges.find(r => r.path === path);
                 if (range && range.dateEnd < dateKey) {
                     activeByPath.delete(path);
                     occupied.delete(slot);
                 }
             }
             for (const path of Array.from(overflowRanges)) {
-                const range = this.allRanges.find(r => r.path === path);
+                const range = ranges.find(r => r.path === path);
                 if (range && range.dateEnd < dateKey) {
                     overflowRanges.delete(path);
                 }
@@ -134,7 +134,7 @@ export class RangeManager {
 
             // Try to move overflow to active
             for (const path of Array.from(overflowRanges)) {
-                const range = this.allRanges.find(r => r.path === path);
+                const range = ranges.find(r => r.path === path);
                 if (!range) continue;
 
                 if (range.dateEnd >= dateKey) {
@@ -193,7 +193,7 @@ export class RangeManager {
             if (prevDateKey) {
                 for (const path of currentVisiblePaths) {
                     if (!prevVisiblePaths.has(path)) {
-                        const range = this.allRanges.find(r => r.path === path);
+                        const range = ranges.find(r => r.path === path);
                         if (range && range.dateStart < dateKey) {
                             this.rangeEmergenceByPath.set(path, dateKey);
                         }

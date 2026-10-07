@@ -909,7 +909,7 @@ export default class ContinuousCalendarPlugin extends Plugin {
         await this.pluginDataStore.saveSettings(this.settings);
         this.calendarEventProjection = undefined;
         this.calendarIndex.setSettings(this.settings);
-        this.calendarIndex.notifyListeners(null);
+        notifyCalendarEventIndexChanged(this.app);
         await this.configureSyncLifecycle(true);
     }
 

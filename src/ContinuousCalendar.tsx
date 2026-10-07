@@ -139,7 +139,7 @@ interface RangeBarAreaProps {
 }
 
 const RangeBarArea = ({ dateKey, indexService, isCompact = false }: RangeBarAreaProps) => {
-    const ranges = indexService.getRangesForDate(dateKey);
+    const ranges = indexService.getCalendarBarRangesForDate(dateKey);
     const rangeSlots = indexService.getRangeSlots(dateKey);
     const settings = indexService.settings;
 
@@ -351,7 +351,7 @@ const DayCell: React.FC<DayCellProps> = ({
     const containerClass = `day-cell ${!isActive ? 'is-inactive-cell' : ''}${isMonthPreview ? ' is-month-preview' : ''}`;
 
     // In compact mode, combine dots and ranges into a unified area
-    const ranges = indexService.getRangesForDate(dateKey);
+    const ranges = indexService.getCalendarBarRangesForDate(dateKey);
     const hasRanges = ranges.length > 0;
     const hasDots = displaySymbols.length > 0;
     const totalItems = displaySymbols.length + ranges.length;
